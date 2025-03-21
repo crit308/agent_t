@@ -1,44 +1,12 @@
-from pydantic import BaseModel, Field
-from typing import List
 import os
 import openai
 
-from agents import Agent, FileSearchTool, Runner
+from agents import Agent, FileSearchTool, Runner, handoff
+from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
 
 from ai_tutor.agents.planner_agent import LessonPlan, LessonSection
-
-
-class ExplanationContent(BaseModel):
-    """Content explaining a concept or topic."""
-    topic: str = Field(description="The topic being explained")
-    explanation: str = Field(description="A clear, detailed explanation of the topic")
-    examples: List[str] = Field(description="Examples that illustrate the topic")
-
-
-class Exercise(BaseModel):
-    """An exercise for the student to complete."""
-    question: str = Field(description="The exercise question or prompt")
-    difficulty_level: str = Field(description="Easy, Medium, or Hard")
-    answer: str = Field(description="The answer or solution to the exercise")
-    explanation: str = Field(description="Explanation of how to solve the exercise")
-
-
-class SectionContent(BaseModel):
-    """The full content for a section of the lesson."""
-    title: str = Field(description="The title of the section")
-    introduction: str = Field(description="Introduction to the section")
-    explanations: List[ExplanationContent] = Field(description="Explanations of key concepts")
-    exercises: List[Exercise] = Field(description="Exercises for practice")
-    summary: str = Field(description="A summary of key points from the section")
-
-
-class LessonContent(BaseModel):
-    """The complete lesson content created by the teacher agent."""
-    title: str = Field(description="The title of the lesson")
-    introduction: str = Field(description="Introduction to the overall lesson")
-    sections: List[SectionContent] = Field(description="Content for each section of the lesson")
-    conclusion: str = Field(description="Conclusion summarizing the lesson")
-    next_steps: List[str] = Field(description="Suggested next steps for continued learning")
+from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent
+from ai_tutor.agents.models import LessonContent
 
 
 def create_teacher_agent(vector_store_id: str, api_key: str = None):
@@ -64,10 +32,13 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
     
     print(f"Created FileSearchTool for teacher agent using vector store: {vector_store_id}")
     
-    # Create the teacher agent with access to the file search tool
+    # Create the quiz creator agent for handoff
+    quiz_creator_agent = create_quiz_creator_agent(api_key)
+    
+    # Create the teacher agent with access to the file search tool and handoff to quiz creator
     teacher_agent = Agent(
         name="Lesson Teacher",
-        instructions="""
+        instructions=f"""{RECOMMENDED_PROMPT_PREFIX}
         You are an expert teacher. Your task is to create comprehensive lesson content 
         based on the lesson plan provided to you.
         
@@ -90,8 +61,13 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
         IMPORTANT: You MUST use the file_search tool to search for every key concept before
         creating content. For each section, search for relevant information in the documents.
         Without this step, you cannot create accurate content.
+        
+        AFTER CREATING THE LESSON CONTENT: You should use the transfer_to_quiz_creator tool to 
+        hand off the lesson content to the Quiz Creator agent, which will create a quiz based 
+        on the lesson content you've created.
         """,
         tools=[file_search_tool],
+        handoffs=[handoff(quiz_creator_agent)],
         output_type=LessonContent,
         model="gpt-4o",
     )
@@ -151,6 +127,10 @@ async def generate_lesson_content(lesson_plan: LessonPlan, vector_store_id: str,
        
     4. If you cannot find information on a specific concept, note this in your explanation 
        but still provide basic information about the concept.
+    
+    5. After you have created the lesson content, use the transfer_to_quiz_creator tool
+       to hand off the completed lesson content to the Quiz Creator agent. This will
+       automatically create a quiz based on your lesson.
     
     I will evaluate your response based on how well you use the file_search tool to find 
     and incorporate information from the uploaded documents.

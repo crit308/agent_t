@@ -7,7 +7,8 @@ from agents import Runner, trace, gen_trace_id, set_tracing_export_api_key
 
 from ai_tutor.tools.file_upload import FileUploadManager, upload_document
 from ai_tutor.agents.planner_agent import create_planner_agent, LessonPlan
-from ai_tutor.agents.teacher_agent import generate_lesson_content, LessonContent
+from ai_tutor.agents.teacher_agent import generate_lesson_content
+from ai_tutor.agents.models import LessonContent, Quiz
 
 
 class AITutorManager:
@@ -31,6 +32,7 @@ class AITutorManager:
         self.vector_store_id = None
         self.lesson_plan = None
         self.lesson_content = None
+        self.quiz = None
         self.file_paths = []
     
     async def upload_documents(self, file_paths: List[str]) -> str:
@@ -114,8 +116,8 @@ class AITutorManager:
             
             return self.lesson_content
     
-    async def run_full_workflow(self, file_paths: List[str]) -> LessonContent:
-        """Run the full AI tutor workflow from document upload to lesson generation."""
+    async def run_full_workflow(self, file_paths: List[str]) -> dict:
+        """Run the full AI tutor workflow from document upload to lesson and quiz generation."""
         # Upload documents
         await self.upload_documents(file_paths)
         
@@ -125,4 +127,11 @@ class AITutorManager:
         # Generate lesson content
         lesson_content = await self.generate_lesson()
         
-        return lesson_content 
+        # The quiz is automatically generated through the handoff mechanism
+        # We can check the trace to see the quiz output
+        
+        return {
+            "lesson_plan": self.lesson_plan,
+            "lesson_content": lesson_content,
+            # Note: The quiz is generated through handoff, so we don't directly capture it here
+        } 
