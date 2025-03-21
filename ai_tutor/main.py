@@ -5,7 +5,6 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Import the CLI module
-from ai_tutor.cli import main
 from agents import set_default_openai_api
 from openai import AsyncOpenAI
 from agents import set_default_openai_client
@@ -28,10 +27,22 @@ async def patched_create(self, *args, **kwargs):
 Responses.create = patched_create
 
 if __name__ == "__main__":
-    # Use the CLI's main function
+    # Import the CLI's parser
     from ai_tutor.cli import parser
     
+    # Check if first argument is not a subcommand, then we assume old-style command
+    # and we'll use the "tutor" subcommand
+    if len(sys.argv) > 1 and sys.argv[1] not in ['tutor', 'analyze', '-h', '--help']:
+        # Insert the 'tutor' subcommand as the first argument
+        sys.argv.insert(1, 'tutor')
+        print("Running in 'tutor' mode with automatic subcommand insertion")
+    
+    # Parse arguments with potentially modified sys.argv
     args = parser.parse_args()
+    
+    # Default to tutor command if none specified
+    if not hasattr(args, 'command') or not args.command:
+        args.command = 'tutor'
     
     # Set default API key if provided in environment
     if not args.api_key:
@@ -57,4 +68,5 @@ if __name__ == "__main__":
     
     # Run the CLI's main function
     import asyncio
-    asyncio.run(main(args.files, args.api_key, args.output)) 
+    from ai_tutor.cli import main
+    asyncio.run(main(args)) 
