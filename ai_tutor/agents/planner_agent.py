@@ -81,7 +81,7 @@ def create_planner_agent(vector_store_id: str, api_key: str = None):
         """,
         tools=[file_search_tool],
         output_type=LessonPlan,
-        model="gpt-4o",
+        model="o3-mini",
     )
     
     return planner_agent 

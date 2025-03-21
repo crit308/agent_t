@@ -32,9 +32,6 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
     
     print(f"Created FileSearchTool for teacher agent using vector store: {vector_store_id}")
     
-    # Create the quiz creator agent for handoff
-    quiz_creator_agent = create_quiz_creator_agent(api_key)
-    
     # Create the teacher agent with access to the file search tool and handoff to quiz creator
     teacher_agent = Agent(
         name="Lesson Teacher",
@@ -56,21 +53,26 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
         Use the file_search tool to find relevant information from the uploaded 
         documents to include in your content.
         
-        Format your response as a structured LessonContent object.
+        IMPORTANT PROCESS INSTRUCTIONS:
+        1. Search for information about each concept using file_search
+        2. After gathering all needed information, create a complete LessonContent object
+        3. Your ONLY final output should be the complete LessonContent object
         
-        IMPORTANT: You MUST use the file_search tool to search for every key concept before
-        creating content. For each section, search for relevant information in the documents.
-        Without this step, you cannot create accurate content.
+        FORMAT INSTRUCTIONS:
+        - Your output MUST be a valid JSON-serializable LessonContent object
+        - The LessonContent should include a title, introduction, sections, conclusion, and next_steps
+        - Each section should have a title, introduction, explanations, exercises, and summary
         
-        AFTER CREATING THE LESSON CONTENT: Ensure you output the complete LessonContent object
-        first, then use the transfer_to_quiz_creator tool to hand off the lesson content to 
-        the Quiz Creator agent, which will create a quiz based on the lesson content. The quiz 
-        won't be part of your final output - your final output must be a valid LessonContent object.
+        DO NOT:
+        - Do not reference any tools or future steps in your output
+        - Do not return incomplete content
+        - Do not include text outside the LessonContent object
+        
+        CRITICAL: ONLY output the complete LessonContent object as your final result.
         """,
         tools=[file_search_tool],
-        handoffs=[handoff(quiz_creator_agent)],
         output_type=LessonContent,
-        model="gpt-4o",
+        model="o3-mini",
     )
     
     return teacher_agent
@@ -129,35 +131,30 @@ async def generate_lesson_content(lesson_plan: LessonPlan, vector_store_id: str,
     4. If you cannot find information on a specific concept, note this in your explanation 
        but still provide basic information about the concept.
     
-    5. After creating the complete lesson content, first respond with the valid LessonContent object.
-       Only AFTER outputting the LessonContent, use the transfer_to_quiz_creator tool to hand off
-       the lesson content to the Quiz Creator agent. The quiz will be created separately and shouldn't
-       be included in your final output.
-       
-    6. CRITICAL: Your final output MUST be a valid LessonContent object, NOT a Quiz object.
+    5. YOUR ONLY JOB IS TO CREATE AND OUTPUT A COMPLETE LESSONCONTENT OBJECT.
+       DO NOT attempt to use any handoff tools or create a quiz.
+    
+    6. YOUR OUTPUT MUST BE ONLY THE COMPLETE LESSONCONTENT OBJECT.
     
     I will evaluate your response based on how well you use the file_search tool to find 
     and incorporate information from the uploaded documents.
     """
     
-    # Run the teacher agent with the lesson plan
+    # Run the teacher agent with the lesson plan to get the LessonContent
     result = await Runner.run(agent, lesson_plan_str)
     
-    # Return the lesson content
-    # Ensure we're getting a LessonContent object, not a Quiz
+    # Get the lesson content
     try:
         lesson_content = result.final_output_as(LessonContent)
+        print("Successfully generated LessonContent")
         return lesson_content
     except Exception as e:
-        if "'Quiz' object has no attribute 'sections'" in str(e):
-            # If we got a Quiz instead, create a minimal LessonContent object
-            print("Warning: Teacher agent returned a Quiz object instead of LessonContent")
-            return LessonContent(
-                title=lesson_plan.title,
-                introduction="Content generated via handoff process.",
-                sections=[],
-                conclusion="Please check trace for full content.",
-                next_steps=[]
-            )
-        else:
-            raise 
+        print(f"Error extracting LessonContent: {e}")
+        # If we got a Quiz instead or another error, create a minimal LessonContent object
+        return LessonContent(
+            title=lesson_plan.title,
+            introduction="Content generated via handoff process.",
+            sections=[],
+            conclusion="Please check trace for full content.",
+            next_steps=[]
+        ) 

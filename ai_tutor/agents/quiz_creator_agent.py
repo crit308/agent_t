@@ -37,12 +37,10 @@ def create_quiz_creator_agent(api_key: str = None):
         
         Format your response as a structured Quiz object.
         
-        NOTE TO AGENTS USING THE HANDOFF MECHANISM: If you receive this output through 
-        a handoff mechanism, treat it as supplementary content to your primary output.
-        Do not let this Quiz replace your own output.
+        YOUR OUTPUT MUST BE ONLY A VALID QUIZ OBJECT.
         """,
         output_type=Quiz,
-        model="gpt-4o",
+        model="o3-mini",
     )
     
     return quiz_creator_agent
@@ -52,6 +50,20 @@ async def generate_quiz(lesson_content: LessonContent, api_key: str = None) -> Q
     """Generate a quiz based on the provided lesson content."""
     # Create the quiz creator agent
     agent = create_quiz_creator_agent(api_key)
+    
+    # Check if the lesson content has sections
+    if not hasattr(lesson_content, 'sections') or len(lesson_content.sections) == 0:
+        print("Warning: Lesson content has no sections. Creating a minimal quiz.")
+        # Create a minimal quiz with just the title and description
+        return Quiz(
+            title=f"Quiz on {lesson_content.title}",
+            description="This is a quiz based on the lesson content.",
+            lesson_title=lesson_content.title,
+            questions=[],
+            passing_score=0,
+            total_points=0,
+            estimated_completion_time_minutes=0
+        )
     
     # Format the lesson content as a string for the quiz creator agent
     lesson_content_str = f"""
@@ -90,19 +102,32 @@ async def generate_quiz(lesson_content: LessonContent, api_key: str = None) -> Q
     Create approximately 2-3 questions per section, with a mix of difficulty levels.
     Ensure your questions cover the most important concepts from each section.
     
-    IMPORTANT: This is a supplementary quiz to go with the lesson. Your output should be a Quiz object,
-    but it should NOT replace the original lesson content in any way.
+    Your output should ONLY be a valid Quiz object with the following structure:
+    - title: The quiz title
+    - description: Brief description of the quiz
+    - lesson_title: Title of the lesson this quiz is based on
+    - questions: Array of QuizQuestion objects
+    - passing_score: Minimum points to pass
+    - total_points: Total possible points
+    - estimated_completion_time_minutes: Estimated time to complete
     """
     
     # Run the quiz creator agent with the lesson content
     result = await Runner.run(agent, lesson_content_str)
     
     # Return the quiz
-    quiz = result.final_output_as(Quiz)
-    
-    # Add an empty sections property to avoid attribute errors
-    # This is a temporary fix to maintain compatibility with code expecting the sections attribute
-    if not hasattr(quiz, 'sections'):
-        quiz.sections = []
-        
-    return quiz 
+    try:
+        quiz = result.final_output_as(Quiz)
+        return quiz
+    except Exception as e:
+        print(f"Error parsing quiz output: {e}")
+        # Return a minimal quiz if parsing fails
+        return Quiz(
+            title=f"Quiz on {lesson_content.title}",
+            description="This is a quiz based on the lesson content.",
+            lesson_title=lesson_content.title,
+            questions=[],
+            passing_score=0,
+            total_points=0,
+            estimated_completion_time_minutes=0
+        ) 

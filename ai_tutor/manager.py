@@ -115,50 +115,39 @@ class AITutorManager:
                     self.api_key
                 )
                 
-                # The handoff process may have resulted in a Quiz object being returned
-                # Check if we got a Quiz instead of LessonContent and handle appropriately
-                if isinstance(self.lesson_content, Quiz):
-                    # Store the quiz but return the actual lesson content (which was generated first)
-                    self.quiz = self.lesson_content
-                    # Get a new instance of the lesson content
-                    # We need to call the function again or retrieve the lesson content another way
-                    raise TypeError("Handoff returned a Quiz object instead of LessonContent")
-                
-                return self.lesson_content
-            except TypeError as te:
-                # If we got a Quiz instead of LessonContent, handle it gracefully
-                if "Handoff returned a Quiz object instead of LessonContent" in str(te):
-                    print("Successfully generated quiz through handoff. Retrieving lesson content...")
-                    # Note: At this point, we need to somehow retrieve the originally generated lesson content
-                    # This is a placeholder - the actual implementation depends on how the handoff is structured
-                    return LessonContent(
-                        title=self.lesson_plan.title,
-                        introduction="Lesson content not available due to handoff process.",
-                        sections=[],
-                        conclusion="Please check the trace for complete lesson content.",
-                        next_steps=[]
-                    )
-                else:
-                    raise
-            except Exception as e:
-                # If the error is about missing sections attribute, it's likely a Quiz object
-                if "'Quiz' object has no attribute 'sections'" in str(e):
-                    print("Received a Quiz object from the handoff process.")
-                    # Store the quiz if it's in a variable we can access
-                    if hasattr(e, 'obj') and isinstance(e.obj, Quiz):
-                        self.quiz = e.obj
+                # Only proceed with quiz generation if we have valid lesson content with sections
+                if self.lesson_content and hasattr(self.lesson_content, 'sections') and len(self.lesson_content.sections) > 0:
+                    # Create a separate trace for quiz generation
+                    quiz_trace_id = gen_trace_id()
+                    print(f"Generating quiz with trace ID: {quiz_trace_id}")
+                    print(f"View trace at: https://platform.openai.com/traces/{quiz_trace_id}")
                     
-                    # Return a placeholder lesson content
-                    return LessonContent(
-                        title=self.lesson_plan.title,
-                        introduction="Lesson content was generated but a Quiz was returned from the handoff.",
-                        sections=[],
-                        conclusion="Please check the trace for complete lesson content.",
-                        next_steps=[]
-                    )
+                    with trace("Generating quiz", trace_id=quiz_trace_id):
+                        # Import and call quiz creator directly instead of relying on handoff
+                        from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent, generate_quiz
+                        try:
+                            self.quiz = await generate_quiz(self.lesson_content, self.api_key)
+                            print(f"Successfully generated quiz with {len(self.quiz.questions) if hasattr(self.quiz, 'questions') else 0} questions")
+                        except Exception as quiz_error:
+                            print(f"Error generating quiz: {quiz_error}")
+                            self.quiz = None
                 else:
-                    # Re-raise other exceptions
-                    raise
+                    print("Skipping quiz generation as lesson content has no sections")
+                    self.quiz = None
+                
+                # Return the lesson content
+                return self.lesson_content
+                
+            except Exception as e:
+                print(f"Error generating lesson: {e}")
+                # Return a placeholder if something went wrong
+                return LessonContent(
+                    title=self.lesson_plan.title,
+                    introduction="Error generating complete lesson content.",
+                    sections=[],
+                    conclusion="An error occurred during lesson generation.",
+                    next_steps=[]
+                )
     
     async def run_full_workflow(self, file_paths: List[str]) -> dict:
         """Run the full AI tutor workflow from document upload to lesson and quiz generation."""
@@ -168,16 +157,19 @@ class AITutorManager:
         # Generate lesson plan
         await self.generate_lesson_plan()
         
-        # Generate lesson content
+        # Generate lesson content and quiz
         lesson_content = await self.generate_lesson()
         
-        # The quiz is automatically generated through the handoff mechanism
-        # We can check the trace to see the quiz output
-        
-        return {
+        # Prepare the result dictionary
+        result = {
             "lesson_plan": self.lesson_plan,
             "lesson_content": lesson_content,
-            # Note: The quiz is generated through handoff, so we don't directly capture it here
-            # If we need to access the quiz later, we should add a method to retrieve it from the handoff result
-            "quiz": None  # Set to None to avoid attempts to access quiz.sections
-        } 
+        }
+        
+        # Only include the quiz if it was successfully generated
+        if self.quiz is not None:
+            result["quiz"] = self.quiz
+        else:
+            print("No quiz was generated. Omitting quiz from results.")
+        
+        return result 
