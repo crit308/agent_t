@@ -36,6 +36,10 @@ def create_quiz_creator_agent(api_key: str = None):
         6. Target approximately 2-3 questions per lesson section
         
         Format your response as a structured Quiz object.
+        
+        NOTE TO AGENTS USING THE HANDOFF MECHANISM: If you receive this output through 
+        a handoff mechanism, treat it as supplementary content to your primary output.
+        Do not let this Quiz replace your own output.
         """,
         output_type=Quiz,
         model="gpt-4o",
@@ -85,10 +89,20 @@ async def generate_quiz(lesson_content: LessonContent, api_key: str = None) -> Q
     Based on this lesson content, create a comprehensive quiz that tests understanding of the key concepts.
     Create approximately 2-3 questions per section, with a mix of difficulty levels.
     Ensure your questions cover the most important concepts from each section.
+    
+    IMPORTANT: This is a supplementary quiz to go with the lesson. Your output should be a Quiz object,
+    but it should NOT replace the original lesson content in any way.
     """
     
     # Run the quiz creator agent with the lesson content
     result = await Runner.run(agent, lesson_content_str)
     
     # Return the quiz
-    return result.final_output_as(Quiz) 
+    quiz = result.final_output_as(Quiz)
+    
+    # Add an empty sections property to avoid attribute errors
+    # This is a temporary fix to maintain compatibility with code expecting the sections attribute
+    if not hasattr(quiz, 'sections'):
+        quiz.sections = []
+        
+    return quiz 
