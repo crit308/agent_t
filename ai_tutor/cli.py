@@ -113,8 +113,10 @@ async def run_tutor(args):
                     # Extract metadata if possible
                     file_count = len(getattr(analysis, "file_names", []))
                     concept_count = len(getattr(analysis, "key_concepts", []))
+                    term_count = len(getattr(analysis, "key_terms", {}))
                     print(f"   Files analyzed: {file_count}")
                     print(f"   Key concepts: {concept_count}")
+                    print(f"   Key terms: {term_count}")
                     
                     # Save analysis to file if output specified
                     if args.output:
@@ -191,8 +193,10 @@ async def run_tutor(args):
             # Extract metadata if possible
             file_count = len(getattr(analysis, "file_names", []))
             concept_count = len(getattr(analysis, "key_concepts", []))
+            term_count = len(getattr(analysis, "key_terms", {}))
             print(f"   Files analyzed: {file_count}")
             print(f"   Key concepts: {concept_count}")
+            print(f"   Key terms: {term_count}")
             
             # Save analysis to file if output specified
             if args.output:
@@ -257,6 +261,7 @@ async def run_analyzer(args):
                 # Extract metadata if possible
                 file_count = len(getattr(analysis, "file_names", []))
                 concept_count = len(getattr(analysis, "key_concepts", []))
+                term_count = len(getattr(analysis, "key_terms", {}))
                 key_concepts = getattr(analysis, "key_concepts", [])
                 
                 print(f"   Files analyzed: {file_count}")

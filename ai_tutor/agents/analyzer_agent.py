@@ -35,6 +35,7 @@ class DocumentAnalysis(BaseModel):
     file_metadata: Dict[str, Dict[str, Any]] = Field(default_factory=dict, description="Metadata of the files by file name")
     key_concepts: List[str] = Field(default_factory=list, description="Key concepts or topics extracted from the documents")
     concept_details: Dict[str, List[str]] = Field(default_factory=dict, description="Details about each key concept")
+    key_terms: Dict[str, str] = Field(default_factory=dict, description="Important terminology with their definitions")
     vector_store_id: str = Field("", description="ID of the vector store containing the documents")
     file_ids: List[str] = Field(default_factory=list, description="Vector store reference IDs for the files")
     
@@ -49,6 +50,8 @@ class DocumentAnalysis(BaseModel):
             self.key_concepts = []
         if not self.concept_details:
             self.concept_details = {}
+        if not self.key_terms:
+            self.key_terms = {}
         if not self.file_ids:
             self.file_ids = []
         return self
@@ -87,19 +90,22 @@ def create_analyzer_agent(vector_store_id: str, api_key: str = None):
         1. File names and metadata
         2. Key concepts or topics from the documents
         3. Vector store reference IDs
+        4. Key terms and their definitions
         
         ANALYSIS PROCESS:
         1. Use the file_search tool with broad queries to understand what documents are available
         2. Conduct systematic searches for common document metadata fields
         3. Extract key concepts by analyzing document content and structure
         4. Identify and record vector store reference IDs
-        5. Organize all findings into a comprehensive analysis
+        5. Extract important terminology and their definitions
+        6. Organize all findings into a comprehensive analysis
         
         SEARCH STRATEGY:
         - Start with general searches like "document", "overview", "introduction"
         - Search for specific metadata terms like "author", "date", "title", "version" 
         - Look for key section headers and topics
         - Extract unique identifiers and reference numbers
+        - Search for defined terms, glossary sections, or key terminology with explanations
         
         FORMAT INSTRUCTIONS:
         - Present your analysis in a clear, structured text format
@@ -109,6 +115,7 @@ def create_analyzer_agent(vector_store_id: str, api_key: str = None):
           * FILE METADATA: Any metadata you find for each file
           * KEY CONCEPTS: List of main topics/concepts found across all documents
           * CONCEPT DETAILS: Examples or details for each key concept
+          * KEY TERMS GLOSSARY: List of important terminology with their definitions
           * FILE IDS: Any reference IDs you discover
         
         DO NOT:
@@ -150,6 +157,7 @@ async def analyze_documents(vector_store_id: str, api_key: str = None) -> str:
         1. Identify all file names and their metadata
         2. Extract key concepts, topics, and themes
         3. Find and record any vector store reference IDs
+        4. Extract important terminology and provide clear definitions
         
         Be methodical and comprehensive in your analysis. Start with broad searches 
         and then focus on specific areas. Present your findings in a clear, structured format.
@@ -172,8 +180,35 @@ async def analyze_documents(vector_store_id: str, api_key: str = None) -> str:
                 concepts_section = analysis_text.split("KEY CONCEPTS:")[1].split("CONCEPT DETAILS:")[0]
                 key_concepts = [c.strip() for c in concepts_section.strip().split("\n") if c.strip()]
             
+            # Extract key terms if available
+            key_terms = {}
+            if "KEY TERMS GLOSSARY:" in analysis_text:
+                terms_section = analysis_text.split("KEY TERMS GLOSSARY:")[1]
+                # Check if there's a section after KEY TERMS GLOSSARY
+                next_sections = ["FILE IDS:", "VECTOR STORE ID:"]
+                for section in next_sections:
+                    if section in terms_section:
+                        terms_section = terms_section.split(section)[0]
+                        break
+                
+                # Process the terms section to extract terms and definitions
+                terms_lines = [line.strip() for line in terms_section.strip().split("\n") if line.strip()]
+                for line in terms_lines:
+                    if ":" in line:
+                        term, definition = line.split(":", 1)
+                        key_terms[term.strip()] = definition.strip()
+                    elif "–" in line or "-" in line:
+                        # Handle terms with dash separator
+                        parts = line.split("–", 1) if "–" in line else line.split("-", 1)
+                        if len(parts) == 2:
+                            term, definition = parts
+                            key_terms[term.strip()] = definition.strip()
+            
             # Attach the concepts as an attribute to the text for easy access
             setattr(analysis_text, "key_concepts", key_concepts)
+            
+            # Attach the key terms as an attribute to the text
+            setattr(analysis_text, "key_terms", key_terms)
             
             # Attach the vector store ID as an attribute
             setattr(analysis_text, "vector_store_id", vector_store_id)
