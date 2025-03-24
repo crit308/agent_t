@@ -32,11 +32,34 @@ async def test_handoff_workflow(file_paths: List[str], api_key: str):
         print(f"     Explanations: {len(section.explanations)}")
         print(f"     Exercises: {len(section.exercises)}")
     
+    # Print quiz information if available
+    if "quiz" in result:
+        quiz = result["quiz"]
+        print("\n" + "="*50)
+        print(f"QUIZ: {quiz.title}")
+        print(f"Questions: {len(quiz.questions)}")
+        print(f"Passing score: {quiz.passing_score}/{quiz.total_points}")
+        print(f"Estimated completion time: {quiz.estimated_completion_time_minutes} minutes")
+        
+        # Print a sample of quiz questions (first 3 or less)
+        sample_count = min(3, len(quiz.questions))
+        if sample_count > 0:
+            print("\nSample questions:")
+            for i in range(sample_count):
+                question = quiz.questions[i]
+                print(f"  Q{i+1}: {question.question} (Difficulty: {question.difficulty})")
+    else:
+        print("\n" + "="*50)
+        print("NO QUIZ GENERATED")
+    
     print("\n" + "="*50)
     print("HANDOFF RESULT:")
-    print("Check the trace URL above for the complete conversation,")
-    print("including the handoff to the Quiz Creator agent.")
-    print("The handoff should have occurred automatically after the lesson content was generated.")
+    if "quiz" in result:
+        print("Handoff from Teacher Agent to Quiz Creator was successful!")
+        print("The Quiz Creator agent generated a quiz based on the lesson content.")
+    else:
+        print("Handoff to Quiz Creator agent might not have occurred.")
+        print("Check the trace URL above for the complete conversation.")
     print("="*50)
 
 

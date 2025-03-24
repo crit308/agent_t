@@ -7,10 +7,10 @@ import threading
 from agents import Runner, trace, gen_trace_id, set_tracing_export_api_key
 
 from ai_tutor.tools.file_upload import FileUploadManager, upload_document
-from ai_tutor.agents.planner_agent import create_planner_agent, LessonPlan
+from ai_tutor.agents.planner_agent import create_planner_agent
 from ai_tutor.agents.teacher_agent import generate_lesson_content, create_teacher_agent
 from ai_tutor.agents.analyzer_agent import analyze_documents
-from ai_tutor.agents.models import LessonContent, Quiz
+from ai_tutor.agents.models import LessonContent, Quiz, LessonPlan, LessonSection, LearningObjective
 
 
 class AITutorManager:
@@ -225,9 +225,13 @@ class AITutorManager:
                 prompt
             )
             
-            # Verify that we have a valid lesson plan
+            # Track what kind of output we got to handle multiple handoffs
+            output_is_lesson_plan = False
+            
+            # Try to extract the LessonPlan
             try:
                 self.lesson_plan = result.final_output_as(LessonPlan)
+                output_is_lesson_plan = True
                 
                 # Basic validation to ensure the lesson plan has sections
                 if not self.lesson_plan.sections or len(self.lesson_plan.sections) == 0:
@@ -238,27 +242,161 @@ class AITutorManager:
                 print(f"  Total duration: {self.lesson_plan.total_estimated_duration_minutes} minutes")
                 
             except Exception as e:
-                print(f"Error extracting LessonPlan: {e}")
-                print("The planner agent did not generate a valid lesson plan before attempting handoff.")
-                raise ValueError("Failed to generate a valid lesson plan. The agent may have attempted to hand off prematurely.")
-            
-            # Check if there was a handoff that completed
-            if result.last_agent and result.last_agent.name == "Lesson Teacher":
-                print(f"Handoff to {result.last_agent.name} was successful")
-                
-                # If the teacher agent provided a final output, capture it
-                if isinstance(result.final_output, LessonContent):
+                if isinstance(result.final_output, Quiz):
+                    # We got a Quiz object, which means we went through the full handoff chain
+                    print("Full handoff chain completed: Planner → Teacher → Quiz Creator")
+                    self.quiz = result.final_output
+                    print(f"Successfully captured Quiz from full handoff chain: {self.quiz.title}")
+                    print(f"Quiz has {len(self.quiz.questions)} questions")
+                    output_is_lesson_plan = False
+                elif isinstance(result.final_output, LessonContent):
+                    # We got a LessonContent object, which means we went through the first handoff
+                    print("Teacher handoff completed but no Quiz Creator handoff occurred")
                     self.lesson_content = result.final_output
-                    print("Successfully captured LessonContent from handoff")
-                elif isinstance(result.final_output, dict):
-                    try:
-                        self.lesson_content = LessonContent(**result.final_output)
-                        print("Successfully captured LessonContent from handoff dictionary")
-                    except Exception as e:
-                        print(f"Error converting dictionary to LessonContent: {e}")
+                    print(f"Successfully captured LessonContent from handoff: {self.lesson_content.title}")
+                    output_is_lesson_plan = False
                 else:
-                    print(f"Teacher agent handoff completed but didn't provide LessonContent. Output type: {type(result.final_output)}")
+                    print(f"Error extracting LessonPlan: {e}")
+                    print(f"Final output type: {type(result.final_output)}")
+                    print("The planner agent did not generate a valid lesson plan before attempting handoff.")
+                    raise ValueError("Failed to generate a valid lesson plan. The agent may have attempted to hand off prematurely.")
             
+            # If we received a lesson plan (no handoff completed), we're done
+            if output_is_lesson_plan:
+                return self.lesson_plan
+            
+            # Check for handoffs and capture outputs
+            if result.last_agent:
+                print(f"Last agent in chain: {result.last_agent.name}")
+                
+                # If we reached the Teacher agent
+                if result.last_agent.name == "Lesson Teacher":
+                    # Check if we already have the lesson content (should have been captured above)
+                    if not self.lesson_content and isinstance(result.final_output, LessonContent):
+                        self.lesson_content = result.final_output
+                        print("Successfully captured LessonContent from handoff")
+                    elif not self.lesson_content and isinstance(result.final_output, dict):
+                        try:
+                            self.lesson_content = LessonContent(**result.final_output)
+                            print("Successfully captured LessonContent from handoff dictionary")
+                        except Exception as e:
+                            print(f"Error converting dictionary to LessonContent: {e}")
+                
+                # If we reached the Quiz Creator agent
+                elif result.last_agent.name == "Quiz Creator":
+                    # Check if we already have the quiz (should have been captured above)
+                    if not self.quiz and isinstance(result.final_output, Quiz):
+                        self.quiz = result.final_output
+                        print("Successfully captured Quiz from handoff")
+                    elif not self.quiz and isinstance(result.final_output, dict):
+                        try:
+                            self.quiz = Quiz(**result.final_output)
+                            print("Successfully captured Quiz from handoff dictionary")
+                        except Exception as e:
+                            print(f"Error converting dictionary to Quiz: {e}")
+            
+            # If we don't have a lesson plan by this point, we need to create a synthetic one
+            if not self.lesson_plan:
+                # Try to reconstruct the lesson plan from lesson content if available
+                if self.lesson_content:
+                    print("Reconstructing lesson plan from lesson content")
+                    
+                    # Create sections based on the lesson content
+                    sections = []
+                    for section in self.lesson_content.sections:
+                        learning_objectives = []
+                        for explanation in section.explanations:
+                            # Extract concepts from the explanation
+                            key_concepts = [explanation.topic]
+                            if explanation.examples:
+                                # Add example topics as concepts
+                                key_concepts.extend([ex.split(":")[0] for ex in explanation.examples if ":" in ex])
+                            
+                            # Create learning objective
+                            learning_objectives.append(LearningObjective(
+                                description=f"Understand {explanation.topic}",
+                                key_concepts=key_concepts
+                            ))
+                        
+                        # Create lesson section
+                        sections.append(LessonSection(
+                            title=section.title,
+                            description=section.introduction,
+                            learning_objectives=learning_objectives,
+                            estimated_duration_minutes=30  # Default estimate
+                        ))
+                    
+                    # Create synthesized lesson plan
+                    self.lesson_plan = LessonPlan(
+                        title=self.lesson_content.title,
+                        description=self.lesson_content.introduction,
+                        target_audience="Learners interested in this topic",
+                        prerequisites=["Basic understanding of the subject"],
+                        sections=sections,
+                        total_estimated_duration_minutes=len(sections) * 30,  # Rough estimate
+                        additional_resources=[]
+                    )
+                    
+                    print(f"Successfully reconstructed lesson plan: {self.lesson_plan.title}")
+                    print(f"  Sections: {len(self.lesson_plan.sections)}")
+                # If we have a Quiz but no lesson plan or lesson content, create a minimal lesson plan based on the quiz
+                elif self.quiz:
+                    print("Creating minimal lesson plan from quiz")
+                    
+                    # Extract a title from the quiz title
+                    quiz_based_title = self.quiz.title
+                    if quiz_based_title.startswith("Quiz:"):
+                        quiz_based_title = quiz_based_title[5:].strip()
+                    
+                    # Create sections based on question topics
+                    topic_dict = {}
+                    for question in self.quiz.questions:
+                        section_title = question.related_section
+                        if section_title not in topic_dict:
+                            topic_dict[section_title] = []
+                        topic_dict[section_title].append(question.question)
+                    
+                    sections = []
+                    for section_title, questions in topic_dict.items():
+                        # Create a learning objective for each question
+                        learning_objectives = []
+                        for question in questions:
+                            # Extract a brief topic from the question
+                            topic = question.split('?')[0]
+                            if len(topic) > 50:
+                                topic = topic[:47] + "..."
+                            
+                            learning_objectives.append(LearningObjective(
+                                description=f"Understand {topic}",
+                                key_concepts=[topic]
+                            ))
+                        
+                        # Create a section with these learning objectives
+                        sections.append(LessonSection(
+                            title=section_title,
+                            description=f"This section covers topics related to {section_title}",
+                            learning_objectives=learning_objectives,
+                            estimated_duration_minutes=len(questions) * 10  # Rough estimate
+                        ))
+                    
+                    # Create synthesized lesson plan
+                    self.lesson_plan = LessonPlan(
+                        title=quiz_based_title,
+                        description=self.quiz.description,
+                        target_audience="Learners interested in this topic",
+                        prerequisites=["Basic understanding of the subject"],
+                        sections=sections,
+                        total_estimated_duration_minutes=sum(section.estimated_duration_minutes for section in sections),
+                        additional_resources=[]
+                    )
+                    
+                    print(f"Successfully created minimal lesson plan from quiz: {self.lesson_plan.title}")
+                    print(f"  Sections: {len(self.lesson_plan.sections)}")
+                else:
+                    # If we have neither lesson plan nor lesson content nor quiz, this is an error
+                    raise ValueError("Failed to generate or reconstruct a valid lesson plan")
+            
+            # At this point, self.lesson_plan should be a valid LessonPlan object
             return self.lesson_plan
     
     async def generate_lesson(self) -> Optional[LessonContent]:
@@ -284,32 +422,81 @@ class AITutorManager:
         
         with trace("Generating lesson content", trace_id=trace_id):
             try:
-                # Generate the lesson content
-                self.lesson_content = await generate_lesson_content(
-                    self.lesson_plan, 
-                    self.vector_store_id,
-                    self.api_key
+                # Create the teacher agent
+                teacher_agent = create_teacher_agent(self.vector_store_id, self.api_key)
+                
+                # Format the lesson plan as a string for the teacher agent
+                prompt = f"""
+                Generate comprehensive lesson content based on this lesson plan.
+                
+                For each section, use the file_search tool to gather accurate information before creating content.
+                
+                IMPORTANT: You MUST first generate a complete LessonContent object BEFORE 
+                attempting to hand off to the quiz creator agent.
+                
+                CRITICAL WORKFLOW:
+                1. YOU MUST FIRST create and output a complete LessonContent object
+                2. ONLY AFTER that, use the transfer_to_quiz_creator tool to hand off to the Quiz Creator agent
+                """
+                
+                # Run the teacher agent to generate a lesson content
+                result = await Runner.run(
+                    teacher_agent, 
+                    prompt
                 )
                 
-                # Only proceed with quiz generation if we have valid lesson content with sections
-                if self.lesson_content and hasattr(self.lesson_content, 'sections') and len(self.lesson_content.sections) > 0:
-                    # Create a separate trace for quiz generation
-                    quiz_trace_id = gen_trace_id()
-                    print(f"Generating quiz with trace ID: {quiz_trace_id}")
-                    print(f"View trace at: https://platform.openai.com/traces/{quiz_trace_id}")
+                # Verify that we have valid lesson content
+                try:
+                    self.lesson_content = result.final_output_as(LessonContent)
                     
-                    with trace("Generating quiz", trace_id=quiz_trace_id):
-                        # Import and call quiz creator directly instead of relying on handoff
-                        from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent, generate_quiz
+                    # Basic validation to ensure the lesson content has sections
+                    if not self.lesson_content.sections or len(self.lesson_content.sections) == 0:
+                        print("WARNING: Generated lesson content has no sections. This may cause issues with the quiz creator agent.")
+                    
+                    print(f"Successfully generated lesson content: {self.lesson_content.title}")
+                    print(f"  Sections: {len(self.lesson_content.sections)}")
+                    
+                except Exception as e:
+                    print(f"Error extracting LessonContent: {e}")
+                    print("The teacher agent did not generate valid lesson content before attempting handoff.")
+                    raise ValueError("Failed to generate valid lesson content. The agent may have attempted to hand off prematurely.")
+                
+                # Check if there was a handoff that completed
+                if result.last_agent and result.last_agent.name == "Quiz Creator":
+                    print(f"Handoff to {result.last_agent.name} was successful")
+                    
+                    # If the quiz creator agent provided a final output, capture it
+                    if isinstance(result.final_output, Quiz):
+                        self.quiz = result.final_output
+                        print("Successfully captured Quiz from handoff")
+                    elif isinstance(result.final_output, dict):
                         try:
-                            self.quiz = await generate_quiz(self.lesson_content, self.api_key)
-                            print(f"Successfully generated quiz with {len(self.quiz.questions) if hasattr(self.quiz, 'questions') else 0} questions")
-                        except Exception as quiz_error:
-                            print(f"Error generating quiz: {quiz_error}")
-                            self.quiz = None
+                            self.quiz = Quiz(**result.final_output)
+                            print("Successfully captured Quiz from handoff dictionary")
+                        except Exception as e:
+                            print(f"Error converting dictionary to Quiz: {e}")
+                    else:
+                        print(f"Quiz creator agent handoff completed but didn't provide Quiz. Output type: {type(result.final_output)}")
                 else:
-                    print("Skipping quiz generation as lesson content has no sections")
-                    self.quiz = None
+                    # If there was no handoff or it didn't reach the quiz agent, generate the quiz directly
+                    if self.lesson_content and hasattr(self.lesson_content, 'sections') and len(self.lesson_content.sections) > 0:
+                        # Create a separate trace for quiz generation
+                        quiz_trace_id = gen_trace_id()
+                        print(f"No handoff to quiz creator detected. Generating quiz directly with trace ID: {quiz_trace_id}")
+                        print(f"View trace at: https://platform.openai.com/traces/{quiz_trace_id}")
+                        
+                        with trace("Generating quiz", trace_id=quiz_trace_id):
+                            # Import and call quiz creator directly instead of relying on handoff
+                            from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent, generate_quiz
+                            try:
+                                self.quiz = await generate_quiz(self.lesson_content, self.api_key)
+                                print(f"Successfully generated quiz with {len(self.quiz.questions) if hasattr(self.quiz, 'questions') else 0} questions")
+                            except Exception as quiz_error:
+                                print(f"Error generating quiz: {quiz_error}")
+                                self.quiz = None
+                    else:
+                        print("Skipping quiz generation as lesson content has no sections")
+                        self.quiz = None
                 
                 # Return the lesson content
                 return self.lesson_content
@@ -351,16 +538,69 @@ class AITutorManager:
                 results["analysis"] = "Analysis started in background"
         
         # Step 3: Generate lesson plan
-        lesson_plan = await self.generate_lesson_plan()
-        results["lesson_plan"] = f"Generated lesson plan: {lesson_plan.title} with {len(lesson_plan.sections)} sections"
+        try:
+            lesson_plan = await self.generate_lesson_plan()
+            # Make sure we're storing a LessonPlan object in the results, not a Quiz
+            if isinstance(lesson_plan, LessonPlan):
+                results["lesson_plan"] = lesson_plan
+            else:
+                # If lesson_plan is not a LessonPlan but we have self.lesson_plan, use that
+                if self.lesson_plan and isinstance(self.lesson_plan, LessonPlan):
+                    results["lesson_plan"] = self.lesson_plan
+                else:
+                    # Create a minimal LessonPlan as fallback
+                    default_title = "Generated Content"
+                    if self.lesson_content:
+                        default_title = self.lesson_content.title
+                    elif self.quiz:
+                        default_title = self.quiz.title.replace("Quiz: ", "")
+                    
+                    results["lesson_plan"] = LessonPlan(
+                        title=default_title,
+                        description="Lesson plan generated from handoff process",
+                        target_audience="Learners interested in this topic",
+                        prerequisites=["Basic understanding of the subject"],
+                        sections=[],
+                        total_estimated_duration_minutes=60,
+                        additional_resources=[]
+                    )
+        except Exception as e:
+            print(f"Error in lesson plan generation: {e}")
+            # Create a default lesson plan for the results
+            results["lesson_plan"] = LessonPlan(
+                title="Error in Lesson Plan Generation",
+                description="There was an error generating the lesson plan",
+                target_audience="Learners interested in this topic",
+                prerequisites=["Basic understanding of the subject"],
+                sections=[],
+                total_estimated_duration_minutes=60,
+                additional_resources=[]
+            )
         
         # Step 4: Only generate lesson content if it wasn't created via handoff
         if not self.lesson_content:
-            lesson_content = await self.generate_lesson()
-            results["lesson_content"] = f"Generated lesson content: {lesson_content.title} with {len(lesson_content.sections)} sections"
+            try:
+                lesson_content = await self.generate_lesson()
+                results["lesson_content"] = lesson_content
+            except Exception as e:
+                print(f"Error generating lesson content: {e}")
+                results["lesson_content"] = LessonContent(
+                    title=results["lesson_plan"].title,
+                    introduction="Error generating lesson content",
+                    sections=[],
+                    conclusion="An error occurred during content generation",
+                    next_steps=[]
+                )
         else:
             # Lesson content was already generated via handoff
-            results["lesson_content"] = f"Lesson content was already generated via handoff: {self.lesson_content.title} with {len(self.lesson_content.sections)} sections"
+            results["lesson_content"] = self.lesson_content
+        
+        # Add quiz information to results if available
+        if self.quiz:
+            results["quiz"] = self.quiz
+            results["quiz_info"] = f"Generated quiz: {self.quiz.title} with {len(self.quiz.questions)} questions"
+        else:
+            results["quiz_info"] = "No quiz was generated"
         
         # Return all results
         return results 

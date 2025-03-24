@@ -9,6 +9,7 @@ from agents.run_context import RunContextWrapper
 
 from ai_tutor.agents.teacher_agent import create_teacher_agent
 from ai_tutor.agents.models import LearningObjective, LessonSection, LessonPlan
+from ai_tutor.agents.utils import round_search_result_scores
 
 
 def lesson_plan_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
@@ -17,8 +18,9 @@ def lesson_plan_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputDa
     This ensures the teacher agent receives the lesson plan.
     """
     print("Applying handoff filter to pass lesson plan to teacher agent")
-    # We don't need to modify anything, as the model output will already be captured
-    # in the final_output and passed to the teacher agent
+    print(f"HandoffInputData type: {type(handoff_data)}")
+    
+    # Return the data as is, the utility function will be fixed
     return handoff_data
 
 

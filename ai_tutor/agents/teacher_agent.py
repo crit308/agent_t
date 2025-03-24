@@ -1,11 +1,25 @@
 import os
 import openai
 
-from agents import Agent, FileSearchTool, Runner, handoff
+from agents import Agent, FileSearchTool, Runner, handoff, HandoffInputData
 from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
+from agents.run_context import RunContextWrapper
 
 from ai_tutor.agents.models import LessonPlan, LessonSection, LessonContent
 from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent
+from ai_tutor.agents.utils import round_search_result_scores
+
+
+def lesson_content_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
+    """Filter function for handoff from teacher to quiz creator agent.
+    
+    This ensures the quiz creator agent receives the lesson content.
+    """
+    print("Applying handoff filter to pass lesson content to quiz creator agent")
+    print(f"HandoffInputData type: {type(handoff_data)}")
+    
+    # Return the data as is, the utility function will be fixed
+    return handoff_data
 
 
 def create_teacher_agent(vector_store_id: str, api_key: str = None):
@@ -30,6 +44,15 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
     )
     
     print(f"Created FileSearchTool for teacher agent using vector store: {vector_store_id}")
+    
+    # Create the quiz creator agent to hand off to after teaching is complete
+    quiz_creator_agent = create_quiz_creator_agent(api_key)
+    
+    # Define an on_handoff function to prepare the lesson content for the quiz creator agent
+    def on_handoff_to_quiz_creator(ctx: RunContextWrapper[any], lesson_content: LessonContent) -> None:
+        print(f"Handoff triggered with lesson content: {lesson_content.title}")
+        print(f"Lesson content has {len(lesson_content.sections)} sections")
+        # We don't need to do anything here, as the lesson content will be accessible to the quiz creator agent
     
     # Create the teacher agent with access to the file search tool and handoff to quiz creator
     teacher_agent = Agent(
@@ -57,7 +80,9 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
            Use that lesson plan to guide your content creation.
         2. Search for information about each concept in the plan using file_search
         3. After gathering all needed information, create a complete LessonContent object
-        4. Your ONLY final output should be the complete LessonContent object
+        4. YOU MUST FIRST output a complete structured LessonContent object before proceeding.
+        5. ONLY AFTER generating the complete lesson content, hand off to the Quiz Creator agent who
+           will create the quiz based on your lesson content.
         
         FORMAT INSTRUCTIONS:
         - Your output MUST be a valid JSON-serializable LessonContent object
@@ -69,9 +94,27 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
         - Do not return incomplete content
         - Do not include text outside the LessonContent object
         
+        SEQUENCE OF OPERATIONS:
+        1. Create and output a complete LessonContent
+        2. ONLY THEN use the transfer_to_quiz_creator tool
+        
+        When using transfer_to_quiz_creator, you should pass the entire LessonContent object 
+        that you've just generated. For example:
+        
+        transfer_to_quiz_creator(your_lesson_content_object)
+        
         CRITICAL: ONLY output the complete LessonContent object as your final result.
         """,
         tools=[file_search_tool],
+        handoffs=[
+            handoff(
+                agent=quiz_creator_agent,
+                on_handoff=on_handoff_to_quiz_creator,
+                input_type=LessonContent,
+                input_filter=lesson_content_handoff_filter,
+                tool_description_override="Transfer to the Quiz Creator agent who will generate a comprehensive quiz based on your lesson content. Provide the complete LessonContent object as input."
+            )
+        ],
         output_type=LessonContent,
         model="o3-mini",
     )
@@ -81,6 +124,7 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
 
 async def generate_lesson_content(lesson_plan: LessonPlan, vector_store_id: str, api_key: str = None) -> LessonContent:
     """Generate the full lesson content based on the provided lesson plan."""
+    
     # Create the teacher agent
     agent = create_teacher_agent(vector_store_id, api_key)
     
@@ -91,9 +135,8 @@ async def generate_lesson_content(lesson_plan: LessonPlan, vector_store_id: str,
     Title: {lesson_plan.title}
     Description: {lesson_plan.description}
     Target Audience: {lesson_plan.target_audience}
-    
-    Prerequisites:
-    {', '.join(lesson_plan.prerequisites)}
+    Prerequisites: {lesson_plan.prerequisites}
+    Total Estimated Duration: {lesson_plan.total_estimated_duration_minutes} minutes
     
     Sections:
     """
@@ -106,16 +149,11 @@ async def generate_lesson_content(lesson_plan: LessonPlan, vector_store_id: str,
         Learning Objectives:
         """
         
-        for j, objective in enumerate(section.objectives):
+        for j, objective in enumerate(section.learning_objectives):
             lesson_plan_str += f"""
-            {j+1}. {objective.title} (Priority: {objective.priority})
-               {objective.description}
+            Objective {j+1}: {objective.description}
+            Key Concepts: {', '.join(objective.key_concepts)}
             """
-            
-        lesson_plan_str += f"""
-        Key Concepts: {', '.join(section.concepts_to_cover)}
-        
-        """
     
     # Instruction to use FileSearchTool
     lesson_plan_str += f"""
