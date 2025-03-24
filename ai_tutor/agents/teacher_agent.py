@@ -4,9 +4,8 @@ import openai
 from agents import Agent, FileSearchTool, Runner, handoff
 from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
 
-from ai_tutor.agents.planner_agent import LessonPlan, LessonSection
+from ai_tutor.agents.models import LessonPlan, LessonSection, LessonContent
 from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent
-from ai_tutor.agents.models import LessonContent
 
 
 def create_teacher_agent(vector_store_id: str, api_key: str = None):
@@ -54,9 +53,11 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
         documents to include in your content.
         
         IMPORTANT PROCESS INSTRUCTIONS:
-        1. Search for information about each concept using file_search
-        2. After gathering all needed information, create a complete LessonContent object
-        3. Your ONLY final output should be the complete LessonContent object
+        1. If you were handed off to from the Planner agent, you'll receive a LessonPlan object.
+           Use that lesson plan to guide your content creation.
+        2. Search for information about each concept in the plan using file_search
+        3. After gathering all needed information, create a complete LessonContent object
+        4. Your ONLY final output should be the complete LessonContent object
         
         FORMAT INSTRUCTIONS:
         - Your output MUST be a valid JSON-serializable LessonContent object
@@ -136,8 +137,8 @@ async def generate_lesson_content(lesson_plan: LessonPlan, vector_store_id: str,
     
     6. YOUR OUTPUT MUST BE ONLY THE COMPLETE LESSONCONTENT OBJECT.
     
-    I will evaluate your response based on how well you use the file_search tool to find 
-    and incorporate information from the uploaded documents.
+    NOTE: This function is being called directly (not via handoff). You're receiving a formatted
+    lesson plan to use for content creation.
     """
     
     # Run the teacher agent with the lesson plan to get the LessonContent

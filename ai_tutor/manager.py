@@ -8,7 +8,7 @@ from agents import Runner, trace, gen_trace_id, set_tracing_export_api_key
 
 from ai_tutor.tools.file_upload import FileUploadManager, upload_document
 from ai_tutor.agents.planner_agent import create_planner_agent, LessonPlan
-from ai_tutor.agents.teacher_agent import generate_lesson_content
+from ai_tutor.agents.teacher_agent import generate_lesson_content, create_teacher_agent
 from ai_tutor.agents.analyzer_agent import analyze_documents
 from ai_tutor.agents.models import LessonContent, Quiz
 
@@ -182,6 +182,9 @@ class AITutorManager:
             Start by searching for general topics, then dive deeper into specific areas.
             
             Focus on creating a structured plan that covers all important concepts in the material.
+            
+            IMPORTANT: You MUST generate and output a complete LessonPlan object BEFORE 
+            attempting to hand off to the teacher agent.
             """
             
             # If we have document analysis results, enhance the prompt with key concepts
@@ -208,14 +211,54 @@ class AITutorManager:
                     Consider incorporating these key concepts into your lesson plan where appropriate.
                     """
             
+            # Add instruction to hand off to teacher agent after generating the plan
+            prompt += """
+            
+            CRITICAL WORKFLOW:
+            1. YOU MUST FIRST create and output a complete LessonPlan object
+            2. ONLY AFTER that, use the transfer_to_lesson_teacher tool to hand off to the Teacher agent
+            """
+            
             # Run the planner agent to generate a lesson plan
             result = await Runner.run(
                 planner_agent, 
                 prompt
             )
             
-            # Store and return the lesson plan
-            self.lesson_plan = result.final_output_as(LessonPlan)
+            # Verify that we have a valid lesson plan
+            try:
+                self.lesson_plan = result.final_output_as(LessonPlan)
+                
+                # Basic validation to ensure the lesson plan has sections
+                if not self.lesson_plan.sections or len(self.lesson_plan.sections) == 0:
+                    print("WARNING: Generated lesson plan has no sections. This may cause issues with the teacher agent.")
+                
+                print(f"Successfully generated lesson plan: {self.lesson_plan.title}")
+                print(f"  Sections: {len(self.lesson_plan.sections)}")
+                print(f"  Total duration: {self.lesson_plan.total_estimated_duration_minutes} minutes")
+                
+            except Exception as e:
+                print(f"Error extracting LessonPlan: {e}")
+                print("The planner agent did not generate a valid lesson plan before attempting handoff.")
+                raise ValueError("Failed to generate a valid lesson plan. The agent may have attempted to hand off prematurely.")
+            
+            # Check if there was a handoff that completed
+            if result.last_agent and result.last_agent.name == "Lesson Teacher":
+                print(f"Handoff to {result.last_agent.name} was successful")
+                
+                # If the teacher agent provided a final output, capture it
+                if isinstance(result.final_output, LessonContent):
+                    self.lesson_content = result.final_output
+                    print("Successfully captured LessonContent from handoff")
+                elif isinstance(result.final_output, dict):
+                    try:
+                        self.lesson_content = LessonContent(**result.final_output)
+                        print("Successfully captured LessonContent from handoff dictionary")
+                    except Exception as e:
+                        print(f"Error converting dictionary to LessonContent: {e}")
+                else:
+                    print(f"Teacher agent handoff completed but didn't provide LessonContent. Output type: {type(result.final_output)}")
+            
             return self.lesson_plan
     
     async def generate_lesson(self) -> Optional[LessonContent]:
@@ -225,6 +268,11 @@ class AITutorManager:
         
         if not self.vector_store_id:
             raise ValueError("No documents have been uploaded yet")
+        
+        # If we already have lesson content from the handoff, return it
+        if self.lesson_content:
+            print("Using lesson content that was already generated via handoff")
+            return self.lesson_content
         
         trace_id = gen_trace_id()
         print(f"Generating lesson content with trace ID: {trace_id}")
@@ -278,49 +326,41 @@ class AITutorManager:
                 )
     
     async def run_full_workflow(self, file_paths: List[str], run_analyzer: bool = False, analyzer_in_background: bool = True) -> dict:
-        """Run the full AI tutor workflow from document upload to lesson and quiz generation."""
-        # Upload documents
-        await self.upload_documents(file_paths)
+        """Run the full AI tutor workflow, from document upload to quiz generation.
         
-        # Run analyzer if requested and not already run via auto-analyze
-        if run_analyzer and not self.document_analysis:
-            if analyzer_in_background:
-                # Start analyzer in background
-                await self.analyze_documents(run_in_background=True)
-                print("Document analysis started in background.")
+        Args:
+            file_paths: List of file paths to process
+            run_analyzer: Whether to run document analysis
+            analyzer_in_background: If running analysis, whether to do it in background
+            
+        Returns:
+            Dictionary with the results of each step
+        """
+        results = {}
+        
+        # Step 1: Upload documents
+        upload_result = await self.upload_documents(file_paths)
+        results["upload"] = upload_result
+        
+        # Step 2 (optional): Analyze documents
+        if run_analyzer:
+            analysis = await self.analyze_documents(run_in_background=analyzer_in_background)
+            if not analyzer_in_background and analysis:
+                results["analysis"] = "Analysis completed"
             else:
-                # Run analyzer and wait for completion
-                self.document_analysis = await self.analyze_documents()
-                if self.document_analysis:
-                    print(f"Document analysis completed. Found {len(self.document_analysis.file_names)} files and {len(self.document_analysis.key_concepts)} key concepts.")
+                results["analysis"] = "Analysis started in background"
         
-        # Generate lesson plan
-        await self.generate_lesson_plan()
+        # Step 3: Generate lesson plan
+        lesson_plan = await self.generate_lesson_plan()
+        results["lesson_plan"] = f"Generated lesson plan: {lesson_plan.title} with {len(lesson_plan.sections)} sections"
         
-        # If analysis was running in background, try to get results now
-        if run_analyzer and analyzer_in_background:
-            # Try to wait for analysis, but with a timeout to not block too long
-            analysis_result = await self.wait_for_analysis(timeout=0.1)
-            if analysis_result:
-                print("Background analysis results are now available.")
-        
-        # Generate lesson content and quiz
-        lesson_content = await self.generate_lesson()
-        
-        # Prepare the result dictionary
-        result = {
-            "lesson_plan": self.lesson_plan,
-            "lesson_content": lesson_content,
-        }
-        
-        # Include document analysis if available
-        if self.document_analysis is not None:
-            result["document_analysis"] = self.document_analysis
-        
-        # Only include the quiz if it was successfully generated
-        if self.quiz is not None:
-            result["quiz"] = self.quiz
+        # Step 4: Only generate lesson content if it wasn't created via handoff
+        if not self.lesson_content:
+            lesson_content = await self.generate_lesson()
+            results["lesson_content"] = f"Generated lesson content: {lesson_content.title} with {len(lesson_content.sections)} sections"
         else:
-            print("No quiz was generated. Omitting quiz from results.")
+            # Lesson content was already generated via handoff
+            results["lesson_content"] = f"Lesson content was already generated via handoff: {self.lesson_content.title} with {len(self.lesson_content.sections)} sections"
         
-        return result 
+        # Return all results
+        return results 
