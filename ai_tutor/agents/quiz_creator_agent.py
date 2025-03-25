@@ -10,19 +10,18 @@ from ai_tutor.agents.quiz_teacher_agent import create_quiz_teacher_agent
 
 
 def quiz_to_teacher_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
-    """Filter function for handoff from quiz creator to quiz teacher agent."""
-    print("Applying handoff filter to pass quiz to quiz teacher agent")
+    """Process handoff data from quiz creator to quiz teacher."""
+    print("Applying handoff filter to pass quiz to teacher agent")
+    
+    # Apply score rounding to avoid precision errors
     print(f"HandoffInputData type: {type(handoff_data)}")
     
-    try:
-        # Apply the round_search_result_scores function with 15 decimal places max
-        processed_data = round_search_result_scores(handoff_data, max_decimal_places=15)
-        print("Applied score rounding to handoff data")
-        return processed_data
-    except Exception as e:
-        print(f"Error in handoff filter: {e}")
-        # Return the original data if there was an error
-        return handoff_data
+    # Apply extreme rounding with 0 decimal places for maximum safety
+    # Zero decimals ensures no floating point precision issues can occur
+    handoff_data = round_search_result_scores(handoff_data, max_decimal_places=0)
+    print("Applied score rounding to handoff data")
+    
+    return handoff_data
 
 
 def create_quiz_creator_agent(api_key: str = None):
@@ -139,8 +138,10 @@ async def generate_quiz(lesson_content: LessonContent, api_key: str = None, enab
     # Create the quiz creator agent
     if enable_teacher_handoff:
         agent = create_quiz_creator_agent_with_teacher_handoff(api_key)
+        print("Created quiz creator agent with teacher handoff capability")
     else:
         agent = create_quiz_creator_agent(api_key)
+        print("Created quiz creator agent without teacher handoff capability")
     
     # Check if the lesson content has sections
     if not hasattr(lesson_content, 'sections') or len(lesson_content.sections) == 0:

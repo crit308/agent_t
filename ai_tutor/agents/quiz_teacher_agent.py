@@ -18,8 +18,9 @@ def quiz_user_answers_handoff_filter(handoff_data: HandoffInputData) -> HandoffI
     print(f"HandoffInputData type: {type(handoff_data)}")
     
     try:
-        # Apply the round_search_result_scores function with 15 decimal places max
-        processed_data = round_search_result_scores(handoff_data, max_decimal_places=15)
+        # Apply extreme rounding with 0 decimal places for maximum safety
+        # Zero decimals ensures no floating point precision issues can occur
+        processed_data = round_search_result_scores(handoff_data, max_decimal_places=0)
         print("Applied score rounding to handoff data")
         return processed_data
     except Exception as e:
@@ -76,6 +77,7 @@ def create_quiz_teacher_agent(api_key: str = None):
         """,
         output_type=QuizFeedback,
         model="o3-mini",
+        # No handoffs needed for the quiz teacher agent - it's the last in the chain
     )
     
     return quiz_teacher_agent

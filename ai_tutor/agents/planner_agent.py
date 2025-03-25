@@ -13,22 +13,18 @@ from ai_tutor.agents.utils import round_search_result_scores
 
 
 def lesson_plan_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
-    """Filter function for handoff from planner to teacher agent.
-    
-    This ensures the teacher agent receives the lesson plan.
-    """
+    """Process handoff data from lesson planner to lesson teacher."""
     print("Applying handoff filter to pass lesson plan to teacher agent")
+    
+    # Apply score rounding to avoid precision errors
     print(f"HandoffInputData type: {type(handoff_data)}")
     
-    try:
-        # Apply the round_search_result_scores function with 15 decimal places max
-        processed_data = round_search_result_scores(handoff_data, max_decimal_places=15)
-        print("Applied score rounding to handoff data")
-        return processed_data
-    except Exception as e:
-        print(f"Error in handoff filter: {e}")
-        # Return the original data if there was an error
-        return handoff_data
+    # Apply extreme rounding with 0 decimal places for maximum safety
+    # Zero decimals ensures no floating point precision issues can occur
+    handoff_data = round_search_result_scores(handoff_data, max_decimal_places=0)
+    print("Applied score rounding to handoff data")
+    
+    return handoff_data
 
 
 def create_planner_agent(vector_store_id: str, api_key: str = None):

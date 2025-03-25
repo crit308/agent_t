@@ -11,6 +11,26 @@ from agents import set_default_openai_client
 
 # We need to directly modify the OpenAI client here
 from openai.resources.responses import Responses
+from ai_tutor.agents.models import PrecisionControlEncoder
+
+# Monkey patch the json module used by OpenAI to control floating point precision
+import openai
+import json as _stdlib_json
+
+# Store the original dumps function for later restoration if needed
+original_json_dumps = _stdlib_json.dumps
+
+# Create a wrapper function that uses our precision-controlled encoder
+def precision_json_dumps(*args, **kwargs):
+    # Use our custom encoder by default if not specified
+    if 'cls' not in kwargs:
+        kwargs['cls'] = PrecisionControlEncoder
+        # Set max_decimals to 8 by default (well below OpenAI's 16 limit)
+        kwargs['max_decimals'] = 8
+    return original_json_dumps(*args, **kwargs)
+
+# Apply the patch to the json module
+_stdlib_json.dumps = precision_json_dumps
 
 # Add reasoning parameter to o3-mini calls
 original_create = Responses.create
@@ -65,6 +85,7 @@ if __name__ == "__main__":
     set_default_openai_client(openai_client)
     
     print("Applied patch for o3-mini with low reasoning effort")
+    print("Applied precision control for floating point values to prevent decimal place errors")
     
     # Run the CLI's main function
     import asyncio

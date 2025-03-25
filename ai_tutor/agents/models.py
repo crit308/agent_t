@@ -1,5 +1,64 @@
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any
+import json
+
+# Custom JSON encoder to control floating point precision
+class PrecisionControlEncoder(json.JSONEncoder):
+    """Custom JSON encoder that ensures floating point values don't exceed 8 decimal places."""
+    
+    def __init__(self, *args, **kwargs):
+        # Remove our custom parameter if present
+        self.max_decimals = kwargs.pop('max_decimals', 8)
+        super().__init__(*args, **kwargs)
+    
+    def encode(self, obj):
+        if isinstance(obj, float):
+            # Format float with exact number of decimal places
+            # then convert back to float to avoid string in output
+            return json.JSONEncoder.encode(self, float(f"{obj:.{self.max_decimals}f}"))
+        return super().encode(obj)
+    
+    def iterencode(self, obj, _one_shot=False):
+        # Special handling for top-level objects
+        if isinstance(obj, dict):
+            # Process the dictionary before encoding
+            obj = self._process_dict(obj)
+        elif isinstance(obj, list):
+            # Process the list before encoding
+            obj = self._process_list(obj)
+        
+        # Use the standard iterencode with our processed object
+        return super().iterencode(obj, _one_shot)
+    
+    def _process_dict(self, d):
+        """Process all items in a dictionary to control float precision."""
+        result = {}
+        for k, v in d.items():
+            if isinstance(v, float):
+                # Format float with exact decimal places
+                result[k] = float(f"{v:.{self.max_decimals}f}")
+            elif isinstance(v, dict):
+                result[k] = self._process_dict(v)
+            elif isinstance(v, list):
+                result[k] = self._process_list(v)
+            else:
+                result[k] = v
+        return result
+    
+    def _process_list(self, lst):
+        """Process all items in a list to control float precision."""
+        result = []
+        for item in lst:
+            if isinstance(item, float):
+                # Format float with exact decimal places
+                result.append(float(f"{item:.{self.max_decimals}f}"))
+            elif isinstance(item, dict):
+                result.append(self._process_dict(item))
+            elif isinstance(item, list):
+                result.append(self._process_list(item))
+            else:
+                result.append(item)
+        return result
 
 
 class ExplanationContent(BaseModel):
