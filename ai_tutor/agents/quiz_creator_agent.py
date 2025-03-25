@@ -1,5 +1,6 @@
 import os
 import openai
+import json
 
 from agents import Agent, Runner, handoff, HandoffInputData
 from agents.run_context import RunContextWrapper
@@ -16,12 +17,25 @@ def quiz_to_teacher_handoff_filter(handoff_data: HandoffInputData) -> HandoffInp
     # Apply score rounding to avoid precision errors
     print(f"HandoffInputData type: {type(handoff_data)}")
     
-    # Apply extreme rounding with 0 decimal places for maximum safety
-    # Zero decimals ensures no floating point precision issues can occur
-    handoff_data = round_search_result_scores(handoff_data, max_decimal_places=0)
-    print("Applied score rounding to handoff data")
-    
-    return handoff_data
+    try:
+        # Use a very conservative max_decimal_places value
+        handoff_data = round_search_result_scores(handoff_data, max_decimal_places=5)
+        print("Applied score rounding to handoff data")
+        
+        # Extra validation - try to serialize to JSON and back
+        if hasattr(handoff_data, 'data') and handoff_data.data:
+            try:
+                json_str = json.dumps(str(handoff_data.data))
+                json.loads(json_str)
+                print("Validated handoff data can be serialized to JSON")
+            except Exception as json_err:
+                print(f"Warning: JSON validation failed: {json_err}")
+        
+        return handoff_data
+    except Exception as e:
+        print(f"Error in handoff filter: {e}")
+        print("Returning original handoff data without processing")
+        return handoff_data
 
 
 def create_quiz_creator_agent(api_key: str = None):

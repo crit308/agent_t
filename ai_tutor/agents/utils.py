@@ -28,9 +28,12 @@ def round_search_result_scores(handoff_data: HandoffInputData, max_decimal_place
             if not isinstance(value, (float, Decimal)):
                 return value
             
-            # Convert to string with exactly max_decimal_places, then back to float
-            # This ensures no excess precision
-            formatted = f"{{:.{max_decimal_places}f}}".format(float(value))
+            # First convert to string with restricted precision
+            # Using fewer decimal places than requested as additional safety
+            safe_decimals = max(0, max_decimal_places - 1)
+            formatted = f"{{:.{safe_decimals}f}}".format(float(value))
+            
+            # Then convert back to float
             return float(formatted)
         
         # We need to handle the specific structure mentioned in the error:
@@ -42,19 +45,18 @@ def round_search_result_scores(handoff_data: HandoffInputData, max_decimal_place
             for i, item in enumerate(input_list):
                 # Handle dictionary items in input_history
                 if isinstance(item, dict):
-                    # First look for 'results' array which is common in file search
+                    # Apply recursive processing to the entire dictionary
+                    # This ensures we catch all nested values that might be floats
+                    process_dict_values(item, format_float)
+                    
+                    # Additional targeted processing for 'results' which commonly has scores
                     if 'results' in item and isinstance(item['results'], list):
                         for result in item['results']:
-                            if isinstance(result, dict) and 'score' in result:
-                                # Direct string-based precision control
-                                result['score'] = format_float(result['score'])
-                                print(f"Fixed search result score to {result['score']}")
-                    
-                    # Process all nested data with score fields
-                    for key, value in item.items():
-                        if key == 'score' and isinstance(value, (float, Decimal)):
-                            item[key] = format_float(value)
-                            print(f"Fixed score in item to {item[key]}")
+                            if isinstance(result, dict):
+                                process_dict_values(result, format_float)
+                elif isinstance(item, list):
+                    # Process lists directly
+                    process_list_values(item, format_float)
             
             # Create a new HandoffInputData with processed input_history
             data_copy = HandoffInputData(
@@ -66,19 +68,28 @@ def round_search_result_scores(handoff_data: HandoffInputData, max_decimal_place
         
         # Process any data attribute that might contain file search results
         if hasattr(data_copy, 'data') and data_copy.data:
-            process_nested_data(data_copy.data, max_decimal_places)
+            if isinstance(data_copy.data, dict):
+                process_dict_values(data_copy.data, format_float)
+            elif isinstance(data_copy.data, list):
+                process_list_values(data_copy.data, format_float)
+            else:
+                process_nested_data(data_copy.data, max_decimal_places)
         
         # Process pre_handoff_items
         if hasattr(data_copy, 'pre_handoff_items') and data_copy.pre_handoff_items:
-            for item in data_copy.pre_handoff_items:
+            for idx, item in enumerate(data_copy.pre_handoff_items):
                 if hasattr(item, '__dict__'):
-                    process_nested_data(item.__dict__, max_decimal_places)
+                    obj_dict = item.__dict__
+                    process_dict_values(obj_dict, format_float)
+                    # Recreate the object with processed values if needed
         
         # Process new_items
         if hasattr(data_copy, 'new_items') and data_copy.new_items:
-            for item in data_copy.new_items:
+            for idx, item in enumerate(data_copy.new_items):
                 if hasattr(item, '__dict__'):
-                    process_nested_data(item.__dict__, max_decimal_places)
+                    obj_dict = item.__dict__
+                    process_dict_values(obj_dict, format_float)
+                    # Recreate the object with processed values if needed
                     
         # Test serialization to verify issue is fixed
         try:
@@ -88,6 +99,19 @@ def round_search_result_scores(handoff_data: HandoffInputData, max_decimal_place
                 json.loads(json_str)  # Try parsing back to verify
         except Exception as e:
             print(f"WARNING: JSON serialization check failed: {e}")
+            print("Applying emergency serialization fix")
+            
+            # Emergency fallback using str representation
+            if hasattr(data_copy, 'data') and data_copy.data:
+                try:
+                    # Convert to JSON and back using precision limiting
+                    data_json = json.dumps(data_copy.data)
+                    # Use regex to fix excessive precision
+                    import re
+                    data_json = re.sub(r'(\d+\.\d{10,})', lambda m: f"{float(m.group(0)):.6f}", data_json)
+                    data_copy.data = json.loads(data_json)
+                except Exception as json_err:
+                    print(f"JSON emergency fix failed: {json_err}")
         
         print("Successfully processed and rounded all scores")
         return data_copy
@@ -100,44 +124,89 @@ def round_search_result_scores(handoff_data: HandoffInputData, max_decimal_place
         try:
             # Try to directly manipulate the serialized form to control precision
             data_copy = copy.deepcopy(handoff_data)
+            
+            # Run emergency direct string replacement on all attributes
+            # This is a last-resort measure to fix excessive decimal places
             if hasattr(data_copy, 'input_history') and isinstance(data_copy.input_history, tuple):
                 input_list = list(data_copy.input_history)
                 
                 # EMERGENCY MEASURE: Convert to JSON and back with string replacement
                 for i, item in enumerate(input_list):
                     if isinstance(item, dict):
-                        # Convert to JSON
-                        item_json = json.dumps(item)
-                        
-                        # Use regex to find all floating point numbers with excess precision
-                        import re
-                        # Find numbers with more than 10 decimal places
-                        excess_precision_pattern = r'(\d+\.\d{10,})'
-                        
-                        # Replace with truncated versions (8 decimal places)
-                        def truncate_match(match):
-                            number = float(match.group(0))
-                            return f"{number:.8f}"
-                        
-                        # Apply the regex replacement
-                        fixed_json = re.sub(excess_precision_pattern, truncate_match, item_json)
-                        
-                        # Convert back to dict and replace in the list
-                        input_list[i] = json.loads(fixed_json)
+                        try:
+                            # Convert to JSON
+                            item_json = json.dumps(item)
+                            
+                            # Use regex to find all floating point numbers with excess precision
+                            import re
+                            # Find any numbers with more than 6 decimal places (very conservative)
+                            excess_precision_pattern = r'(\d+\.\d{6,})'
+                            
+                            # Replace with truncated versions (5 decimal places)
+                            def truncate_match(match):
+                                number = float(match.group(0))
+                                return f"{number:.5f}"
+                            
+                            # Apply the regex replacement
+                            fixed_json = re.sub(excess_precision_pattern, truncate_match, item_json)
+                            
+                            # Convert back to dict and replace in the list
+                            input_list[i] = json.loads(fixed_json)
+                        except Exception as item_err:
+                            print(f"Error fixing item {i}: {item_err}")
                 
-                # Create a new HandoffInputData with the fixed input_history
-                return HandoffInputData(
-                    input_history=tuple(input_list),
-                    pre_handoff_items=data_copy.pre_handoff_items,
-                    new_items=data_copy.new_items,
-                    data=data_copy.data if hasattr(data_copy, 'data') else None
-                )
+                # Try to create a new HandoffInputData with the fixed input_history
+                try:
+                    return HandoffInputData(
+                        input_history=tuple(input_list),
+                        pre_handoff_items=data_copy.pre_handoff_items,
+                        new_items=data_copy.new_items,
+                        data=data_copy.data if hasattr(data_copy, 'data') else None
+                    )
+                except Exception as handoff_err:
+                    print(f"Error creating new HandoffInputData: {handoff_err}")
             
         except Exception as emergency_e:
             print(f"Emergency fix also failed: {emergency_e}")
         
         # If all else fails, return the original data
         return handoff_data
+
+def process_dict_values(d, value_processor):
+    """Recursively process all values in a dictionary.
+    
+    Args:
+        d: The dictionary to process
+        value_processor: A function that takes a value and returns a processed value
+    """
+    if not isinstance(d, dict):
+        return
+        
+    for key, value in list(d.items()):
+        if isinstance(value, float) or isinstance(value, Decimal):
+            d[key] = value_processor(value)
+        elif isinstance(value, dict):
+            process_dict_values(value, value_processor)
+        elif isinstance(value, list):
+            process_list_values(value, value_processor)
+
+def process_list_values(lst, value_processor):
+    """Recursively process all values in a list.
+    
+    Args:
+        lst: The list to process
+        value_processor: A function that takes a value and returns a processed value
+    """
+    if not isinstance(lst, list):
+        return
+        
+    for i, value in enumerate(lst):
+        if isinstance(value, float) or isinstance(value, Decimal):
+            lst[i] = value_processor(value)
+        elif isinstance(value, dict):
+            process_dict_values(value, value_processor)
+        elif isinstance(value, list):
+            process_list_values(value, value_processor)
 
 def process_nested_data(data, max_decimal_places):
     """Process nested dictionary or list data to ensure all score values have limited decimal places."""

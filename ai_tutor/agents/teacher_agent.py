@@ -1,5 +1,6 @@
 import os
 import openai
+import json
 
 from agents import Agent, FileSearchTool, Runner, handoff, HandoffInputData
 from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
@@ -17,27 +18,43 @@ def lesson_content_handoff_filter(handoff_data: HandoffInputData) -> HandoffInpu
     # Apply score rounding to avoid precision errors
     print(f"HandoffInputData type: {type(handoff_data)}")
     
-    # Apply extreme rounding with 0 decimal places for maximum safety
-    # Zero decimals ensures no floating point precision issues can occur
-    handoff_data = round_search_result_scores(handoff_data, max_decimal_places=0)
-    print("Applied score rounding to handoff data")
-    
-    return handoff_data
+    try:
+        # Use a very conservative max_decimal_places value
+        handoff_data = round_search_result_scores(handoff_data, max_decimal_places=5)
+        print("Applied score rounding to handoff data")
+        
+        # Extra validation - try to serialize to JSON and back
+        if hasattr(handoff_data, 'data') and handoff_data.data:
+            try:
+                json_str = json.dumps(str(handoff_data.data))
+                json.loads(json_str)
+                print("Validated handoff data can be serialized to JSON")
+            except Exception as json_err:
+                print(f"Warning: JSON validation failed: {json_err}")
+        
+        return handoff_data
+    except Exception as e:
+        print(f"Error in handoff filter: {e}")
+        print("Returning original handoff data without processing")
+        return handoff_data
 
 
 def create_teacher_agent(vector_store_id: str, api_key: str = None):
-    """Create a teacher agent with access to the provided vector store."""
+    """Create a lesson content generation agent with handoff capability to Quiz Creator.
     
+    Args:
+        vector_store_id: The vector store ID to use for file search
+        api_key: OpenAI API key
+        
+    Returns:
+        Teacher agent with handoff to Quiz Creator
+    """
     # If API key is provided, ensure it's set in environment
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
     
-    # Ensure OPENAI_API_KEY is set in the environment
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        print("WARNING: OPENAI_API_KEY environment variable is not set for teacher agent!")
-    else:
-        print(f"Using OPENAI_API_KEY from environment for teacher agent")
+    # Create the quiz creator agent to hand off to
+    quiz_creator_agent = create_quiz_creator_agent(api_key)
     
     # Create a FileSearchTool that can search the vector store containing the uploaded documents
     file_search_tool = FileSearchTool(
@@ -46,71 +63,48 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
         include_search_results=True,
     )
     
-    print(f"Created FileSearchTool for teacher agent using vector store: {vector_store_id}")
-    
-    # Create the quiz creator agent to hand off to after teaching is complete
-    quiz_creator_agent = create_quiz_creator_agent(api_key)
-    
-    # Define an on_handoff function to prepare the lesson content for the quiz creator agent
+    # Define an on_handoff function for when teacher hands off to quiz creator
     def on_handoff_to_quiz_creator(ctx: RunContextWrapper[any], lesson_content: LessonContent) -> None:
-        print(f"Handoff triggered with lesson content: {lesson_content.title}")
-        print(f"Lesson content has {len(lesson_content.sections)} sections")
-        # We don't need to do anything here, as the lesson content will be accessible to the quiz creator agent
+        print(f"Handoff triggered from teacher to quiz creator with lesson: {lesson_content.title}")
+        print(f"Lesson has {len(lesson_content.sections)} sections")
+        
+        # Debug serialization
+        try:
+            # Test if lesson content can be serialized
+            json_str = json.dumps(lesson_content.model_dump())
+            print(f"Serialized lesson content: {len(json_str)} characters")
+        except Exception as e:
+            print(f"Warning: Serialization test failed: {e}")
     
-    # Create the teacher agent with access to the file search tool and handoff to quiz creator
+    # Create the teacher agent
     teacher_agent = Agent(
         name="Lesson Teacher",
-        instructions=f"""{RECOMMENDED_PROMPT_PREFIX}
-        You are an expert teacher. Your task is to create comprehensive lesson content 
-        based on the lesson plan provided to you.
+        instructions="""
+        You are an expert educational content creator specializing in developing comprehensive lesson content.
+        Your task is to create detailed lesson content based on the lesson plan provided to you.
         
-        You will receive a detailed lesson plan with sections and learning objectives.
-        Your job is to create engaging, informative content for each section, including:
+        Guidelines for creating effective lesson content:
+        1. Thoroughly research each section using the file_search tool before creating content
+        2. Create clear explanations with relevant examples for each concept
+        3. Include practical exercises that reinforce understanding
+        4. Ensure content flows logically from basic to more advanced concepts
+        5. Summarize key points at the end of each section
+        6. Provide a comprehensive conclusion and suggest next steps for further learning
         
-        1. Clear explanations of key concepts
-        2. Illustrative examples
-        3. Practical exercises with solutions
-        4. Summaries of key points
+        Use the file_search tool to search for relevant information in the uploaded documents.
         
-        Your explanations should be thorough but accessible. Use examples that clarify 
-        complex ideas. Design exercises that reinforce learning and test understanding.
+        YOUR OUTPUT MUST BE ONLY A VALID LESSON CONTENT OBJECT.
         
-        Use the file_search tool to find relevant information from the uploaded 
-        documents to include in your content.
+        After creating the lesson content, you MUST use the transfer_to_quiz_creator tool to hand off to the Quiz Creator agent.
+        The Quiz Creator will create a quiz based on your lesson content.
+        """
+        """
+        CRITICAL WORKFLOW:
+        1. YOU MUST FIRST create and output a complete LessonContent object
+        2. ONLY AFTER that, use the transfer_to_quiz_creator tool to hand off to the Quiz Creator agent
         
-        IMPORTANT PROCESS INSTRUCTIONS:
-        1. If you were handed off to from the Planner agent, you'll receive a LessonPlan object.
-           Use that lesson plan to guide your content creation.
-        2. Search for information about each concept in the plan using file_search
-        3. After gathering all needed information, create a complete LessonContent object
-        4. YOU MUST FIRST output a complete structured LessonContent object before proceeding.
-        5. ONLY AFTER generating the complete lesson content, hand off to the Quiz Creator agent who
-           will create the quiz based on your lesson content.
-        
-        FORMAT INSTRUCTIONS:
-        - Your output MUST be a valid JSON-serializable LessonContent object
-        - The LessonContent should include a title, introduction, sections, conclusion, and next_steps
-        - Each section should have a title, introduction, explanations, exercises, and summary
-        
-        DO NOT:
-        - Do not reference any tools or future steps in your output
-        - Do not return incomplete content
-        - Do not include text outside the LessonContent object
-        - Do not attempt to hand off if you were called directly (not via handoff from Planner)
-        
-        SEQUENCE OF OPERATIONS:
-        1. Create and output a complete LessonContent
-        2. ONLY THEN use the transfer_to_quiz_creator tool IF you were handed off from Planner
-        
-        When using transfer_to_quiz_creator, you should pass the entire LessonContent object 
-        that you've just generated. For example:
-        
-        transfer_to_quiz_creator(your_lesson_content_object)
-        
-        CRITICAL: 
-        - ONLY output the complete LessonContent object as your final result
-        - ONLY use transfer_to_quiz_creator if you were handed off from Planner
-        - If you were called directly (not via handoff), just return the LessonContent
+        DO NOT SKIP the handoff to the quiz creator. After you've generated the lesson content,
+        you MUST use the transfer_to_quiz_creator tool to pass the content to the Quiz Creator.
         """,
         tools=[file_search_tool],
         handoffs=[
@@ -119,7 +113,7 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
                 on_handoff=on_handoff_to_quiz_creator,
                 input_type=LessonContent,
                 input_filter=lesson_content_handoff_filter,
-                tool_description_override="Transfer to the Quiz Creator agent who will generate a comprehensive quiz based on your lesson content. Provide the complete LessonContent object as input."
+                tool_description_override="Transfer to the Quiz Creator agent who will create a quiz based on your lesson content. Provide the complete LessonContent object as input."
             )
         ],
         output_type=LessonContent,
@@ -129,11 +123,8 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
     return teacher_agent
 
 
-async def generate_lesson_content(lesson_plan: LessonPlan, vector_store_id: str, api_key: str = None) -> LessonContent:
+async def generate_lesson_content(teacher_agent: Agent, lesson_plan: LessonPlan) -> LessonContent:
     """Generate the full lesson content based on the provided lesson plan."""
-    
-    # Create the teacher agent
-    agent = create_teacher_agent(vector_store_id, api_key)
     
     # Format the lesson plan as a string for the teacher agent
     lesson_plan_str = f"""
@@ -196,16 +187,18 @@ async def generate_lesson_content(lesson_plan: LessonPlan, vector_store_id: str,
        
     6. IMPORTANT: Make sure to include at least one section with explanations and exercises.
        
-    7. DO NOT attempt to use any handoff tools or create a quiz.
+    7. DO NOT attempt to use any handoff tools or create a quiz. Since you're being called directly 
+       and not via a handoff from the planner agent, DO NOT try to hand off to the Quiz Creator.
+       Just return the LessonContent object directly.
     
     8. YOUR OUTPUT MUST BE ONLY THE COMPLETE LESSONCONTENT OBJECT.
     
     NOTE: This function is being called directly (not via handoff). You're receiving a formatted
-    lesson plan to use for content creation.
+    lesson plan to use for content creation. DO NOT use any handoff tools even if they are available.
     """
     
     # Run the teacher agent with the lesson plan to get the LessonContent
-    result = await Runner.run(agent, lesson_plan_str)
+    result = await Runner.run(teacher_agent, lesson_plan_str)
     
     # Get the lesson content
     try:

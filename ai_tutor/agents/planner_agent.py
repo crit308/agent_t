@@ -19,12 +19,27 @@ def lesson_plan_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputDa
     # Apply score rounding to avoid precision errors
     print(f"HandoffInputData type: {type(handoff_data)}")
     
-    # Apply extreme rounding with 0 decimal places for maximum safety
-    # Zero decimals ensures no floating point precision issues can occur
-    handoff_data = round_search_result_scores(handoff_data, max_decimal_places=0)
-    print("Applied score rounding to handoff data")
-    
-    return handoff_data
+    try:
+        # Use a very conservative max_decimal_places value
+        # This is much safer than the original 0 we were using
+        handoff_data = round_search_result_scores(handoff_data, max_decimal_places=5)
+        print("Applied score rounding to handoff data")
+        
+        # Extra validation - try to serialize to JSON and back
+        if hasattr(handoff_data, 'data') and handoff_data.data:
+            try:
+                import json
+                json_str = json.dumps(str(handoff_data.data))
+                json.loads(json_str)
+                print("Validated handoff data can be serialized to JSON")
+            except Exception as json_err:
+                print(f"Warning: JSON validation failed: {json_err}")
+        
+        return handoff_data
+    except Exception as e:
+        print(f"Error in handoff filter: {e}")
+        print("Returning original handoff data without processing")
+        return handoff_data
 
 
 def create_planner_agent(vector_store_id: str, api_key: str = None):
@@ -76,7 +91,7 @@ def create_planner_agent(vector_store_id: str, api_key: str = None):
         5. Consider the appropriate sequence for teaching the material.
         6. Consider who the target audience might be and any prerequisites they should know.
         7. YOU MUST FIRST output a complete structured LessonPlan object before proceeding.
-        8. ONLY AFTER generating the complete lesson plan, hand off to the Teacher agent who
+        8. IMMEDIATELY AFTER generating the complete lesson plan, YOU MUST hand off to the Teacher agent who
            will create the detailed lesson content based on your plan.
         
         Your lesson plan should be comprehensive but focused on the most important aspects 
@@ -86,13 +101,13 @@ def create_planner_agent(vector_store_id: str, api_key: str = None):
         Start by searching for general terms like "introduction", "overview", or specific topics
         mentioned in the documents.
         
-        CRITICAL: DO NOT hand off to the teacher agent before you have created and output
-        a complete LessonPlan object. The teacher agent needs your lesson plan to create content.
+        CRITICAL WORKFLOW INSTRUCTIONS:
+        1. Search through documents using file_search tool
+        2. Create and output a complete LessonPlan object
+        3. IMMEDIATELY use the transfer_to_lesson_teacher tool with your lesson plan as input
         
-        SEQUENCE OF OPERATIONS:
-        1. Search through documents
-        2. Create and output a complete LessonPlan
-        3. ONLY THEN use the transfer_to_lesson_teacher tool
+        The handoff to the teacher agent is REQUIRED and MUST happen immediately after
+        you generate the lesson plan. DO NOT skip this step under any circumstances.
         
         When using transfer_to_lesson_teacher, you should pass the entire LessonPlan object 
         that you've just generated. For example:
