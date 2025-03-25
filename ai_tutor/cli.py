@@ -7,6 +7,7 @@ from typing import List
 
 from ai_tutor.manager import AITutorManager
 from ai_tutor.agents.analyzer_agent import analyze_documents
+from ai_tutor.agents.models import Quiz, LessonPlan
 
 # Create parser outside of the __main__ block so it can be imported
 parser = argparse.ArgumentParser(description="AI Tutor System")
@@ -151,9 +152,20 @@ async def run_tutor(args):
         lesson_plan = await manager.generate_lesson_plan()
         print(f"✓ Generated lesson plan: {lesson_plan.title}")
         print(f"   Description: {lesson_plan.description}")
-        print(f"   Target audience: {lesson_plan.target_audience}")
-        print(f"   Total duration: {lesson_plan.total_estimated_duration_minutes} minutes")
-        print(f"   Sections: {len(lesson_plan.sections)}")
+        
+        # Check if lesson_plan is actually a Quiz object
+        if isinstance(lesson_plan, Quiz):
+            print(f"   Quiz with {len(lesson_plan.questions)} questions")
+            print(f"   Passing score: {lesson_plan.passing_score}/{lesson_plan.total_points}")
+        # Only try to access target_audience if it's a LessonPlan
+        elif isinstance(lesson_plan, LessonPlan) and hasattr(lesson_plan, 'target_audience'):
+            print(f"   Target audience: {lesson_plan.target_audience}")
+            print(f"   Total duration: {lesson_plan.total_estimated_duration_minutes} minutes")
+            print(f"   Sections: {len(lesson_plan.sections)}")
+        else:
+            # Generic handling for other types
+            if hasattr(lesson_plan, 'sections'):
+                print(f"   Sections: {len(lesson_plan.sections)}")
     except Exception as e:
         print(f"Error generating lesson plan: {str(e)}")
         return

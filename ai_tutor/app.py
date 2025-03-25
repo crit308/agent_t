@@ -9,6 +9,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from ai_tutor.manager import AITutorManager
+from ai_tutor.agents.models import Quiz, LessonPlan
 
 # Set page config
 st.set_page_config(
@@ -149,13 +150,28 @@ elif st.session_state.step == 3:
         st.subheader("Lesson Plan")
         st.write(f"**Title:** {st.session_state.lesson_plan.title}")
         st.write(f"**Description:** {st.session_state.lesson_plan.description}")
-        st.write(f"**Target Audience:** {st.session_state.lesson_plan.target_audience}")
-        st.write(f"**Total Duration:** {st.session_state.lesson_plan.total_estimated_duration_minutes} minutes")
         
-        st.subheader("Sections")
-        for i, section in enumerate(st.session_state.lesson_plan.sections):
-            st.write(f"**{i+1}. {section.title}** ({section.estimated_duration_minutes} min)")
-            st.write(section.learning_objectives)
+        # Check if lesson_plan is actually a Quiz object
+        if isinstance(st.session_state.lesson_plan, Quiz):
+            st.write(f"**Quiz with {len(st.session_state.lesson_plan.questions)} questions**")
+            st.write(f"**Passing score:** {st.session_state.lesson_plan.passing_score}/{st.session_state.lesson_plan.total_points}")
+            
+            # Display quiz questions preview
+            st.subheader("Questions Preview")
+            for i, question in enumerate(st.session_state.lesson_plan.questions[:3]):  # Show first 3 questions
+                st.write(f"**{i+1}. {question.question}**")
+                if i >= 2 and len(st.session_state.lesson_plan.questions) > 3:
+                    st.write(f"*... and {len(st.session_state.lesson_plan.questions) - 3} more questions*")
+                    break
+        # Only try to access target_audience if it's a LessonPlan
+        elif isinstance(st.session_state.lesson_plan, LessonPlan):
+            st.write(f"**Target Audience:** {st.session_state.lesson_plan.target_audience}")
+            st.write(f"**Total Duration:** {st.session_state.lesson_plan.total_estimated_duration_minutes} minutes")
+            
+            st.subheader("Sections")
+            for i, section in enumerate(st.session_state.lesson_plan.sections):
+                st.write(f"**{i+1}. {section.title}** ({section.estimated_duration_minutes} min)")
+                st.write(section.learning_objectives)
     
     if st.button("Generate Lesson Content"):
         lesson_content = asyncio.run(generate_lesson())

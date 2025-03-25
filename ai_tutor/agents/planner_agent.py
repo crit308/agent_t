@@ -20,8 +20,11 @@ def lesson_plan_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputDa
     print("Applying handoff filter to pass lesson plan to teacher agent")
     print(f"HandoffInputData type: {type(handoff_data)}")
     
-    # Return the data as is, the utility function will be fixed
-    return handoff_data
+    # Apply the round_search_result_scores function to fix decimal places in scores
+    processed_data = round_search_result_scores(handoff_data)
+    print("Applied score rounding to handoff data")
+    
+    return processed_data
 
 
 def create_planner_agent(vector_store_id: str, api_key: str = None):
