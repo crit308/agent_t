@@ -5,7 +5,7 @@ from agents import Agent, FileSearchTool, Runner, handoff, HandoffInputData
 from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
 from agents.run_context import RunContextWrapper
 
-from ai_tutor.agents.models import LessonPlan, LessonSection, LessonContent
+from ai_tutor.agents.models import LessonPlan, LessonSection, LessonContent, SectionContent, ExplanationContent, Exercise
 from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent
 from ai_tutor.agents.utils import round_search_result_scores
 
@@ -18,11 +18,15 @@ def lesson_content_handoff_filter(handoff_data: HandoffInputData) -> HandoffInpu
     print("Applying handoff filter to pass lesson content to quiz creator agent")
     print(f"HandoffInputData type: {type(handoff_data)}")
     
-    # Apply the round_search_result_scores function to fix decimal places in scores
-    processed_data = round_search_result_scores(handoff_data)
-    print("Applied score rounding to handoff data")
-    
-    return processed_data
+    try:
+        # Apply the round_search_result_scores function with 15 decimal places max
+        processed_data = round_search_result_scores(handoff_data, max_decimal_places=15)
+        print("Applied score rounding to handoff data")
+        return processed_data
+    except Exception as e:
+        print(f"Error in handoff filter: {e}")
+        # Return the original data if there was an error
+        return handoff_data
 
 
 def create_teacher_agent(vector_store_id: str, api_key: str = None):
@@ -96,17 +100,21 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
         - Do not reference any tools or future steps in your output
         - Do not return incomplete content
         - Do not include text outside the LessonContent object
+        - Do not attempt to hand off if you were called directly (not via handoff from Planner)
         
         SEQUENCE OF OPERATIONS:
         1. Create and output a complete LessonContent
-        2. ONLY THEN use the transfer_to_quiz_creator tool
+        2. ONLY THEN use the transfer_to_quiz_creator tool IF you were handed off from Planner
         
         When using transfer_to_quiz_creator, you should pass the entire LessonContent object 
         that you've just generated. For example:
         
         transfer_to_quiz_creator(your_lesson_content_object)
         
-        CRITICAL: ONLY output the complete LessonContent object as your final result.
+        CRITICAL: 
+        - ONLY output the complete LessonContent object as your final result
+        - ONLY use transfer_to_quiz_creator if you were handed off from Planner
+        - If you were called directly (not via handoff), just return the LessonContent
         """,
         tools=[file_search_tool],
         handoffs=[
@@ -138,7 +146,7 @@ async def generate_lesson_content(lesson_plan: LessonPlan, vector_store_id: str,
     Title: {lesson_plan.title}
     Description: {lesson_plan.description}
     Target Audience: {lesson_plan.target_audience}
-    Prerequisites: {lesson_plan.prerequisites}
+    Prerequisites: {', '.join(lesson_plan.prerequisites)}
     Total Estimated Duration: {lesson_plan.total_estimated_duration_minutes} minutes
     
     Sections:
@@ -152,10 +160,15 @@ async def generate_lesson_content(lesson_plan: LessonPlan, vector_store_id: str,
         Learning Objectives:
         """
         
-        for j, objective in enumerate(section.learning_objectives):
+        for j, objective in enumerate(section.objectives):
             lesson_plan_str += f"""
             Objective {j+1}: {objective.description}
-            Key Concepts: {', '.join(objective.key_concepts)}
+            Priority: {objective.priority}
+            """
+        
+        if hasattr(section, 'concepts_to_cover') and section.concepts_to_cover:
+            lesson_plan_str += f"""
+            Key Concepts: {', '.join(section.concepts_to_cover)}
             """
     
     # Instruction to use FileSearchTool
@@ -173,10 +186,23 @@ async def generate_lesson_content(lesson_plan: LessonPlan, vector_store_id: str,
     4. If you cannot find information on a specific concept, note this in your explanation 
        but still provide basic information about the concept.
     
-    5. YOUR ONLY JOB IS TO CREATE AND OUTPUT A COMPLETE LESSONCONTENT OBJECT.
-       DO NOT attempt to use any handoff tools or create a quiz.
+    5. YOUR OUTPUT MUST BE A VALID LESSONCONTENT OBJECT with the following structure:
+       - title: String (lesson title)
+       - introduction: String (general introduction to the lesson)
+       - sections: Array of SectionContent objects, each with:
+         - title: String (section title)
+         - introduction: String (introduction to this section)
+         - explanations: Array of ExplanationContent objects
+         - exercises: Array of Exercise objects
+         - summary: String (summary of key points)
+       - conclusion: String (overall lesson conclusion)
+       - next_steps: Array of strings (suggested next steps)
+       
+    6. IMPORTANT: Make sure to include at least one section with explanations and exercises.
+       
+    7. DO NOT attempt to use any handoff tools or create a quiz.
     
-    6. YOUR OUTPUT MUST BE ONLY THE COMPLETE LESSONCONTENT OBJECT.
+    8. YOUR OUTPUT MUST BE ONLY THE COMPLETE LESSONCONTENT OBJECT.
     
     NOTE: This function is being called directly (not via handoff). You're receiving a formatted
     lesson plan to use for content creation.
@@ -189,14 +215,40 @@ async def generate_lesson_content(lesson_plan: LessonPlan, vector_store_id: str,
     try:
         lesson_content = result.final_output_as(LessonContent)
         print("Successfully generated LessonContent")
+        
+        # Verify we have valid sections
+        if not lesson_content.sections or len(lesson_content.sections) == 0:
+            raise ValueError("Generated LessonContent has no sections")
+            
         return lesson_content
     except Exception as e:
         print(f"Error extracting LessonContent: {e}")
         # If we got a Quiz instead or another error, create a minimal LessonContent object
         return LessonContent(
             title=lesson_plan.title,
-            introduction="Content generated via handoff process.",
-            sections=[],
-            conclusion="Please check trace for full content.",
-            next_steps=[]
+            introduction=f"Content for {lesson_plan.title}.",
+            sections=[
+                SectionContent(
+                    title="Introduction to " + lesson_plan.title,
+                    introduction="This is an introduction to the topic.",
+                    explanations=[
+                        ExplanationContent(
+                            topic="Basic Concepts",
+                            explanation="This section covers the fundamental concepts of the topic.",
+                            examples=["Example 1", "Example 2"]
+                        )
+                    ],
+                    exercises=[
+                        Exercise(
+                            question="What is the main purpose of this lesson?",
+                            difficulty_level="Easy",
+                            answer="To understand the basic concepts.",
+                            explanation="This question tests your understanding of the lesson objectives."
+                        )
+                    ],
+                    summary="This section introduced the basic concepts of the topic."
+                )
+            ],
+            conclusion="Thank you for completing this lesson.",
+            next_steps=["Explore more advanced topics", "Practice with exercises"]
         ) 

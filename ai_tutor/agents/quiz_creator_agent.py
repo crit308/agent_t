@@ -1,13 +1,32 @@
 import os
 import openai
 
-from agents import Agent, Runner
+from agents import Agent, Runner, handoff, HandoffInputData
+from agents.run_context import RunContextWrapper
 
 from ai_tutor.agents.models import LessonContent, Quiz
+from ai_tutor.agents.utils import round_search_result_scores
+from ai_tutor.agents.quiz_teacher_agent import create_quiz_teacher_agent
+
+
+def quiz_to_teacher_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
+    """Filter function for handoff from quiz creator to quiz teacher agent."""
+    print("Applying handoff filter to pass quiz to quiz teacher agent")
+    print(f"HandoffInputData type: {type(handoff_data)}")
+    
+    try:
+        # Apply the round_search_result_scores function with 15 decimal places max
+        processed_data = round_search_result_scores(handoff_data, max_decimal_places=15)
+        print("Applied score rounding to handoff data")
+        return processed_data
+    except Exception as e:
+        print(f"Error in handoff filter: {e}")
+        # Return the original data if there was an error
+        return handoff_data
 
 
 def create_quiz_creator_agent(api_key: str = None):
-    """Create a quiz creator agent."""
+    """Create a basic quiz creator agent without handoff capability."""
     
     # If API key is provided, ensure it's set in environment
     if api_key:
@@ -46,10 +65,82 @@ def create_quiz_creator_agent(api_key: str = None):
     return quiz_creator_agent
 
 
-async def generate_quiz(lesson_content: LessonContent, api_key: str = None) -> Quiz:
-    """Generate a quiz based on the provided lesson content."""
+def create_quiz_creator_agent_with_teacher_handoff(api_key: str = None):
+    """Create a quiz creator agent with handoff capability to the quiz teacher."""
+    
+    # If API key is provided, ensure it's set in environment
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
+    
+    # Ensure OPENAI_API_KEY is set in the environment
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("WARNING: OPENAI_API_KEY environment variable is not set for quiz creator agent!")
+    else:
+        print(f"Using OPENAI_API_KEY from environment for quiz creator agent")
+    
+    # Create the quiz teacher agent to hand off to
+    quiz_teacher_agent = create_quiz_teacher_agent(api_key)
+    
+    # Define an on_handoff function for when quiz creator hands off to quiz teacher
+    def on_handoff_to_quiz_teacher(ctx: RunContextWrapper[any], quiz: Quiz) -> None:
+        print(f"Handoff triggered from quiz creator to quiz teacher: {quiz.title}")
+        print(f"Quiz has {len(quiz.questions)} questions")
+    
     # Create the quiz creator agent
-    agent = create_quiz_creator_agent(api_key)
+    quiz_creator_agent = Agent(
+        name="Quiz Creator",
+        instructions="""
+        You are an expert educational assessment designer specialized in creating effective quizzes.
+        Your task is to create a comprehensive quiz based on the lesson content provided to you.
+        
+        Guidelines for creating effective quiz questions:
+        1. Create a mix of easy, medium, and hard questions that cover all key concepts from the lesson
+        2. Ensure questions are clear, unambiguous, and test understanding rather than just memorization
+        3. For multiple-choice questions, create plausible distractors that represent common misconceptions
+        4. Include detailed explanations for the correct answers that reinforce learning
+        5. Distribute questions across all sections of the lesson to ensure comprehensive coverage
+        6. Target approximately 2-3 questions per lesson section
+        
+        Format your response as a structured Quiz object.
+        
+        YOUR OUTPUT MUST BE ONLY A VALID QUIZ OBJECT.
+        
+        After generating the quiz, use the transfer_to_quiz_teacher tool to hand off to the Quiz Teacher agent
+        which will evaluate user responses and provide feedback.
+        """,
+        handoffs=[
+            handoff(
+                agent=quiz_teacher_agent,
+                on_handoff=on_handoff_to_quiz_teacher,
+                input_type=Quiz,
+                input_filter=quiz_to_teacher_handoff_filter,
+                tool_description_override="Transfer to the Quiz Teacher agent who will evaluate user responses and provide feedback. Provide the complete Quiz object as input."
+            )
+        ],
+        output_type=Quiz,
+        model="o3-mini",
+    )
+    
+    return quiz_creator_agent
+
+
+async def generate_quiz(lesson_content: LessonContent, api_key: str = None, enable_teacher_handoff: bool = False) -> Quiz:
+    """Generate a quiz based on the provided lesson content.
+    
+    Args:
+        lesson_content: The lesson content to base the quiz on
+        api_key: Optional OpenAI API key
+        enable_teacher_handoff: Whether to enable handoff to the quiz teacher agent
+        
+    Returns:
+        Quiz object
+    """
+    # Create the quiz creator agent
+    if enable_teacher_handoff:
+        agent = create_quiz_creator_agent_with_teacher_handoff(api_key)
+    else:
+        agent = create_quiz_creator_agent(api_key)
     
     # Check if the lesson content has sections
     if not hasattr(lesson_content, 'sections') or len(lesson_content.sections) == 0:

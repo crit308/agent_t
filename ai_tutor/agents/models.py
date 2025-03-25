@@ -79,4 +79,43 @@ class LessonPlan(BaseModel):
     prerequisites: List[str] = Field(description="Prerequisites that students should know before taking this lesson")
     sections: List[LessonSection] = Field(description="The sections that make up this lesson plan")
     total_estimated_duration_minutes: int = Field(description="Total estimated time to complete the lesson")
-    additional_resources: List[str] = Field(description="Additional resources that might help students") 
+    additional_resources: List[str] = Field(description="Additional resources that might help students")
+
+
+class QuizUserAnswer(BaseModel):
+    """A single user answer to a quiz question."""
+    question_index: int = Field(description="Index of the question in the quiz questions list")
+    selected_option_index: int = Field(description="Index of the option selected by the user")
+    time_taken_seconds: int = Field(description="Time taken to answer the question in seconds")
+
+
+class QuizUserAnswers(BaseModel):
+    """Collection of user answers to a quiz."""
+    quiz_title: str = Field(description="Title of the quiz being answered")
+    user_answers: List[QuizUserAnswer] = Field(description="List of user answers to quiz questions")
+    total_time_taken_seconds: int = Field(description="Total time taken to complete the quiz in seconds")
+
+
+class QuizFeedbackItem(BaseModel):
+    """Feedback for a single user answer."""
+    question_index: int = Field(description="Index of the question in the quiz questions list")
+    question_text: str = Field(description="The text of the question")
+    user_selected_option: str = Field(description="The option selected by the user")
+    is_correct: bool = Field(description="Whether the user's answer is correct")
+    correct_option: str = Field(description="The correct option")
+    explanation: str = Field(description="Explanation of the correct answer")
+    improvement_suggestion: str = Field(description="Suggestion for improving understanding if the answer was incorrect")
+
+
+class QuizFeedback(BaseModel):
+    """Complete feedback for a user's quiz answers."""
+    quiz_title: str = Field(description="Title of the quiz")
+    total_questions: int = Field(description="Total number of questions in the quiz")
+    correct_answers: int = Field(description="Number of questions answered correctly")
+    score_percentage: float = Field(description="Percentage score (0-100)")
+    passed: bool = Field(description="Whether the user passed the quiz based on passing score")
+    total_time_taken_seconds: int = Field(description="Total time taken to complete the quiz in seconds")
+    feedback_items: List[QuizFeedbackItem] = Field(description="Feedback for each answer")
+    overall_feedback: str = Field(description="Overall feedback on the quiz performance")
+    suggested_study_topics: List[str] = Field(description="Topics suggested for further study")
+    next_steps: List[str] = Field(description="Recommended next steps for learning") 

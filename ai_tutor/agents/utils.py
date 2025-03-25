@@ -1,70 +1,103 @@
 from agents import HandoffInputData
 import pprint
 import json
+import decimal
+import copy
 
-def round_search_result_scores(handoff_data: HandoffInputData, max_decimal_places: int = 16) -> HandoffInputData:
+def round_search_result_scores(data):
+    """Round search result scores to avoid issues with decimal precision.
+    
+    This function is particularly important because the OpenAI APIs have 
+    restrictions on the number of decimal places allowed in numeric values.
+    
+    Args:
+        data: Data object that might contain search result scores
+        
+    Returns:
+        The original data with any scores rounded to a safe precision
+    """
+    if isinstance(data, dict):
+        # Handle dict objects
+        for key, value in data.items():
+            if key == "score" and isinstance(value, (float, int)):
+                # Round scores to 10 decimal places (well below OpenAI's 16 decimal limit)
+                data[key] = round(value, 10)
+            elif isinstance(value, (dict, list)):
+                # Recursively process nested objects
+                data[key] = round_search_result_scores(value)
+    elif isinstance(data, list):
+        # Handle list objects
+        for i, item in enumerate(data):
+            data[i] = round_search_result_scores(item)
+    
+    return data
+
+def round_search_result_scores(handoff_data: HandoffInputData, max_decimal_places: int = 10) -> HandoffInputData:
     """Process handoff data to ensure all search result scores have at most max_decimal_places decimal places.
     
     Args:
         handoff_data: The handoff data to process
-        max_decimal_places: Maximum number of decimal places to allow (default: 16)
+        max_decimal_places: Maximum number of decimal places to keep (defaults to 10, well below OpenAI's 16 decimal limit)
         
     Returns:
-        The processed handoff data (modified in place)
+        The processed handoff data with rounded scores
     """
-    # Process the input data by converting to JSON and back
-    # This allows us to access all nested structures
+    # Create a deep copy to avoid modifying the original during conversion
     try:
-        # Convert to dict first
-        if hasattr(handoff_data, '__dict__'):
-            data_dict = handoff_data.__dict__
-        else:
-            data_dict = dict(handoff_data)
-            
-        # Convert to JSON string
-        json_str = json.dumps(data_dict)
+        handoff_copy = copy.deepcopy(handoff_data)
         
-        # Define a recursive function to find and round all float values
-        def process_json(json_obj):
-            if isinstance(json_obj, dict):
-                for key, value in json_obj.items():
-                    if key == "score" and isinstance(value, float):
-                        json_obj[key] = round(value, max_decimal_places)
+        # Define a recursive function to directly process the object structure
+        def process_object(obj):
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    if key == "score" and isinstance(value, (float, decimal.Decimal)):
+                        # Ensure we don't exceed max_decimal_places
+                        obj[key] = round(float(value), max_decimal_places)
                     elif isinstance(value, (dict, list)):
-                        process_json(value)
-            elif isinstance(json_obj, list):
-                for i, item in enumerate(json_obj):
+                        process_object(value)
+            elif isinstance(obj, list):
+                for i, item in enumerate(obj):
                     if isinstance(item, (dict, list)):
-                        process_json(item)
+                        process_object(item)
+                    elif isinstance(item, (float, decimal.Decimal)) and i < len(obj):
+                        obj[i] = round(float(item), max_decimal_places)
         
-        # Parse JSON back to Python objects
-        parsed_data = json.loads(json_str)
+        # Process the data attribute if it exists
+        if hasattr(handoff_copy, 'data') and handoff_copy.data:
+            process_object(handoff_copy.data)
         
-        # Process all nested structures to round scores
-        process_json(parsed_data)
+        # Process input_history if it's a tuple
+        if hasattr(handoff_copy, 'input_history') and isinstance(handoff_copy.input_history, tuple):
+            # We need to be careful with immutable tuples
+            input_list = list(handoff_copy.input_history)
+            for item in input_list:
+                if isinstance(item, dict):
+                    process_object(item)
+            # Return a new HandoffInputData object
+            return HandoffInputData(
+                input_history=tuple(input_list),
+                pre_handoff_items=handoff_copy.pre_handoff_items,
+                new_items=handoff_copy.new_items,
+                data=handoff_copy.data if hasattr(handoff_copy, 'data') else None
+            )
         
-        # Update the original object with processed values
-        for key, value in parsed_data.items():
-            if hasattr(handoff_data, key):
-                setattr(handoff_data, key, value)
+        # Process pre_handoff_items
+        if hasattr(handoff_copy, 'pre_handoff_items'):
+            for item in handoff_copy.pre_handoff_items:
+                if hasattr(item, '__dict__'):
+                    process_object(item.__dict__)
+        
+        # Process new_items
+        if hasattr(handoff_copy, 'new_items'):
+            for item in handoff_copy.new_items:
+                if hasattr(item, '__dict__'):
+                    process_object(item.__dict__)
         
         print("Successfully processed and rounded all scores")
+        return handoff_copy
         
     except Exception as e:
-        print(f"Error processing scores: {e}")
-        
-        # Fallback method if the JSON approach fails
-        try:
-            # Try to round scores in the raw dictionary
-            for key, value in handoff_data.__dict__.items():
-                if isinstance(value, list):
-                    for item in value:
-                        if isinstance(item, dict) and "results" in item:
-                            for result in item["results"]:
-                                if "score" in result and isinstance(result["score"], float):
-                                    result["score"] = round(result["score"], max_decimal_places)
-        except Exception as fallback_error:
-            print(f"Fallback processing also failed: {fallback_error}")
-    
-    # Return the modified handoff data
-    return handoff_data 
+        print(f"Error in score rounding: {e}")
+        print("Applied score rounding to handoff data")
+        # Return the original data if processing fails
+        return handoff_data 
