@@ -9,7 +9,7 @@ from agents.run_context import RunContextWrapper
 
 from ai_tutor.agents.teacher_agent import create_teacher_agent
 from ai_tutor.agents.models import LearningObjective, LessonSection, LessonPlan
-from ai_tutor.agents.utils import round_search_result_scores
+from ai_tutor.agents.utils import round_search_result_scores, fix_search_result_scores
 
 
 def lesson_plan_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
@@ -20,8 +20,16 @@ def lesson_plan_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputDa
     print(f"HandoffInputData type: {type(handoff_data)}")
     
     try:
-        # Use a very conservative max_decimal_places value
-        # This is much safer than the original 0 we were using
+        # Import fix_search_result_scores function for direct precision control
+        from ai_tutor.agents.utils import fix_search_result_scores
+        
+        # First apply the new direct fix for all data structures in handoff_data
+        # This will recursively process all nested dictionaries and arrays
+        handoff_data = fix_search_result_scores(handoff_data, max_decimal_places=8)
+        print("Applied direct fix to all data structures in handoff_data")
+        
+        # For compatibility, also apply the regular score rounding
+        from ai_tutor.agents.utils import round_search_result_scores
         handoff_data = round_search_result_scores(handoff_data, max_decimal_places=5)
         print("Applied score rounding to handoff data")
         
@@ -29,7 +37,10 @@ def lesson_plan_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputDa
         if hasattr(handoff_data, 'data') and handoff_data.data:
             try:
                 import json
-                json_str = json.dumps(str(handoff_data.data))
+                from ai_tutor.agents.models import PrecisionControlEncoder
+                
+                # Use our custom encoder to enforce precision limits
+                json_str = json.dumps(handoff_data.data, cls=PrecisionControlEncoder, max_decimals=8)
                 json.loads(json_str)
                 print("Validated handoff data can be serialized to JSON")
             except Exception as json_err:

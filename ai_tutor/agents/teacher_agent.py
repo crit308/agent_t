@@ -8,7 +8,7 @@ from agents.run_context import RunContextWrapper
 
 from ai_tutor.agents.models import LessonPlan, LessonSection, LessonContent, SectionContent, ExplanationContent, Exercise
 from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent
-from ai_tutor.agents.utils import round_search_result_scores
+from ai_tutor.agents.utils import round_search_result_scores, fix_search_result_scores
 
 
 def lesson_content_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
@@ -19,6 +19,15 @@ def lesson_content_handoff_filter(handoff_data: HandoffInputData) -> HandoffInpu
     print(f"HandoffInputData type: {type(handoff_data)}")
     
     try:
+        # Import fix_search_result_scores function for direct precision control
+        from ai_tutor.agents.utils import fix_search_result_scores
+        
+        # First apply the new direct fix for all data structures in handoff_data
+        # This will recursively process all nested dictionaries and arrays
+        handoff_data = fix_search_result_scores(handoff_data, max_decimal_places=8)
+        print("Applied direct fix to all data structures in handoff_data")
+        
+        # For compatibility, also apply the regular score rounding
         # Use a very conservative max_decimal_places value
         handoff_data = round_search_result_scores(handoff_data, max_decimal_places=5)
         print("Applied score rounding to handoff data")
@@ -26,7 +35,11 @@ def lesson_content_handoff_filter(handoff_data: HandoffInputData) -> HandoffInpu
         # Extra validation - try to serialize to JSON and back
         if hasattr(handoff_data, 'data') and handoff_data.data:
             try:
-                json_str = json.dumps(str(handoff_data.data))
+                import json
+                from ai_tutor.agents.models import PrecisionControlEncoder
+                
+                # Use our custom encoder to enforce precision limits
+                json_str = json.dumps(handoff_data.data, cls=PrecisionControlEncoder, max_decimals=8)
                 json.loads(json_str)
                 print("Validated handoff data can be serialized to JSON")
             except Exception as json_err:
@@ -116,6 +129,58 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
                 tool_description_override="Transfer to the Quiz Creator agent who will create a quiz based on your lesson content. Provide the complete LessonContent object as input."
             )
         ],
+        output_type=LessonContent,
+        model="o3-mini",
+    )
+    
+    return teacher_agent
+
+
+def create_teacher_agent_without_handoffs(vector_store_id: str, api_key: str = None):
+    """Create a lesson content generation agent WITHOUT handoff capability to Quiz Creator.
+    
+    This version should be used when a Quiz has already been created via handoff chain,
+    to avoid creating duplicate workflows.
+    
+    Args:
+        vector_store_id: The vector store ID to use for file search
+        api_key: OpenAI API key
+        
+    Returns:
+        Teacher agent without handoff capabilities
+    """
+    # If API key is provided, ensure it's set in environment
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
+    
+    # Create a FileSearchTool that can search the vector store containing the uploaded documents
+    file_search_tool = FileSearchTool(
+        vector_store_ids=[vector_store_id],
+        max_num_results=5,
+        include_search_results=True,
+    )
+    
+    # Create the teacher agent without handoffs
+    teacher_agent = Agent(
+        name="Lesson Teacher",
+        instructions="""
+        You are an expert educational content creator specializing in developing comprehensive lesson content.
+        Your task is to create detailed lesson content based on the lesson plan provided to you.
+        
+        Guidelines for creating effective lesson content:
+        1. Thoroughly research each section using the file_search tool before creating content
+        2. Create clear explanations with relevant examples for each concept
+        3. Include practical exercises that reinforce understanding
+        4. Ensure content flows logically from basic to more advanced concepts
+        5. Summarize key points at the end of each section
+        6. Provide a comprehensive conclusion and suggest next steps for further learning
+        
+        Use the file_search tool to search for relevant information in the uploaded documents.
+        
+        YOUR OUTPUT MUST BE ONLY A VALID LESSON CONTENT OBJECT.
+        """,
+        tools=[file_search_tool],
+        # No handoffs in this version
         output_type=LessonContent,
         model="o3-mini",
     )

@@ -13,9 +13,11 @@ class PrecisionControlEncoder(json.JSONEncoder):
     
     def encode(self, obj):
         if isinstance(obj, float):
-            # Format float with exact number of decimal places
-            # then convert back to float to avoid string in output
-            return json.JSONEncoder.encode(self, float(f"{obj:.{self.max_decimals}f}"))
+            # First round the value to the desired precision
+            rounded_val = round(obj, self.max_decimals)
+            # Then format to ensure exact precision control
+            formatted_val = float(f"{rounded_val:.{self.max_decimals}f}")
+            return json.JSONEncoder.encode(self, formatted_val)
         return super().encode(obj)
     
     def iterencode(self, obj, _one_shot=False):
@@ -35,8 +37,10 @@ class PrecisionControlEncoder(json.JSONEncoder):
         result = {}
         for k, v in d.items():
             if isinstance(v, float):
-                # Format float with exact decimal places
-                result[k] = float(f"{v:.{self.max_decimals}f}")
+                # First round the value properly
+                rounded_val = round(v, self.max_decimals)
+                # Format with exact decimal places
+                result[k] = float(f"{rounded_val:.{self.max_decimals}f}")
             elif isinstance(v, dict):
                 result[k] = self._process_dict(v)
             elif isinstance(v, list):
@@ -50,8 +54,10 @@ class PrecisionControlEncoder(json.JSONEncoder):
         result = []
         for item in lst:
             if isinstance(item, float):
-                # Format float with exact decimal places
-                result.append(float(f"{item:.{self.max_decimals}f}"))
+                # First round the value properly
+                rounded_val = round(item, self.max_decimals)
+                # Format with exact decimal places
+                result.append(float(f"{rounded_val:.{self.max_decimals}f}"))
             elif isinstance(item, dict):
                 result.append(self._process_dict(item))
             elif isinstance(item, list):

@@ -4,6 +4,111 @@ import json
 import decimal
 import copy
 from decimal import Decimal, getcontext
+import re
+from typing import Any, Dict, List, Union, Tuple
+
+def fix_search_result_scores(data: Any, max_decimal_places: int = 8):
+    """Direct fix for search result scores with too many decimal places.
+    
+    This function directly processes the entire input data structure to find and fix
+    any floating point values, especially focusing on search result scores.
+    
+    Args:
+        data: Any data structure (dict, list, tuple, or scalar)
+        max_decimal_places: Maximum number of decimal places to keep
+        
+    Returns:
+        The processed data with controlled floating point precision
+    """
+    # Handle None
+    if data is None:
+        return None
+        
+    # Handle primitive types
+    if isinstance(data, (int, str, bool)):
+        return data
+        
+    # Handle float values directly
+    if isinstance(data, (float, Decimal)):
+        # First round the value properly
+        rounded_val = round(float(data), max_decimal_places)
+        # Then format to exactly max_decimal_places
+        return float(f"{rounded_val:.{max_decimal_places}f}")
+        
+    # Handle dictionaries
+    if isinstance(data, dict):
+        result = {}
+        for k, v in data.items():
+            # Special handling for search result scores
+            if k == "score" and isinstance(v, (float, Decimal)):
+                # Extra careful processing for score fields
+                result[k] = float(f"{round(float(v), max_decimal_places):.{max_decimal_places}f}")
+            else:
+                # Recursive processing for other fields
+                result[k] = fix_search_result_scores(v, max_decimal_places)
+        return result
+        
+    # Handle lists
+    if isinstance(data, list):
+        return [fix_search_result_scores(item, max_decimal_places) for item in data]
+        
+    # Handle tuples
+    if isinstance(data, tuple):
+        return tuple(fix_search_result_scores(item, max_decimal_places) for item in data)
+    
+    # Special handling for HandoffInputData objects
+    if str(type(data)) == "<class 'agents.handoffs.HandoffInputData'>":
+        print("Processing HandoffInputData object")
+        # Process each attribute of HandoffInputData separately
+        # We cannot modify the object directly, so we'll create a new one
+        
+        # Process input_history
+        input_history = None
+        if hasattr(data, 'input_history') and data.input_history is not None:
+            input_history = fix_search_result_scores(data.input_history, max_decimal_places)
+            
+        # Process pre_handoff_items
+        pre_handoff_items = None
+        if hasattr(data, 'pre_handoff_items') and data.pre_handoff_items is not None:
+            pre_handoff_items = fix_search_result_scores(data.pre_handoff_items, max_decimal_places)
+            
+        # Process new_items
+        new_items = None
+        if hasattr(data, 'new_items') and data.new_items is not None:
+            new_items = fix_search_result_scores(data.new_items, max_decimal_places)
+            
+        # Process data attribute
+        data_attr = None
+        if hasattr(data, 'data') and data.data is not None:
+            data_attr = fix_search_result_scores(data.data, max_decimal_places)
+        
+        # Create a new HandoffInputData object with processed attributes
+        try:
+            return HandoffInputData(
+                input_history=input_history if input_history is not None else data.input_history,
+                pre_handoff_items=pre_handoff_items if pre_handoff_items is not None else data.pre_handoff_items,
+                new_items=new_items if new_items is not None else data.new_items,
+                data=data_attr if data_attr is not None else data.data if hasattr(data, 'data') else None
+            )
+        except Exception as e:
+            print(f"Error creating new HandoffInputData: {e}")
+            return data
+    
+    # For other objects with __dict__ attribute, process their attributes
+    if hasattr(data, "__dict__"):
+        # We create a shallow copy to avoid modifying the original object
+        result = copy.copy(data)
+        
+        for attr_name, attr_value in data.__dict__.items():
+            processed_value = fix_search_result_scores(attr_value, max_decimal_places)
+            try:
+                setattr(result, attr_name, processed_value)
+            except Exception as e:
+                print(f"Warning: Could not set attribute {attr_name}: {e}")
+        return result
+    
+    # Default case: return the original value for any other type
+    return data
 
 def round_search_result_scores(handoff_data: HandoffInputData, max_decimal_places: int = 3) -> HandoffInputData:
     """Process handoff data to ensure all search result scores have at most max_decimal_places decimal places.
@@ -23,21 +128,47 @@ def round_search_result_scores(handoff_data: HandoffInputData, max_decimal_place
         # First, ensure we work with a copy to avoid modifying the original
         data_copy = copy.deepcopy(handoff_data)
         
+        # Strictly enforce 8 decimal places maximum (well below OpenAI's 16 limit)
+        safe_max_decimals = min(8, max_decimal_places)
+        print(f"Using safe_max_decimals: {safe_max_decimals}")
+        
         # Special handler for floating point values
         def format_float(value):
             if not isinstance(value, (float, Decimal)):
                 return value
             
-            # First convert to string with restricted precision
-            # Using fewer decimal places than requested as additional safety
-            safe_decimals = max(0, max_decimal_places - 1)
-            formatted = f"{{:.{safe_decimals}f}}".format(float(value))
+            # Convert to string with restricted precision
+            # Using a safe maximum of 8 decimal places (well below OpenAI's 16 limit)
+            safe_decimals = min(8, max_decimal_places)
             
-            # Then convert back to float
+            # Use round() to properly round the value rather than format string truncation
+            rounded_value = round(float(value), safe_decimals)
+            
+            # Format to string with exactly the number of decimals we want
+            formatted = f"{{:.{safe_decimals}f}}".format(rounded_value)
+            
+            # Convert back to float with controlled precision
             return float(formatted)
         
-        # We need to handle the specific structure mentioned in the error:
-        # input[2].results[0].score
+        # Direct processing of the entire input_history attribute using the special fix function
+        if hasattr(data_copy, 'input_history'):
+            fixed_input_history = fix_search_result_scores(data_copy.input_history, safe_max_decimals)
+            if isinstance(data_copy.input_history, tuple) and isinstance(fixed_input_history, tuple):
+                data_copy.input_history = fixed_input_history
+        
+        # Direct processing of the data attribute
+        if hasattr(data_copy, 'data') and data_copy.data is not None:
+            data_copy.data = fix_search_result_scores(data_copy.data, safe_max_decimals)
+            
+        # Direct processing of pre_handoff_items
+        if hasattr(data_copy, 'pre_handoff_items') and data_copy.pre_handoff_items is not None:
+            data_copy.pre_handoff_items = fix_search_result_scores(data_copy.pre_handoff_items, safe_max_decimals)
+            
+        # Direct processing of new_items
+        if hasattr(data_copy, 'new_items') and data_copy.new_items is not None:
+            data_copy.new_items = fix_search_result_scores(data_copy.new_items, safe_max_decimals)
+        
+        # Legacy processing for compatibility
         if hasattr(data_copy, 'input_history') and isinstance(data_copy.input_history, tuple):
             input_list = list(data_copy.input_history)
             
@@ -54,17 +185,72 @@ def round_search_result_scores(handoff_data: HandoffInputData, max_decimal_place
                         for result in item['results']:
                             if isinstance(result, dict):
                                 process_dict_values(result, format_float)
+                                # Extra direct processing for score field which is known to cause issues
+                                if 'score' in result and isinstance(result['score'], (float, Decimal)):
+                                    result['score'] = format_float(result['score'])
                 elif isinstance(item, list):
                     # Process lists directly
                     process_list_values(item, format_float)
             
             # Create a new HandoffInputData with processed input_history
-            data_copy = HandoffInputData(
-                input_history=tuple(input_list),
-                pre_handoff_items=data_copy.pre_handoff_items,
-                new_items=data_copy.new_items,
-                data=data_copy.data if hasattr(data_copy, 'data') else None
-            )
+            try:
+                data_copy = HandoffInputData(
+                    input_history=tuple(input_list),
+                    pre_handoff_items=data_copy.pre_handoff_items,
+                    new_items=data_copy.new_items,
+                    data=data_copy.data if hasattr(data_copy, 'data') else None
+                )
+            except Exception as e:
+                print(f"Error creating new HandoffInputData: {e}")
+        
+        # Additional DIRECT string-based processing for any search result scores
+        # This is a last-resort approach when the other methods fail
+        if hasattr(data_copy, 'input_history') and isinstance(data_copy.input_history, tuple):
+            try:
+                temp_list = list(data_copy.input_history)
+                
+                # Process each item in input_history directly through JSON conversion
+                for i, item in enumerate(temp_list):
+                    if isinstance(item, dict):
+                        # Convert to JSON string
+                        item_str = json.dumps(item)
+                        
+                        # Direct regex replacement to limit decimal places in scores
+                        # Match "score": followed by a number with 9+ decimal places
+                        pattern = r'("score":)(\s*)(\d+\.\d{9,})'
+                        
+                        # Replace with same score but limited decimal places
+                        def replace_score(match):
+                            prefix = match.group(1)
+                            whitespace = match.group(2)
+                            num_str = match.group(3)
+                            num = float(num_str)
+                            return f'{prefix}{whitespace}{num:.8f}'
+                        
+                        # Apply the regex replacement
+                        fixed_str = re.sub(pattern, replace_score, item_str)
+                        
+                        # Convert back to dict
+                        if fixed_str != item_str:
+                            try:
+                                temp_list[i] = json.loads(fixed_str)
+                                print("Applied direct regex fix to search result scores")
+                            except json.JSONDecodeError:
+                                # Keep original if JSON parsing fails
+                                pass
+                
+                # Create new HandoffInputData with processed input_history
+                try:
+                    data_copy = HandoffInputData(
+                        input_history=tuple(temp_list),
+                        pre_handoff_items=data_copy.pre_handoff_items,
+                        new_items=data_copy.new_items,
+                        data=data_copy.data if hasattr(data_copy, 'data') else None
+                    )
+                except Exception as e:
+                    print(f"Error in direct string processing: {e}")
+            except Exception as e:
+                print(f"Error in direct string processing outer block: {e}")
         
         # Process any data attribute that might contain file search results
         if hasattr(data_copy, 'data') and data_copy.data:
@@ -73,45 +259,7 @@ def round_search_result_scores(handoff_data: HandoffInputData, max_decimal_place
             elif isinstance(data_copy.data, list):
                 process_list_values(data_copy.data, format_float)
             else:
-                process_nested_data(data_copy.data, max_decimal_places)
-        
-        # Process pre_handoff_items
-        if hasattr(data_copy, 'pre_handoff_items') and data_copy.pre_handoff_items:
-            for idx, item in enumerate(data_copy.pre_handoff_items):
-                if hasattr(item, '__dict__'):
-                    obj_dict = item.__dict__
-                    process_dict_values(obj_dict, format_float)
-                    # Recreate the object with processed values if needed
-        
-        # Process new_items
-        if hasattr(data_copy, 'new_items') and data_copy.new_items:
-            for idx, item in enumerate(data_copy.new_items):
-                if hasattr(item, '__dict__'):
-                    obj_dict = item.__dict__
-                    process_dict_values(obj_dict, format_float)
-                    # Recreate the object with processed values if needed
-                    
-        # Test serialization to verify issue is fixed
-        try:
-            if hasattr(data_copy, 'data') and data_copy.data:
-                # Use standard json module to check serialization
-                json_str = json.dumps(data_copy.data)
-                json.loads(json_str)  # Try parsing back to verify
-        except Exception as e:
-            print(f"WARNING: JSON serialization check failed: {e}")
-            print("Applying emergency serialization fix")
-            
-            # Emergency fallback using str representation
-            if hasattr(data_copy, 'data') and data_copy.data:
-                try:
-                    # Convert to JSON and back using precision limiting
-                    data_json = json.dumps(data_copy.data)
-                    # Use regex to fix excessive precision
-                    import re
-                    data_json = re.sub(r'(\d+\.\d{10,})', lambda m: f"{float(m.group(0)):.6f}", data_json)
-                    data_copy.data = json.loads(data_json)
-                except Exception as json_err:
-                    print(f"JSON emergency fix failed: {json_err}")
+                process_nested_data(data_copy.data, safe_max_decimals)
         
         print("Successfully processed and rounded all scores")
         return data_copy

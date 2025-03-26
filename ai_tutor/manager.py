@@ -9,7 +9,7 @@ from agents import Runner, trace, gen_trace_id, set_tracing_export_api_key
 
 from ai_tutor.tools.file_upload import FileUploadManager, upload_document
 from ai_tutor.agents.planner_agent import create_planner_agent
-from ai_tutor.agents.teacher_agent import generate_lesson_content, create_teacher_agent
+from ai_tutor.agents.teacher_agent import generate_lesson_content, create_teacher_agent, create_teacher_agent_without_handoffs
 from ai_tutor.agents.analyzer_agent import analyze_documents
 from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent, generate_quiz, create_quiz_creator_agent_with_teacher_handoff
 from ai_tutor.agents.quiz_teacher_agent import create_quiz_teacher_agent, generate_quiz_feedback
@@ -505,6 +505,27 @@ class AITutorManager:
             print("Using lesson content that was already generated via handoff")
             return self.lesson_content
             
+        # If we already have a quiz from the handoff chain, we shouldn't create a new workflow
+        # This is likely the case where Planner → Teacher → Quiz Creator completed successfully
+        if self.quiz and hasattr(self.quiz, 'questions') and len(self.quiz.questions) > 0:
+            print("Quiz was already generated via handoff chain, creating minimal lesson content to avoid duplicate workflow")
+            # Create a minimal lesson content that matches the quiz for compatibility
+            from ai_tutor.agents.models import LessonContent, SectionContent
+            self.lesson_content = LessonContent(
+                title=self.quiz.lesson_title or "Lesson from handoff chain",
+                introduction=f"This lesson content was auto-generated to support the quiz '{self.quiz.title}' that was created via handoff chain.",
+                sections=[
+                    SectionContent(
+                        title="Content from handoff chain",
+                        explanations=[],
+                        exercises=[]
+                    )
+                ],
+                conclusion="See the quiz for assessment of learning objectives.",
+                next_steps=[]
+            )
+            return self.lesson_content
+            
         if not self.lesson_plan:
             raise ValueError("No lesson plan has been generated yet")
         
@@ -518,9 +539,13 @@ class AITutorManager:
             set_tracing_export_api_key(self.api_key)
         
         with trace("Generating lesson content", trace_id=trace_id):
-            # Create the teacher agent WITHOUT Quiz Creator handoff capability
-            # Removing this handoff prevents the duplicate workflow
-            teacher_agent = create_teacher_agent(self.vector_store_id, self.api_key)
+            # Create the teacher agent - use version without handoffs if we already have a quiz
+            if self.quiz and hasattr(self.quiz, 'questions') and len(self.quiz.questions) > 0:
+                print("Using teacher agent without handoffs since we already have a quiz")
+                teacher_agent = create_teacher_agent_without_handoffs(self.vector_store_id, self.api_key)
+            else:
+                print("Using teacher agent with handoff to quiz creator")
+                teacher_agent = create_teacher_agent(self.vector_store_id, self.api_key)
             
             # Generate the lesson content
             lesson_content_result = await generate_lesson_content(teacher_agent, self.lesson_plan)
@@ -539,14 +564,14 @@ class AITutorManager:
         Returns:
             Quiz object or None if generation fails
         """
-        if not self.lesson_content:
-            raise ValueError("No lesson content has been generated yet")
-        
         # If we already have a quiz from a previous handoff, return it
         if self.quiz and hasattr(self.quiz, 'questions') and len(self.quiz.questions) > 0:
             print("Using quiz that was already generated via handoff")
             print(f"Quiz has {len(self.quiz.questions)} questions")
             return self.quiz
+            
+        if not self.lesson_content:
+            raise ValueError("No lesson content has been generated yet")
         
         trace_id = gen_trace_id()
         print(f"Generating quiz with trace ID: {trace_id}")
@@ -559,8 +584,8 @@ class AITutorManager:
         with trace("Generating quiz", trace_id=trace_id):
             try:
                 # Generate the quiz using the quiz creator agent
-                # Disable teacher handoff by default to prevent unwanted automatic handoffs
-                # We'll manually trigger the quiz teacher in the workflow
+                # ALWAYS disable teacher handoff to prevent duplicate workflows
+                print("Using quiz creator without teacher handoff to prevent duplicate workflows")
                 quiz_result = await generate_quiz(
                     self.lesson_content, 
                     self.api_key, 
@@ -855,9 +880,11 @@ class AITutorManager:
         
         print("Using quiz teacher agent directly (without handoff chain) to avoid duplicate workflows")
         with trace("Quiz feedback generation", trace_id=trace_id):
-            # Generate feedback using the quiz teacher agent directly without enabling handoffs
-            # This prevents triggering another handoff chain
+            # Use the generate_quiz_feedback function directly with the correct parameters
+            # This function creates the agent internally and doesn't trigger handoffs
             from ai_tutor.agents.quiz_teacher_agent import generate_quiz_feedback
+            
+            # The generate_quiz_feedback function will use a fresh agent without handoffs
             self.quiz_feedback = await generate_quiz_feedback(self.quiz, user_answers, self.api_key)
             return self.quiz_feedback
             

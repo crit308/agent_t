@@ -199,146 +199,127 @@ async def run_tutor(args):
             
         print("\nView lesson trace: https://platform.openai.com/traces")
         
-        # Generate quiz if not already created via handoff chain
-        if not manager.quiz:
-            step_num += 1
-            print(f"\n{step_num}. Generating quiz...")
-            try:
-                quiz = await manager.generate_quiz(enable_teacher_handoff=True)
-                print(f"✓ Generated quiz: {quiz.title}")
-                print(f"   Questions: {len(quiz.questions)}")
-                print(f"   Passing score: {quiz.passing_score}/{quiz.total_points}")
-            except Exception as e:
-                print(f"Error generating quiz: {str(e)}")
-                return
-        else:
-            # If quiz was already created via handoff, just display it
-            step_num += 1
-            print(f"\n{step_num}. Quiz already generated via handoff chain:")
-            print(f"   Title: {manager.quiz.title}")
-            print(f"   Questions: {len(manager.quiz.questions)}")
-            print(f"   Passing score: {manager.quiz.passing_score}/{manager.quiz.total_points}")
-        
+        # Add the interactive quiz step
+        step_num += 1
+        print(f"\n{step_num}. Taking quiz...")
+        try:
+            # Make sure we get the quiz from the manager, which might have been created via handoff chain
+            quiz = manager.quiz
+            if args.skip_quiz:
+                print("Skipping quiz-taking step as requested.")
+            elif quiz and hasattr(quiz, 'questions') and len(quiz.questions) > 0:
+                # Display the quiz
+                print("\n" + "="*60)
+                print(f"QUIZ: {quiz.title}")
+                print(f"Description: {quiz.description}")
+                print(f"Total Questions: {len(quiz.questions)}")
+                print(f"Passing Score: {quiz.passing_score}/{quiz.total_points}")
+                print(f"Estimated Time: {quiz.estimated_completion_time_minutes} minutes")
+                print("="*60)
+                
+                print("\nYou will now take the quiz. For each question, select the option number (1, 2, 3, etc.)")
+                print("Press Enter to start the quiz...\n")
+                input()
+                
+                # Record quiz answers
+                user_answers = []
+                quiz_start_time = time.time()
+                
+                for i, question in enumerate(quiz.questions):
+                    print(f"\nQuestion {i+1}: {question.question}")
+                    print(f"Difficulty: {question.difficulty}")
+                    print("\nOptions:")
+                    for j, option in enumerate(question.options):
+                        print(f"{j+1}. {option}")
+                    
+                    # Get user's answer with input validation
+                    question_start_time = time.time()
+                    valid_answer = False
+                    while not valid_answer:
+                        try:
+                            answer_str = input(f"\nYour answer (1-{len(question.options)}): ")
+                            selected_option = int(answer_str) - 1  # Convert to 0-based index
+                            if 0 <= selected_option < len(question.options):
+                                valid_answer = True
+                            else:
+                                print(f"Please enter a number between 1 and {len(question.options)}")
+                        except ValueError:
+                            print("Please enter a valid number")
+                    
+                    # Calculate time taken for this question
+                    question_end_time = time.time()
+                    time_taken = int(question_end_time - question_start_time)
+                    
+                    # Record the answer
+                    user_answers.append(QuizUserAnswer(
+                        question_index=i,
+                        selected_option_index=selected_option,
+                        time_taken_seconds=time_taken
+                    ))
+                    
+                    print(f"Answer recorded: Option {selected_option + 1}. Time taken: {time_taken} seconds")
+                
+                # Calculate total quiz time
+                quiz_end_time = time.time()
+                total_time = int(quiz_end_time - quiz_start_time)
+                
+                # Create the user answers object
+                quiz_user_answers = QuizUserAnswers(
+                    quiz_title=quiz.title,
+                    user_answers=user_answers,
+                    total_time_taken_seconds=total_time
+                )
+                
+                # Submit answers for evaluation
+                step_num += 1
+                print(f"\n{step_num}. Evaluating quiz...")
+                quiz_feedback = await manager.submit_quiz_answers(quiz_user_answers)
+                
+                # Print results
+                print("\n" + "="*60)
+                print("=== Quiz Results ===")
+                print(f"Quiz: {quiz.title} ({len(quiz.questions)} questions)")
+                print(f"Your Score: {quiz_feedback.correct_answers}/{quiz_feedback.total_questions} ({quiz_feedback.score_percentage:.1f}%)")
+                print(f"Pass/Fail: {'Passed' if quiz_feedback.passed else 'Failed'}")
+                print(f"Total Time: {quiz_feedback.total_time_taken_seconds} seconds")
+                
+                # Print detailed feedback for each question
+                print("\n=== Detailed Feedback ===")
+                for item in quiz_feedback.feedback_items:
+                    question_index = item.question_index
+                    print(f"\nQuestion {question_index + 1}: {item.question_text}")
+                    print(f"Your answer: {item.user_selected_option}")
+                    print(f"Correct: {'Yes' if item.is_correct else 'No'}")
+                    if not item.is_correct:
+                        print(f"Correct answer: {item.correct_option}")
+                    print(f"Explanation: {item.explanation}")
+                    if not item.is_correct and item.improvement_suggestion:
+                        print(f"Improvement suggestion: {item.improvement_suggestion}")
+                
+                # Print overall feedback
+                print(f"\n=== Overall Feedback ===")
+                print(quiz_feedback.overall_feedback)
+                
+                # Print suggested study topics
+                print("\n=== Suggested Study Topics ===")
+                if quiz_feedback.suggested_study_topics and quiz_feedback.suggested_study_topics[0] != "":
+                    for topic in quiz_feedback.suggested_study_topics:
+                        print(f"- {topic}")
+                else:
+                    print("No specific study topics suggested.")
+                
+                # Print next steps
+                print("\n=== Recommended Next Steps ===")
+                for step in quiz_feedback.next_steps:
+                    print(f"- {step}")
+            else:
+                print("No quiz available to take.")
+        except Exception as e:
+            print(f"Error in quiz interaction: {str(e)}")
+
     except Exception as e:
         print(f"Error generating lesson content: {str(e)}")
         return
-
-    # Add the interactive quiz step
-    step_num += 1
-    print(f"\n{step_num}. Taking quiz...")
-    try:
-        quiz = manager.quiz
-        if args.skip_quiz:
-            print("Skipping quiz-taking step as requested.")
-        elif quiz and hasattr(quiz, 'questions') and len(quiz.questions) > 0:
-            # Display the quiz
-            print("\n" + "="*60)
-            print(f"QUIZ: {quiz.title}")
-            print(f"Description: {quiz.description}")
-            print(f"Total Questions: {len(quiz.questions)}")
-            print(f"Passing Score: {quiz.passing_score}/{quiz.total_points}")
-            print(f"Estimated Time: {quiz.estimated_completion_time_minutes} minutes")
-            print("="*60)
-            
-            print("\nYou will now take the quiz. For each question, select the option number (1, 2, 3, etc.)")
-            print("Press Enter to start the quiz...\n")
-            input()
-            
-            # Record quiz answers
-            user_answers = []
-            quiz_start_time = time.time()
-            
-            for i, question in enumerate(quiz.questions):
-                print(f"\nQuestion {i+1}: {question.question}")
-                print(f"Difficulty: {question.difficulty}")
-                print("\nOptions:")
-                for j, option in enumerate(question.options):
-                    print(f"{j+1}. {option}")
-                
-                # Get user's answer with input validation
-                question_start_time = time.time()
-                valid_answer = False
-                while not valid_answer:
-                    try:
-                        answer_str = input(f"\nYour answer (1-{len(question.options)}): ")
-                        selected_option = int(answer_str) - 1  # Convert to 0-based index
-                        if 0 <= selected_option < len(question.options):
-                            valid_answer = True
-                        else:
-                            print(f"Please enter a number between 1 and {len(question.options)}")
-                    except ValueError:
-                        print("Please enter a valid number")
-                
-                # Calculate time taken for this question
-                question_end_time = time.time()
-                time_taken = int(question_end_time - question_start_time)
-                
-                # Record the answer
-                user_answers.append(QuizUserAnswer(
-                    question_index=i,
-                    selected_option_index=selected_option,
-                    time_taken_seconds=time_taken
-                ))
-                
-                print(f"Answer recorded: Option {selected_option + 1}. Time taken: {time_taken} seconds")
-            
-            # Calculate total quiz time
-            quiz_end_time = time.time()
-            total_time = int(quiz_end_time - quiz_start_time)
-            
-            # Create the user answers object
-            quiz_user_answers = QuizUserAnswers(
-                quiz_title=quiz.title,
-                user_answers=user_answers,
-                total_time_taken_seconds=total_time
-            )
-            
-            # Submit answers for evaluation
-            step_num += 1
-            print(f"\n{step_num}. Evaluating quiz...")
-            quiz_feedback = await manager.submit_quiz_answers(quiz_user_answers)
-            
-            # Print results
-            print("\n" + "="*60)
-            print("=== Quiz Results ===")
-            print(f"Quiz: {quiz.title} ({len(quiz.questions)} questions)")
-            print(f"Your Score: {quiz_feedback.correct_answers}/{quiz_feedback.total_questions} ({quiz_feedback.score_percentage:.1f}%)")
-            print(f"Pass/Fail: {'Passed' if quiz_feedback.passed else 'Failed'}")
-            print(f"Total Time: {quiz_feedback.total_time_taken_seconds} seconds")
-            
-            # Print detailed feedback for each question
-            print("\n=== Detailed Feedback ===")
-            for item in quiz_feedback.feedback_items:
-                question_index = item.question_index
-                print(f"\nQuestion {question_index + 1}: {item.question_text}")
-                print(f"Your answer: {item.user_selected_option}")
-                print(f"Correct: {'Yes' if item.is_correct else 'No'}")
-                if not item.is_correct:
-                    print(f"Correct answer: {item.correct_option}")
-                print(f"Explanation: {item.explanation}")
-                if not item.is_correct and item.improvement_suggestion:
-                    print(f"Improvement suggestion: {item.improvement_suggestion}")
-            
-            # Print overall feedback
-            print(f"\n=== Overall Feedback ===")
-            print(quiz_feedback.overall_feedback)
-            
-            # Print suggested study topics
-            print("\n=== Suggested Study Topics ===")
-            if quiz_feedback.suggested_study_topics and quiz_feedback.suggested_study_topics[0] != "":
-                for topic in quiz_feedback.suggested_study_topics:
-                    print(f"- {topic}")
-            else:
-                print("No specific study topics suggested.")
-            
-            # Print next steps
-            print("\n=== Recommended Next Steps ===")
-            for step in quiz_feedback.next_steps:
-                print(f"- {step}")
-        else:
-            print("No quiz available to take.")
-    except Exception as e:
-        print(f"Error in quiz interaction: {str(e)}")
 
     # Try to wait for analysis results if they weren't available earlier
     if args.analyze and not run_synchronously and not manager.document_analysis:
