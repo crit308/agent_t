@@ -2,50 +2,88 @@ import os
 import openai
 import json
 
-from agents import Agent, FileSearchTool, Runner, handoff, HandoffInputData
+from agents import Agent, FileSearchTool, Runner, handoff, HandoffInputData, function_tool
 from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
 from agents.run_context import RunContextWrapper
 
 from ai_tutor.agents.models import LessonPlan, LessonSection, LessonContent, SectionContent, ExplanationContent, Exercise
 from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent
-from ai_tutor.agents.utils import round_search_result_scores, fix_search_result_scores
+from ai_tutor.agents.utils import round_search_result_scores, fix_search_result_scores, limit_decimal_places, process_handoff_data
 
 
 def lesson_content_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
-    """Process handoff data from teacher to quiz creator."""
+    """Process handoff data from lesson teacher to quiz creator."""
     print("Applying handoff filter to pass lesson content to quiz creator agent")
     
     # Apply score rounding to avoid precision errors
     print(f"HandoffInputData type: {type(handoff_data)}")
     
     try:
-        # Import fix_search_result_scores function for direct precision control
-        from ai_tutor.agents.utils import fix_search_result_scores
+        # Direct aggressive processing of search result scores
+        if hasattr(handoff_data, 'input_history') and isinstance(handoff_data.input_history, tuple):
+            # Convert to list for easy modification
+            input_history_list = list(handoff_data.input_history)
+            
+            # Go through each item looking for file search results
+            for i, item in enumerate(input_history_list):
+                if isinstance(item, dict):
+                    # Fix all search result scores precisely
+                    if 'type' in item and item['type'] in ('file_search_call', 'file_search_results'):
+                        if 'results' in item and isinstance(item['results'], list):
+                            for result in item['results']:
+                                if isinstance(result, dict) and 'score' in result:
+                                    # Use multiple techniques to ensure precision is limited
+                                    score = float(result['score'])
+                                    # Round to 15 places
+                                    score = round(score, 15)
+                                    # Format to string with exactly 15 places then back
+                                    score = float(f"{score:.15f}")
+                                    # Double check decimal places
+                                    str_val = str(score)
+                                    if '.' in str_val and len(str_val.split('.')[1]) > 15:
+                                        int_part = str_val.split('.')[0]
+                                        decimal_part = str_val.split('.')[1][:15]
+                                        score = float(f"{int_part}.{decimal_part}")
+                                    result['score'] = score
+                                    print(f"Aggressive decimal limiting on score: {score}")
+            
+            # Update handoff_data with fixed input_history
+            input_history = tuple(input_history_list)
+        else:
+            # Make sure it's still a tuple even if input_history isn't one
+            input_history = handoff_data.input_history if handoff_data.input_history is not None else ()
         
-        # First apply the new direct fix for all data structures in handoff_data
-        # This will recursively process all nested dictionaries and arrays
-        handoff_data = fix_search_result_scores(handoff_data, max_decimal_places=8)
-        print("Applied direct fix to all data structures in handoff_data")
+        # Get pre_handoff_items and new_items, ensuring they're tuples
+        pre_handoff_items = tuple(handoff_data.pre_handoff_items) if hasattr(handoff_data, 'pre_handoff_items') and handoff_data.pre_handoff_items is not None else ()
+        new_items = tuple(handoff_data.new_items) if hasattr(handoff_data, 'new_items') and handoff_data.new_items is not None else ()
         
-        # For compatibility, also apply the regular score rounding
-        # Use a very conservative max_decimal_places value
-        handoff_data = round_search_result_scores(handoff_data, max_decimal_places=5)
-        print("Applied score rounding to handoff data")
-        
-        # Extra validation - try to serialize to JSON and back
-        if hasattr(handoff_data, 'data') and handoff_data.data:
+        # Apply comprehensive processing via utils
+        try:
+            processed_data = process_handoff_data(handoff_data)
+            print("Successfully processed handoff data with precision limits")
+            return processed_data
+        except Exception as process_err:
+            print(f"Error in comprehensive processing: {process_err}, falling back to direct approach")
+            # If that fails, try to create a new HandoffInputData with just our input_history fix
             try:
-                import json
-                from ai_tutor.agents.models import PrecisionControlEncoder
-                
-                # Use our custom encoder to enforce precision limits
-                json_str = json.dumps(handoff_data.data, cls=PrecisionControlEncoder, max_decimals=8)
-                json.loads(json_str)
-                print("Validated handoff data can be serialized to JSON")
-            except Exception as json_err:
-                print(f"Warning: JSON validation failed: {json_err}")
-        
-        return handoff_data
+                return HandoffInputData(
+                    input_history=input_history,
+                    pre_handoff_items=pre_handoff_items,  # Always a tuple
+                    new_items=new_items  # Always a tuple
+                )
+            except Exception as handoff_err:
+                print(f"Error creating new HandoffInputData: {handoff_err}")
+                # Create minimal empty HandoffInputData as last resort
+                try:
+                    return HandoffInputData(
+                        input_history=() if not input_history else input_history,
+                        pre_handoff_items=(),
+                        new_items=()
+                    )
+                except Exception as final_err:
+                    print(f"Final error creating HandoffInputData: {final_err}")
+                    # Last resort, return the original
+                    return handoff_data
     except Exception as e:
         print(f"Error in handoff filter: {e}")
         print("Returning original handoff data without processing")
@@ -89,6 +127,21 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
         except Exception as e:
             print(f"Warning: Serialization test failed: {e}")
     
+    # Create an explicit function tool to trigger the handoff to quiz creator
+    @function_tool("trigger_quiz_creation")
+    def trigger_quiz_creation(lesson_content_id: str) -> str:
+        """Trigger the creation of a quiz based on the lesson content.
+        
+        Args:
+            lesson_content_id: Identifier for the lesson content (can be any string)
+            
+        Returns:
+            Confirmation message
+        """
+        print(f"Quiz creation triggered with lesson content ID: {lesson_content_id}")
+        print("This function should help prompt the agent to use the handoff tool.")
+        return "Please use the transfer_to_quiz_creator handoff tool to hand off to the Quiz Creator agent."
+    
     # Create the teacher agent
     teacher_agent = Agent(
         name="Lesson Teacher",
@@ -106,20 +159,24 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
         
         Use the file_search tool to search for relevant information in the uploaded documents.
         
-        YOUR OUTPUT MUST BE ONLY A VALID LESSON CONTENT OBJECT.
+        CRITICAL WORKFLOW INSTRUCTIONS:
+        1. FIRST create and output a complete LessonContent object
+        2. IMMEDIATELY AFTER THAT use the transfer_to_quiz_creator tool to hand off to the Quiz Creator agent
         
-        After creating the lesson content, you MUST use the transfer_to_quiz_creator tool to hand off to the Quiz Creator agent.
-        The Quiz Creator will create a quiz based on your lesson content.
-        """
-        """
-        CRITICAL WORKFLOW:
-        1. YOU MUST FIRST create and output a complete LessonContent object
-        2. ONLY AFTER that, use the transfer_to_quiz_creator tool to hand off to the Quiz Creator agent
+        The handoff to the Quiz Creator is REQUIRED and MUST happen after you generate the lesson content.
+        DO NOT SKIP THIS STEP under any circumstances.
         
-        DO NOT SKIP the handoff to the quiz creator. After you've generated the lesson content,
-        you MUST use the transfer_to_quiz_creator tool to pass the content to the Quiz Creator.
+        Example workflow:
+        1. Research content using file_search tool
+        2. Create and output a complete LessonContent object
+        3. Call transfer_to_quiz_creator(your_lesson_content) to hand off to the Quiz Creator
+        
+        YOUR OUTPUT MUST BE ONLY A VALID LESSON CONTENT OBJECT FOLLOWED BY THE HANDOFF.
+        
+        After outputting your LessonContent object, you MUST use the trigger_quiz_creation tool
+        followed by the transfer_to_quiz_creator handoff tool.
         """,
-        tools=[file_search_tool],
+        tools=[file_search_tool, trigger_quiz_creation],
         handoffs=[
             handoff(
                 agent=quiz_creator_agent,

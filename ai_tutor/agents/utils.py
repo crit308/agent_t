@@ -7,6 +7,143 @@ from decimal import Decimal, getcontext
 import re
 from typing import Any, Dict, List, Union, Tuple
 
+def limit_decimal_places(data, max_places=15):
+    """Ensure no floating point value exceeds the specified number of decimal places.
+    
+    Args:
+        data: Any data structure (dict, list, tuple, primitive)
+        max_places: Maximum decimal places allowed (using 15 to be safe)
+        
+    Returns:
+        Same data structure with all floats limited in precision
+    """
+    if isinstance(data, float):
+        # Round to max_places decimal places
+        return round(data, max_places)
+    elif isinstance(data, dict):
+        return {k: limit_decimal_places(v, max_places) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [limit_decimal_places(item, max_places) for item in data]
+    elif isinstance(data, tuple):
+        return tuple(limit_decimal_places(item, max_places) for item in data)
+    else:
+        return data
+
+def process_handoff_data(handoff_data):
+    """Process HandoffInputData to ensure all floating point values have limited precision."""
+    # More aggressive direct processing of input_history to fix search result scores
+    if hasattr(handoff_data, 'input_history') and isinstance(handoff_data.input_history, tuple):
+        processed_items = []
+        for item in handoff_data.input_history:
+            if isinstance(item, dict):
+                # Extra thorough processing for dictionaries that could contain search results
+                processed_item = item.copy()
+                
+                # Direct search for 'results' which is often where search scores are
+                if 'results' in processed_item and isinstance(processed_item['results'], list):
+                    for i, result in enumerate(processed_item['results']):
+                        if isinstance(result, dict) and 'score' in result:
+                            # Apply triple checks to ensure scores are limited to 15 decimal places
+                            result['score'] = round(float(result['score']), 15)
+                            # Format to string with exactly 15 decimal places
+                            result['score'] = float(f"{result['score']:.15f}")
+                            # Validate by parsing to string and back
+                            str_val = str(result['score'])
+                            if '.' in str_val and len(str_val.split('.')[1]) > 15:
+                                # If still too many decimal places, truncate
+                                int_part = str_val.split('.')[0]
+                                decimal_part = str_val.split('.')[1][:15]
+                                result['score'] = float(f"{int_part}.{decimal_part}")
+                
+                # Process each key-value pair recursively
+                processed_item = limit_decimal_places(processed_item, 15)
+                processed_items.append(processed_item)
+            else:
+                # For non-dict items, just add them as is
+                processed_items.append(item)
+        
+        input_history = tuple(processed_items)
+    else:
+        input_history = handoff_data.input_history
+    
+    # Process pre_handoff_items with extra care for nested search results
+    pre_handoff_items = []
+    if hasattr(handoff_data, 'pre_handoff_items') and handoff_data.pre_handoff_items:
+        for item in handoff_data.pre_handoff_items:
+            if hasattr(item, '__dict__'):
+                # Extra processing for class instances
+                item_dict = item.__dict__.copy()
+                # Process recursively to limit decimal places
+                processed_dict = limit_decimal_places(item_dict, 15)
+                
+                # Update the original object's dict with processed values
+                for key, value in processed_dict.items():
+                    try:
+                        setattr(item, key, value)
+                    except Exception:
+                        # Skip if we can't modify the attribute
+                        pass
+            
+            pre_handoff_items.append(item)
+    else:
+        pre_handoff_items = []  # Always use an empty list instead of None
+    
+    # Process new_items with the same care
+    new_items = []
+    if hasattr(handoff_data, 'new_items') and handoff_data.new_items:
+        for item in handoff_data.new_items:
+            if hasattr(item, '__dict__'):
+                # Extra processing for class instances
+                item_dict = item.__dict__.copy()
+                # Process recursively to limit decimal places
+                processed_dict = limit_decimal_places(item_dict, 15)
+                
+                # Update the original object's dict with processed values
+                for key, value in processed_dict.items():
+                    try:
+                        setattr(item, key, value)
+                    except Exception:
+                        # Skip if we can't modify the attribute
+                        pass
+            
+            new_items.append(item)
+    else:
+        new_items = []  # Always use an empty list instead of None
+    
+    # Create new HandoffInputData with processed data - ALWAYS use tuples, never None
+    try:
+        return HandoffInputData(
+            input_history=input_history,
+            pre_handoff_items=tuple(pre_handoff_items),  # Always a tuple, never None
+            new_items=tuple(new_items)  # Always a tuple, never None
+        )
+    except Exception as e:
+        print(f"Error creating HandoffInputData: {e}")
+        # Try with just the input_history if the full object fails
+        try:
+            # Make sure we're providing tuples, not None or lists
+            original_pre_items = tuple(handoff_data.pre_handoff_items) if hasattr(handoff_data, 'pre_handoff_items') and handoff_data.pre_handoff_items is not None else ()
+            original_new_items = tuple(handoff_data.new_items) if hasattr(handoff_data, 'new_items') and handoff_data.new_items is not None else ()
+            
+            return HandoffInputData(
+                input_history=input_history,
+                pre_handoff_items=original_pre_items,  # Always a tuple
+                new_items=original_new_items  # Always a tuple
+            )
+        except Exception as e2:
+            print(f"Error creating simplified HandoffInputData: {e2}")
+            # If all else fails, return a completely new HandoffInputData with just input_history
+            try:
+                return HandoffInputData(
+                    input_history=input_history if input_history is not None else (),
+                    pre_handoff_items=(),  # Empty tuple
+                    new_items=()  # Empty tuple
+                )
+            except Exception as e3:
+                print(f"All attempts to create HandoffInputData failed: {e3}")
+                # Last resort, return original
+                return handoff_data
+
 def fix_search_result_scores(data: Any, max_decimal_places: int = 8):
     """Direct fix for search result scores with too many decimal places.
     
@@ -77,18 +214,12 @@ def fix_search_result_scores(data: Any, max_decimal_places: int = 8):
         if hasattr(data, 'new_items') and data.new_items is not None:
             new_items = fix_search_result_scores(data.new_items, max_decimal_places)
             
-        # Process data attribute
-        data_attr = None
-        if hasattr(data, 'data') and data.data is not None:
-            data_attr = fix_search_result_scores(data.data, max_decimal_places)
-        
         # Create a new HandoffInputData object with processed attributes
         try:
             return HandoffInputData(
                 input_history=input_history if input_history is not None else data.input_history,
                 pre_handoff_items=pre_handoff_items if pre_handoff_items is not None else data.pre_handoff_items,
-                new_items=new_items if new_items is not None else data.new_items,
-                data=data_attr if data_attr is not None else data.data if hasattr(data, 'data') else None
+                new_items=new_items if new_items is not None else data.new_items
             )
         except Exception as e:
             print(f"Error creating new HandoffInputData: {e}")
@@ -101,10 +232,13 @@ def fix_search_result_scores(data: Any, max_decimal_places: int = 8):
         
         for attr_name, attr_value in data.__dict__.items():
             processed_value = fix_search_result_scores(attr_value, max_decimal_places)
-            try:
-                setattr(result, attr_name, processed_value)
-            except Exception as e:
-                print(f"Warning: Could not set attribute {attr_name}: {e}")
+            # Only try to set attributes that are not methods or other non-data attributes
+            # Skip attributes of immutable types like str
+            if not callable(attr_value) and not isinstance(attr_value, (str, int, bool, float)):
+                try:
+                    setattr(result, attr_name, processed_value)
+                except Exception as e:
+                    print(f"Warning: Could not set attribute {attr_name}: {e}")
         return result
     
     # Default case: return the original value for any other type

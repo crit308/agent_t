@@ -205,6 +205,13 @@ async def run_tutor(args):
         try:
             # Make sure we get the quiz from the manager, which might have been created via handoff chain
             quiz = manager.quiz
+            if not quiz and not args.skip_quiz:
+                print("Quiz not found. Generating a quiz now...")
+                quiz = await manager.generate_quiz(enable_teacher_handoff=False)
+                if quiz:
+                    print(f"Successfully generated quiz: {quiz.title}")
+                    print(f"Questions: {len(quiz.questions)}")
+                    
             if args.skip_quiz:
                 print("Skipping quiz-taking step as requested.")
             elif quiz and hasattr(quiz, 'questions') and len(quiz.questions) > 0:

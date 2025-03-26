@@ -8,7 +8,7 @@ class PrecisionControlEncoder(json.JSONEncoder):
     
     def __init__(self, *args, **kwargs):
         # Remove our custom parameter if present
-        self.max_decimals = kwargs.pop('max_decimals', 8)
+        self.max_decimals = kwargs.pop('max_decimals', 15)
         super().__init__(*args, **kwargs)
     
     def encode(self, obj):

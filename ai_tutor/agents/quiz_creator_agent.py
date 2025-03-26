@@ -6,7 +6,7 @@ from agents import Agent, Runner, handoff, HandoffInputData
 from agents.run_context import RunContextWrapper
 
 from ai_tutor.agents.models import LessonContent, Quiz
-from ai_tutor.agents.utils import round_search_result_scores
+from ai_tutor.agents.utils import round_search_result_scores, limit_decimal_places, process_handoff_data
 from ai_tutor.agents.quiz_teacher_agent import create_quiz_teacher_agent
 
 
@@ -18,20 +18,71 @@ def quiz_to_teacher_handoff_filter(handoff_data: HandoffInputData) -> HandoffInp
     print(f"HandoffInputData type: {type(handoff_data)}")
     
     try:
-        # Use a very conservative max_decimal_places value
-        handoff_data = round_search_result_scores(handoff_data, max_decimal_places=5)
-        print("Applied score rounding to handoff data")
+        # Direct aggressive processing of search result scores
+        if hasattr(handoff_data, 'input_history') and isinstance(handoff_data.input_history, tuple):
+            # Convert to list for easy modification
+            input_history_list = list(handoff_data.input_history)
+            
+            # Go through each item looking for file search results
+            for i, item in enumerate(input_history_list):
+                if isinstance(item, dict):
+                    # Fix all search result scores precisely
+                    if 'type' in item and item['type'] in ('file_search_call', 'file_search_results'):
+                        if 'results' in item and isinstance(item['results'], list):
+                            for result in item['results']:
+                                if isinstance(result, dict) and 'score' in result:
+                                    # Use multiple techniques to ensure precision is limited
+                                    score = float(result['score'])
+                                    # Round to 15 places
+                                    score = round(score, 15)
+                                    # Format to string with exactly 15 places then back
+                                    score = float(f"{score:.15f}")
+                                    # Double check decimal places
+                                    str_val = str(score)
+                                    if '.' in str_val and len(str_val.split('.')[1]) > 15:
+                                        int_part = str_val.split('.')[0]
+                                        decimal_part = str_val.split('.')[1][:15]
+                                        score = float(f"{int_part}.{decimal_part}")
+                                    result['score'] = score
+                                    print(f"Aggressive decimal limiting on score: {score}")
+            
+            # Update handoff_data with fixed input_history
+            input_history = tuple(input_history_list)
+        else:
+            # Make sure it's still a tuple even if input_history isn't one
+            input_history = handoff_data.input_history if handoff_data.input_history is not None else ()
         
-        # Extra validation - try to serialize to JSON and back
-        if hasattr(handoff_data, 'data') and handoff_data.data:
+        # Get pre_handoff_items and new_items, ensuring they're tuples
+        pre_handoff_items = tuple(handoff_data.pre_handoff_items) if hasattr(handoff_data, 'pre_handoff_items') and handoff_data.pre_handoff_items is not None else ()
+        new_items = tuple(handoff_data.new_items) if hasattr(handoff_data, 'new_items') and handoff_data.new_items is not None else ()
+        
+        # Apply comprehensive processing via utils
+        try:
+            processed_data = process_handoff_data(handoff_data)
+            print("Successfully processed handoff data with precision limits")
+            return processed_data
+        except Exception as process_err:
+            print(f"Error in comprehensive processing: {process_err}, falling back to direct approach")
+            # If that fails, try to create a new HandoffInputData with just our input_history fix
             try:
-                json_str = json.dumps(str(handoff_data.data))
-                json.loads(json_str)
-                print("Validated handoff data can be serialized to JSON")
-            except Exception as json_err:
-                print(f"Warning: JSON validation failed: {json_err}")
-        
-        return handoff_data
+                return HandoffInputData(
+                    input_history=input_history,
+                    pre_handoff_items=pre_handoff_items,  # Always a tuple
+                    new_items=new_items  # Always a tuple
+                )
+            except Exception as handoff_err:
+                print(f"Error creating new HandoffInputData: {handoff_err}")
+                # Create minimal empty HandoffInputData as last resort
+                try:
+                    return HandoffInputData(
+                        input_history=() if not input_history else input_history,
+                        pre_handoff_items=(),
+                        new_items=()
+                    )
+                except Exception as final_err:
+                    print(f"Final error creating HandoffInputData: {final_err}")
+                    # Last resort, return the original
+                    return handoff_data
     except Exception as e:
         print(f"Error in handoff filter: {e}")
         print("Returning original handoff data without processing")
@@ -67,7 +118,28 @@ def create_quiz_creator_agent(api_key: str = None):
         5. Distribute questions across all sections of the lesson to ensure comprehensive coverage
         6. Target approximately 2-3 questions per lesson section
         
-        Format your response as a structured Quiz object.
+        CRITICAL REQUIREMENTS:
+        1. You MUST create at least 5 questions for the quiz, even if the lesson content is minimal
+        2. Each question MUST have exactly 4 multiple-choice options
+        3. Set an appropriate passing score (typically 70% of total points)
+        4. Ensure total_points equals the number of questions
+        5. Set a reasonable estimated_completion_time_minutes (typically 1-2 minutes per question)
+        
+        FORMAT REQUIREMENTS:
+        - Your output MUST be a valid Quiz object with the following structure:
+          * title: String (quiz title)
+          * description: String (quiz description)
+          * lesson_title: String (title of the lesson this quiz is based on)
+          * questions: Array of QuizQuestion objects, each with:
+            - question: String (the question text)
+            - options: Array of 4 strings (multiple choice options)
+            - correct_answer_index: Integer (0-based index of correct answer)
+            - explanation: String (explanation of correct answer)
+            - difficulty: String (Easy, Medium, or Hard)
+            - related_section: String (section this question relates to)
+          * passing_score: Integer (minimum points to pass)
+          * total_points: Integer (total possible points)
+          * estimated_completion_time_minutes: Integer (estimated time to complete)
         
         YOUR OUTPUT MUST BE ONLY A VALID QUIZ OBJECT.
         """,
@@ -115,7 +187,28 @@ def create_quiz_creator_agent_with_teacher_handoff(api_key: str = None):
         5. Distribute questions across all sections of the lesson to ensure comprehensive coverage
         6. Target approximately 2-3 questions per lesson section
         
-        Format your response as a structured Quiz object.
+        CRITICAL REQUIREMENTS:
+        1. You MUST create at least 5 questions for the quiz, even if the lesson content is minimal
+        2. Each question MUST have exactly 4 multiple-choice options
+        3. Set an appropriate passing score (typically 70% of total points)
+        4. Ensure total_points equals the number of questions
+        5. Set a reasonable estimated_completion_time_minutes (typically 1-2 minutes per question)
+        
+        FORMAT REQUIREMENTS:
+        - Your output MUST be a valid Quiz object with the following structure:
+          * title: String (quiz title)
+          * description: String (quiz description)
+          * lesson_title: String (title of the lesson this quiz is based on)
+          * questions: Array of QuizQuestion objects, each with:
+            - question: String (the question text)
+            - options: Array of 4 strings (multiple choice options)
+            - correct_answer_index: Integer (0-based index of correct answer)
+            - explanation: String (explanation of correct answer)
+            - difficulty: String (Easy, Medium, or Hard)
+            - related_section: String (section this question relates to)
+          * passing_score: Integer (minimum points to pass)
+          * total_points: Integer (total possible points)
+          * estimated_completion_time_minutes: Integer (estimated time to complete)
         
         YOUR OUTPUT MUST BE ONLY A VALID QUIZ OBJECT.
         
