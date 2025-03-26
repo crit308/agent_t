@@ -9,6 +9,9 @@ from agents import set_default_openai_api
 from openai import AsyncOpenAI
 from agents import set_default_openai_client
 
+# Import our new output logger
+from ai_tutor.output_logger import get_logger
+
 # We need to directly modify the OpenAI client here
 from openai.resources.responses import Responses
 from ai_tutor.agents.models import PrecisionControlEncoder
@@ -121,6 +124,15 @@ if __name__ == "__main__":
     
     print("Precision control attempted via global json.loads patch and handoff filters.")
     print("Set OPENAI_API_KEY environment variable for API and tracing")
+    
+    # Create output file path
+    if args.command == 'tutor':
+        # Define a default location for output log
+        output_path = os.path.join(os.getcwd(), f"ai_tutor_session_{os.path.basename(args.files[0])}.log")
+        
+        # Initialize the logger
+        logger = get_logger(output_path)
+        print(f"All agent outputs will be logged to: {output_path}")
     
     # Run the CLI's main function
     import asyncio

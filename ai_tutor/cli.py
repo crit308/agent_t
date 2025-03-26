@@ -5,10 +5,12 @@ import os
 import sys
 import time
 from typing import List
+import uuid
 
 from ai_tutor.manager import AITutorManager
 from ai_tutor.agents.analyzer_agent import analyze_documents
 from ai_tutor.agents.models import Quiz, LessonPlan, QuizUserAnswer, QuizUserAnswers
+from ai_tutor.output_logger import get_logger
 
 # Create parser outside of the __main__ block so it can be imported
 parser = argparse.ArgumentParser(description="AI Tutor System")
@@ -95,6 +97,9 @@ async def run_tutor(args):
     # Create the AI tutor manager with auto-analyze option
     manager = AITutorManager(args.api_key, auto_analyze=args.auto_analyze)
     
+    # Get the logger instance
+    logger = get_logger()
+    
     print("AI Tutor System")
     print("==============")
     
@@ -156,6 +161,9 @@ async def run_tutor(args):
     print(f"\n{step_num}. Generating lesson plan...")
     try:
         lesson_plan = await manager.generate_lesson_plan()
+        # Log the planner agent output
+        logger.log_planner_output(lesson_plan)
+        
         print(f"✓ Generated lesson plan: {lesson_plan.title}")
         print(f"   Description: {lesson_plan.description}")
         
@@ -181,6 +189,9 @@ async def run_tutor(args):
     print(f"\n{step_num}. Creating lesson content...")
     try:
         lesson_content = await manager.generate_lesson_content()
+        # Log the teacher agent output
+        logger.log_teacher_output(lesson_content)
+        
         print(f"✓ Generated lesson content: {lesson_content.title}")
         print(f"   Sections: {len(lesson_content.sections)}")
         
@@ -198,165 +209,151 @@ async def run_tutor(args):
             print(f"  {i+1}. {section.title}")
             
         print("\nView lesson trace: https://platform.openai.com/traces")
-        
-        # Add the interactive quiz step
-        step_num += 1
-        print(f"\n{step_num}. Taking quiz...")
-        try:
-            # Make sure we get the quiz from the manager, which might have been created via handoff chain
-            quiz = manager.quiz
-            if not quiz and not args.skip_quiz:
-                print("Quiz not found. Generating a quiz now...")
-                quiz = await manager.generate_quiz(enable_teacher_handoff=False)
-                if quiz:
-                    print(f"Successfully generated quiz: {quiz.title}")
-                    print(f"Questions: {len(quiz.questions)}")
-                    
-            if args.skip_quiz:
-                print("Skipping quiz-taking step as requested.")
-            elif quiz and hasattr(quiz, 'questions') and len(quiz.questions) > 0:
-                # Display the quiz
-                print("\n" + "="*60)
-                print(f"QUIZ: {quiz.title}")
-                print(f"Description: {quiz.description}")
-                print(f"Total Questions: {len(quiz.questions)}")
-                print(f"Passing Score: {quiz.passing_score}/{quiz.total_points}")
-                print(f"Estimated Time: {quiz.estimated_completion_time_minutes} minutes")
-                print("="*60)
-                
-                print("\nYou will now take the quiz. For each question, select the option number (1, 2, 3, etc.)")
-                print("Press Enter to start the quiz...\n")
-                input()
-                
-                # Record quiz answers
-                user_answers = []
-                quiz_start_time = time.time()
-                
-                for i, question in enumerate(quiz.questions):
-                    print(f"\nQuestion {i+1}: {question.question}")
-                    print(f"Difficulty: {question.difficulty}")
-                    print("\nOptions:")
-                    for j, option in enumerate(question.options):
-                        print(f"{j+1}. {option}")
-                    
-                    # Get user's answer with input validation
-                    question_start_time = time.time()
-                    valid_answer = False
-                    while not valid_answer:
-                        try:
-                            answer_str = input(f"\nYour answer (1-{len(question.options)}): ")
-                            selected_option = int(answer_str) - 1  # Convert to 0-based index
-                            if 0 <= selected_option < len(question.options):
-                                valid_answer = True
-                            else:
-                                print(f"Please enter a number between 1 and {len(question.options)}")
-                        except ValueError:
-                            print("Please enter a valid number")
-                    
-                    # Calculate time taken for this question
-                    question_end_time = time.time()
-                    time_taken = int(question_end_time - question_start_time)
-                    
-                    # Record the answer
-                    user_answers.append(QuizUserAnswer(
-                        question_index=i,
-                        selected_option_index=selected_option,
-                        time_taken_seconds=time_taken
-                    ))
-                    
-                    print(f"Answer recorded: Option {selected_option + 1}. Time taken: {time_taken} seconds")
-                
-                # Calculate total quiz time
-                quiz_end_time = time.time()
-                total_time = int(quiz_end_time - quiz_start_time)
-                
-                # Create the user answers object
-                quiz_user_answers = QuizUserAnswers(
-                    quiz_title=quiz.title,
-                    user_answers=user_answers,
-                    total_time_taken_seconds=total_time
-                )
-                
-                # Submit answers for evaluation
-                step_num += 1
-                print(f"\n{step_num}. Evaluating quiz...")
-                quiz_feedback = await manager.submit_quiz_answers(quiz_user_answers)
-                
-                # Print results
-                print("\n" + "="*60)
-                print("=== Quiz Results ===")
-                print(f"Quiz: {quiz.title} ({len(quiz.questions)} questions)")
-                print(f"Your Score: {quiz_feedback.correct_answers}/{quiz_feedback.total_questions} ({quiz_feedback.score_percentage:.1f}%)")
-                print(f"Pass/Fail: {'Passed' if quiz_feedback.passed else 'Failed'}")
-                print(f"Total Time: {quiz_feedback.total_time_taken_seconds} seconds")
-                
-                # Print detailed feedback for each question
-                print("\n=== Detailed Feedback ===")
-                for item in quiz_feedback.feedback_items:
-                    question_index = item.question_index
-                    print(f"\nQuestion {question_index + 1}: {item.question_text}")
-                    print(f"Your answer: {item.user_selected_option}")
-                    print(f"Correct: {'Yes' if item.is_correct else 'No'}")
-                    if not item.is_correct:
-                        print(f"Correct answer: {item.correct_option}")
-                    print(f"Explanation: {item.explanation}")
-                    if not item.is_correct and item.improvement_suggestion:
-                        print(f"Improvement suggestion: {item.improvement_suggestion}")
-                
-                # Print overall feedback
-                print(f"\n=== Overall Feedback ===")
-                print(quiz_feedback.overall_feedback)
-                
-                # Print suggested study topics
-                print("\n=== Suggested Study Topics ===")
-                if quiz_feedback.suggested_study_topics and quiz_feedback.suggested_study_topics[0] != "":
-                    for topic in quiz_feedback.suggested_study_topics:
-                        print(f"- {topic}")
-                else:
-                    print("No specific study topics suggested.")
-                
-                # Print next steps
-                print("\n=== Recommended Next Steps ===")
-                for step in quiz_feedback.next_steps:
-                    print(f"- {step}")
-            else:
-                print("No quiz available to take.")
-        except Exception as e:
-            print(f"Error in quiz interaction: {str(e)}")
-
     except Exception as e:
-        print(f"Error generating lesson content: {str(e)}")
+        print(f"Error creating lesson content: {str(e)}")
         return
-
-    # Try to wait for analysis results if they weren't available earlier
-    if args.analyze and not run_synchronously and not manager.document_analysis:
-        analysis = await manager.wait_for_analysis(timeout=0.1)
-        if analysis:
-            print("\nBackground analysis results are now available:")
-            # Extract metadata if possible
-            file_count = len(getattr(analysis, "file_names", []))
-            concept_count = len(getattr(analysis, "key_concepts", []))
-            term_count = len(getattr(analysis, "key_terms", {}))
-            print(f"   Files analyzed: {file_count}")
-            print(f"   Key concepts: {concept_count}")
-            print(f"   Key terms: {term_count}")
+    
+    # Skip quiz if requested
+    if args.skip_quiz:
+        print("\nSkipping interactive quiz...")
+        # Save the session log before exiting
+        logger.save()
+        return
+    
+    # Create and take quiz
+    step_num += 1
+    print(f"\n{step_num}. Creating quiz...")
+    try:
+        # Quiz may already be generated if lesson plan was a Quiz
+        if isinstance(lesson_plan, Quiz):
+            quiz = lesson_plan
+            print(f"✓ Quiz already generated as part of lesson plan")
+        else:
+            quiz = await manager.generate_quiz()
+            print(f"✓ Generated quiz: {quiz.title}")
+        
+        # Log the quiz creator output
+        logger.log_quiz_creator_output(quiz)
+        
+        print(f"   Questions: {len(quiz.questions)}")
+        print(f"   Passing score: {quiz.passing_score}/{quiz.total_points}")
+        
+        # Interactive quiz section
+        print("\n" + "="*60)
+        print(f"QUIZ: {quiz.title}")
+        print(f"Description: {quiz.description}")
+        print(f"Total Questions: {len(quiz.questions)}")
+        print(f"Passing Score: {quiz.passing_score}/{quiz.total_points}")
+        print(f"Estimated Time: {quiz.estimated_completion_time_minutes} minutes")
+        print("="*60)
+        
+        print("\nYou will now take the quiz. For each question, select the option number (1, 2, 3, etc.)")
+        print("Press Enter to start the quiz...\n")
+        input()
+        
+        # Record quiz answers
+        user_answers = []
+        quiz_start_time = time.time()
+        
+        for i, question in enumerate(quiz.questions):
+            print(f"\nQuestion {i+1}: {question.question}")
+            print(f"Difficulty: {question.difficulty}")
+            print("\nOptions:")
+            for j, option in enumerate(question.options):
+                print(f"{j+1}. {option}")
             
-            # Save analysis to file if output specified
-            if args.output:
-                analysis_output = f"{os.path.splitext(args.output)[0]}_analysis.txt"
+            # Get user's answer with input validation
+            question_start_time = time.time()
+            valid_answer = False
+            while not valid_answer:
                 try:
-                    with open(analysis_output, "w", encoding="utf-8") as f:
-                        f.write(analysis if isinstance(analysis, str) else str(analysis))
-                    print(f"   Analysis saved to {analysis_output}")
-                except Exception as e:
-                    print(f"   Error saving analysis: {e}")
-                    # Try with fallback encoding
-                    try:
-                        with open(analysis_output, "w", encoding="ascii", errors="ignore") as f:
-                            f.write(analysis if isinstance(analysis, str) else str(analysis))
-                        print(f"   Analysis saved to {analysis_output} (with encoding fallback)")
-                    except Exception as e2:
-                        print(f"   Could not save analysis: {e2}")
+                    answer_str = input(f"\nYour answer (1-{len(question.options)}): ")
+                    selected_option = int(answer_str) - 1  # Convert to 0-based index
+                    if 0 <= selected_option < len(question.options):
+                        valid_answer = True
+                    else:
+                        print(f"Please enter a number between 1 and {len(question.options)}")
+                except ValueError:
+                    print("Please enter a valid number")
+            
+            # Calculate time taken for this question
+            question_end_time = time.time()
+            time_taken = int(question_end_time - question_start_time)
+            
+            # Record the answer
+            user_answers.append(QuizUserAnswer(
+                question_index=i,
+                selected_option_index=selected_option,
+                time_taken_seconds=time_taken
+            ))
+            
+            # Log the user answer
+            logger.log_quiz_user_answer(
+                question=question.question,
+                options=question.options,
+                selected_idx=selected_option,
+                correct_idx=question.correct_answer_index
+            )
+            
+            print(f"Answer recorded: Option {selected_option + 1}. Time taken: {time_taken} seconds")
+        
+        # Calculate total quiz time
+        quiz_end_time = time.time()
+        total_time = int(quiz_end_time - quiz_start_time)
+        
+        # Create the user answers object
+        quiz_user_answers = QuizUserAnswers(
+            quiz_title=quiz.title,
+            user_answers=user_answers,
+            total_time_taken_seconds=total_time
+        )
+        
+        # Submit answers for evaluation
+        step_num += 1
+        print(f"\n{step_num}. Evaluating quiz answers...")
+        quiz_feedback = await manager.submit_quiz_answers(quiz_user_answers)
+        
+        # Log the quiz teacher output
+        logger.log_quiz_teacher_output(quiz_feedback)
+        
+        # Display the feedback
+        print("\n" + "="*60)
+        print(f"QUIZ RESULTS: {quiz_feedback.quiz_title}")
+        print(f"Score: {quiz_feedback.correct_answers}/{quiz_feedback.total_questions} ({quiz_feedback.score_percentage:.1f}%)")
+        print(f"Result: {'PASS' if quiz_feedback.passed else 'FAIL'}")
+        print("="*60)
+        
+        print("\nFeedback by Question:")
+        for i, feedback in enumerate(quiz_feedback.feedback_items):
+            print(f"\nQuestion {i+1}: {feedback.question_text}")
+            print(f"Your answer: {feedback.user_selected_option}")
+            print(f"Correct answer: {feedback.correct_option}")
+            print(f"Result: {'✓ Correct' if feedback.is_correct else '✗ Incorrect'}")
+            if not feedback.is_correct:
+                print(f"Explanation: {feedback.explanation}")
+        
+        print("\nOverall Feedback:")
+        print(quiz_feedback.overall_feedback)
+        
+        if quiz_feedback.suggested_study_topics:
+            print("\nAreas for Improvement/Suggested Study Topics:")
+            for topic in quiz_feedback.suggested_study_topics:
+                print(f"- {topic}")
+        
+        if quiz_feedback.next_steps:
+            print("\nRecommended Next Steps:")
+            for step in quiz_feedback.next_steps:
+                print(f"- {step}")
+                
+        # Save the session log
+        output_file = logger.save()
+        print(f"\nAI Tutor session log saved to: {output_file}")
+        
+    except Exception as e:
+        print(f"Error in quiz workflow: {str(e)}")
+        # Save the session log even if there was an error
+        logger.save()
+        return
 
 async def run_analyzer(args):
     """Run only the document analyzer."""
