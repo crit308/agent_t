@@ -3,6 +3,7 @@ from typing import List, Dict, Any
 import os
 import openai
 import json
+import re
 
 from agents import Agent, FileSearchTool, function_tool, handoff, HandoffInputData
 from agents.run_context import RunContextWrapper
@@ -14,81 +15,15 @@ from ai_tutor.agents.utils import round_search_result_scores, fix_search_result_
 
 def lesson_plan_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
     """Process handoff data from lesson planner to lesson teacher."""
-    print("Applying handoff filter to pass lesson plan to teacher agent")
-    
-    # Apply score rounding to avoid precision errors
-    print(f"HandoffInputData type: {type(handoff_data)}")
+    print("DEBUG: Entering lesson_plan_handoff_filter (Planner -> Teacher)")
     
     try:
-        # Direct aggressive processing of search result scores
-        if hasattr(handoff_data, 'input_history') and isinstance(handoff_data.input_history, tuple):
-            # Convert to list for easy modification
-            input_history_list = list(handoff_data.input_history)
-            
-            # Go through each item looking for file search results
-            for i, item in enumerate(input_history_list):
-                if isinstance(item, dict):
-                    # Fix all search result scores precisely
-                    if 'type' in item and item['type'] in ('file_search_call', 'file_search_results'):
-                        if 'results' in item and isinstance(item['results'], list):
-                            for result in item['results']:
-                                if isinstance(result, dict) and 'score' in result:
-                                    # Use multiple techniques to ensure precision is limited
-                                    score = float(result['score'])
-                                    # Round to 15 places
-                                    score = round(score, 15)
-                                    # Format to string with exactly 15 places then back
-                                    score = float(f"{score:.15f}")
-                                    # Double check decimal places
-                                    str_val = str(score)
-                                    if '.' in str_val and len(str_val.split('.')[1]) > 15:
-                                        int_part = str_val.split('.')[0]
-                                        decimal_part = str_val.split('.')[1][:15]
-                                        score = float(f"{int_part}.{decimal_part}")
-                                    result['score'] = score
-                                    print(f"Aggressive decimal limiting on score: {score}")
-            
-            # Update handoff_data with fixed input_history
-            input_history = tuple(input_history_list)
-        else:
-            # Make sure it's still a tuple even if input_history isn't one
-            input_history = handoff_data.input_history if handoff_data.input_history is not None else ()
-        
-        # Get pre_handoff_items and new_items, ensuring they're tuples
-        pre_handoff_items = tuple(handoff_data.pre_handoff_items) if hasattr(handoff_data, 'pre_handoff_items') and handoff_data.pre_handoff_items is not None else ()
-        new_items = tuple(handoff_data.new_items) if hasattr(handoff_data, 'new_items') and handoff_data.new_items is not None else ()
-        
-        # Apply comprehensive processing via utils
-        try:
-            processed_data = process_handoff_data(handoff_data)
-            print("Successfully processed handoff data with precision limits")
-            return processed_data
-        except Exception as process_err:
-            print(f"Error in comprehensive processing: {process_err}, falling back to direct approach")
-            # If that fails, try to create a new HandoffInputData with just our input_history fix
-            try:
-                return HandoffInputData(
-                    input_history=input_history,
-                    pre_handoff_items=pre_handoff_items,  # Always a tuple
-                    new_items=new_items  # Always a tuple
-                )
-            except Exception as handoff_err:
-                print(f"Error creating new HandoffInputData: {handoff_err}")
-                # Create minimal empty HandoffInputData as last resort
-                try:
-                    return HandoffInputData(
-                        input_history=() if not input_history else input_history,
-                        pre_handoff_items=(),
-                        new_items=()
-                    )
-                except Exception as final_err:
-                    print(f"Final error creating HandoffInputData: {final_err}")
-                    # Last resort, return the original
-                    return handoff_data
+        processed_data = process_handoff_data(handoff_data)
+        print("DEBUG: Exiting lesson_plan_handoff_filter")
+        return processed_data
     except Exception as e:
-        print(f"Error in handoff filter: {e}")
-        print("Returning original handoff data without processing")
-        return handoff_data
+        print(f"ERROR in lesson_plan_handoff_filter: {e}")
+        return handoff_data  # Fallback
 
 
 def create_planner_agent(vector_store_id: str, api_key: str = None):
