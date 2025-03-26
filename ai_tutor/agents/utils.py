@@ -9,7 +9,8 @@ from typing import Any, Dict, List, Union, Tuple
 
 def limit_decimal_places(data, max_places=8):
     """
-    Recursively ensure no floating point value exceeds the specified number of decimal places.
+    Recursively ensure no floating point value exceeds the specified number of decimal places
+    within standard data structures (dicts, lists, tuples).
     Uses string formatting for robust precision control.
 
     Args:
@@ -17,7 +18,7 @@ def limit_decimal_places(data, max_places=8):
         max_places: Maximum decimal places allowed (defaulting to 8 for safety).
 
     Returns:
-        Same data structure with all floats limited in precision.
+        Modified data structure (if dict/list/tuple) or processed value.
     """
     if isinstance(data, (float, decimal.Decimal)):
         # Convert to float first (handles Decimal), then format, then convert back
@@ -48,67 +49,74 @@ def limit_decimal_places(data, max_places=8):
     elif isinstance(data, tuple):
         # Recursively process tuple items
         return tuple(limit_decimal_places(item, max_places) for item in data)
-    elif hasattr(data, '__dict__'):
-        # Handle objects with __dict__ (like Pydantic models passed in history)
-        # Be cautious modifying objects directly, process attributes if necessary
-        try:
-            # Create a shallow copy to avoid modifying original objects in unexpected ways
-            data_copy = copy.copy(data)
-            for attr, value in data.__dict__.items():
-                # Only try to set attributes if they seem like data and not methods/builtins
-                # Check if the attribute is writable before setting
-                if hasattr(data_copy, attr) and not callable(getattr(data_copy, attr)):
-                    try:
-                       setattr(data_copy, attr, limit_decimal_places(value, max_places))
-                    except AttributeError:
-                        # Attribute might be read-only
-                        pass # Silently ignore if we can't set it
-            return data_copy
-        except Exception as e:
-            print(f"Warning: Could not process object attributes for {type(data)}: {e}")
-            return data # Return original object if processing fails
     else:
         # Return data unchanged if it's not a float, dict, list, tuple, or known object type
         return data
 
 def process_handoff_data(handoff_data):
     """
-    Process HandoffInputData to ensure all floating point values have limited precision
-    using the limit_decimal_places function.
+    Process HandoffInputData ensuring float precision and forcing input_history
+    to be a tuple of structured items.
     """
-    print("Processing handoff data for precision...")
+    print("Processing handoff data for precision (Forcing History Structure)...")
     try:
-        # Use copy.deepcopy to avoid modifying the original data in place
-        processed_input_history = limit_decimal_places(copy.deepcopy(handoff_data.input_history), 8)
-        processed_pre_handoff_items = limit_decimal_places(copy.deepcopy(handoff_data.pre_handoff_items), 8)
-        processed_new_items = limit_decimal_places(copy.deepcopy(handoff_data.new_items), 8)
+        # --- Process input_history ---
+        processed_history_list = []
+        # 1. Ensure original_input_history is a list of dicts using the helper
+        from agents import ItemHelpers
+        original_input_list = ItemHelpers.input_to_new_input_list(handoff_data.input_history)
 
-        # Ensure they are tuples as required by HandoffInputData
-        input_history_tuple = tuple(processed_input_history) if isinstance(processed_input_history, list) else processed_input_history
-        pre_handoff_items_tuple = tuple(processed_pre_handoff_items) if isinstance(processed_pre_handoff_items, list) else processed_pre_handoff_items
-        new_items_tuple = tuple(processed_new_items) if isinstance(processed_new_items, list) else processed_new_items
+        # 2. Process each item in the guaranteed list for float precision
+        if original_input_list:
+            for item in original_input_list:
+                # Apply limit_decimal_places recursively within a deep copy of the item
+                processed_item = limit_decimal_places(copy.deepcopy(item), 8)
+                processed_history_list.append(processed_item) # Should remain a dict
 
-        # Handle potential None values, replace with empty tuples
-        input_history_tuple = input_history_tuple if input_history_tuple is not None else ()
-        pre_handoff_items_tuple = pre_handoff_items_tuple if pre_handoff_items_tuple is not None else ()
-        new_items_tuple = new_items_tuple if new_items_tuple is not None else ()
+        # 3. Convert back to tuple
+        input_history_tuple = tuple(processed_history_list)
 
-        # Create new HandoffInputData with processed data
+        # --- Process pre_handoff_items and new_items (keep simpler logic) ---
+        processed_pre_items_list = []
+        if handoff_data.pre_handoff_items:
+            for item in handoff_data.pre_handoff_items:
+                processed_item = limit_decimal_places(copy.deepcopy(item), 8)
+                processed_pre_items_list.append(processed_item)
+        pre_handoff_items_tuple = tuple(processed_pre_items_list)
+
+        processed_new_items_list = []
+        if handoff_data.new_items:
+             for item in handoff_data.new_items:
+                processed_item = limit_decimal_places(copy.deepcopy(item), 8)
+                processed_new_items_list.append(processed_item)
+        new_items_tuple = tuple(processed_new_items_list)
+        # --- End pre/new items processing ---
+
+        # *** Debug Print ***
+        print("\n--- DEBUG: Force Structure - Processed History (Item 0 Check) ---")
+        if input_history_tuple:
+            print(f"Type of input_history_tuple[0]: {type(input_history_tuple[0])}")
+            import pprint
+            pprint.pprint(input_history_tuple[0])
+        else:
+            print("input_history_tuple is empty.")
+        print("--- END DEBUG ---\n")
+
+        # Create new HandoffInputData with guaranteed tuple structure for history
         processed_data = HandoffInputData(
-            input_history=input_history_tuple,
+            input_history=input_history_tuple, # Now guaranteed to be a tuple of dicts (or empty)
             pre_handoff_items=pre_handoff_items_tuple,
             new_items=new_items_tuple
         )
-        print("Successfully processed handoff data with precision limits.")
+        print("Successfully processed handoff data (Forcing History Structure).")
         return processed_data
 
     except Exception as e:
-        print(f"ERROR during handoff data processing: {e}")
+        print(f"ERROR during handoff data processing (Forcing Structure): {e}")
         import traceback
-        traceback.print_exc()  # Print full traceback for debugging
+        traceback.print_exc()
         print("Returning original handoff data due to error.")
-        # Fallback to returning original data if processing fails
-        return handoff_data
+        return handoff_data # Fallback
 
 def fix_search_result_scores(data: Any, max_decimal_places: int = 8):
     """Direct fix for search result scores with too many decimal places.

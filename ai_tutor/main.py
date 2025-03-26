@@ -18,6 +18,51 @@ import openai
 import json as _stdlib_json
 import decimal
 
+# --- START JSON Deserialization Patch ---
+
+# Keep the original loads function
+original_json_loads = _stdlib_json.loads
+
+def _limit_float_precision_hook(value, max_places=8):
+    """Applies precision limiting logic."""
+    try:
+        # Use string formatting for robust precision control
+        formatted_string = f"{float(value):.{max_places}f}"
+        limited_float = float(formatted_string)
+        # Double-check string representation
+        str_val_check = str(limited_float)
+        if '.' in str_val_check and len(str_val_check.split('.')[1]) > max_places:
+             int_part, decimal_part = str_val_check.split('.', 1)
+             limited_float = float(f"{int_part}.{decimal_part[:max_places]}")
+        return limited_float
+    except (ValueError, TypeError):
+        return value # Return original value if conversion fails
+
+def safe_precision_object_hook(dct):
+    """Object hook for json.loads to limit float precision by creating a new dict."""
+    new_dct = {}
+    for key, value in dct.items():
+        if isinstance(value, float):
+            new_dct[key] = _limit_float_precision_hook(value, 8)
+        # No explicit recursion needed here for dicts/lists;
+        # json.loads calls the hook for nested dicts automatically.
+        # We just copy non-float values.
+        else:
+            new_dct[key] = value
+    return new_dct
+
+def patched_json_loads(*args, **kwargs):
+    """Wrapper for json.loads that applies the safe precision limiting object_hook."""
+    # Set the object_hook that creates new dictionaries
+    kwargs['object_hook'] = safe_precision_object_hook
+    return original_json_loads(*args, **kwargs)
+
+# Apply the patch globally
+_stdlib_json.loads = patched_json_loads
+print("Applied global patch to json.loads (Safe Hook) for precision control.")
+
+# --- END JSON Deserialization Patch ---
+
 # We'll keep the o3-mini reasoning patch, but remove the precision trimming
 original_create = Responses.create
 
@@ -74,7 +119,7 @@ if __name__ == "__main__":
     openai_client = AsyncOpenAI(api_key=args.api_key)
     set_default_openai_client(openai_client)
     
-    print("Precision control is now handled primarily by handoff filters")
+    print("Precision control attempted via global json.loads patch and handoff filters.")
     print("Set OPENAI_API_KEY environment variable for API and tracing")
     
     # Run the CLI's main function
