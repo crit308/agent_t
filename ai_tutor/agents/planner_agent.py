@@ -15,6 +15,26 @@ from ai_tutor.agents.utils import process_handoff_data, RoundingModelWrapper # I
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 
 
+@function_tool
+def read_knowledge_base(ctx: RunContextWrapper[Any]) -> str:
+    """Read the Knowledge Base file that was created by the Document Analyzer agent.
+    This file contains analysis of all the documents in the vector store, including key concepts,
+    terms, and other important information extracted from the documents.
+    
+    Returns:
+        The complete content of the Knowledge Base file.
+    """
+    try:
+        with open("Knowledge Base", "r", encoding="utf-8") as f:
+            return f.read()
+    except UnicodeDecodeError:
+        # Try with fallback encoding if UTF-8 fails
+        with open("Knowledge Base", "r", encoding="latin-1") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "Knowledge Base file not found. The Document Analyzer may not have completed yet."
+
+
 def lesson_plan_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
     """Process handoff data from lesson planner to lesson teacher."""
     print("DEBUG: Entering lesson_plan_handoff_filter (Planner -> Teacher)")
@@ -60,38 +80,45 @@ def create_planner_agent(vector_store_id: str):
         You are an expert curriculum designer. Your task is to create a 
         well-structured lesson plan based on the documents that have been uploaded.
         
-        Follow these steps IN ORDER:
-        1. First, analyze the uploaded documents to understand their content and structure.
-           Use the file_search tool to search through the documents. Perform multiple searches if necessary.
-        2. Identify the key topics, concepts, and skills that should be taught.
-        3. Create a coherent lesson plan that organizes the content into logical sections.
-        4. For each section, define clear learning objectives, key concepts, and estimate 
-           how long it would take to teach.
-        5. Consider the appropriate sequence for teaching the material.
-        6. Consider who the target audience might be and any prerequisites they should know.
-        7. YOU MUST FIRST output a complete structured LessonPlan object before proceeding.
-           **Your final response before the handoff MUST ONLY be the valid LessonPlan JSON object.**
-        8. IMMEDIATELY AFTER outputting the LessonPlan object, YOU MUST use the 
-           `transfer_to_lesson_teacher` tool to hand off to the Teacher agent who
-           will create the detailed lesson content based on your plan.
+        REQUIRED STRICT WORKFLOW - YOU MUST FOLLOW THESE STEPS IN THIS EXACT ORDER:
         
-        IMPORTANT: You MUST use the file_search tool to find information in the uploaded documents.
-        Start by searching for general terms like "introduction", "overview", or specific topics
-        mentioned in the documents.
+        STEP 1: KNOWLEDGE BASE ANALYSIS
+        - First, use the read_knowledge_base tool to get the document analysis created by the Document Analyzer agent.
+        - Thoroughly review this analysis, which provides key concepts, terminology, and document structure.
+        - YOU MUST COMPLETE THIS STEP BEFORE PROCEEDING. DO NOT SKIP THIS STEP UNDER ANY CIRCUMSTANCES.
         
-        CRITICAL WORKFLOW INSTRUCTIONS:
-        1. Search through documents using file_search tool
-        2. Create and output a complete LessonPlan object
-           **(Ensure ONLY the LessonPlan JSON is the output before the tool call)**
-        3. IMMEDIATELY use the `transfer_to_lesson_teacher` tool with the generated lesson plan as input
+        STEP 2: DETAILED DOCUMENT SEARCH
+        - After reviewing the Knowledge Base, use the file_search tool to search through the documents.
+        - Search for specific topics identified in the Knowledge Base and any other relevant information.
+        - Perform multiple searches to gather comprehensive information.
+        - YOU MUST COMPLETE THIS STEP BEFORE PROCEEDING TO CREATING THE LESSON PLAN.
         
-        The handoff to the teacher agent is REQUIRED and MUST happen immediately after
-        you generate the lesson plan. DO NOT skip this step under any circumstances.
-        Ensure you pass the complete LessonPlan object to the `transfer_to_lesson_teacher` tool.
+        STEP 3: LESSON PLAN CREATION
+        - Based on the Knowledge Base analysis and document searches, create a comprehensive lesson plan.
+        - Your lesson plan must include:
+          * Clear learning objectives for each section
+          * Logical sequence of sections
+          * Key concepts to cover in each section
+          * Estimated duration for each section
+          * Target audience considerations
+          * Any prerequisites
+        - Output the lesson plan as a complete structured LessonPlan object.
+        - YOUR FINAL OUTPUT BEFORE THE HANDOFF MUST ONLY BE THE VALID LessonPlan JSON OBJECT.
         
-        Call transfer_to_lesson_teacher with the generated LessonPlan object.
+        STEP 4: TEACHER HANDOFF
+        - IMMEDIATELY after outputting the LessonPlan object, use the `transfer_to_lesson_teacher` tool.
+        - Pass the complete LessonPlan object to this tool.
+        - This handoff is REQUIRED and MUST happen after you generate the lesson plan.
+        
+        CRITICAL REMINDERS:
+        1. YOU MUST READ THE KNOWLEDGE BASE FIRST - this is a mandatory requirement.
+        2. YOU MUST THEN USE FILE SEARCH before creating the lesson plan.
+        3. The sequence of steps must be strictly followed: Knowledge Base → File Search → Lesson Plan → Handoff.
+        4. Do not skip any steps or change the order of operations.
+        
+        Call transfer_to_lesson_teacher with the generated LessonPlan object after completing steps 1-3.
         """),
-        tools=[file_search_tool],
+        tools=[read_knowledge_base, file_search_tool],
         handoffs=[
             handoff(
                 agent=teacher_agent,
