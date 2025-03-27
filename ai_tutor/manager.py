@@ -644,14 +644,57 @@ class AITutorManager:
         if not hasattr(self, 'lesson_content') or self.lesson_content is None:
             print("Creating placeholder lesson content for results display")
             self.lesson_content = self.quiz  # Use quiz for display purposes
+        
+        # Run session analysis
+        print("\n6. Running session analysis...")
+        try:
+            # Calculate session duration
+            session_duration = int(time.time() - self._session_start_time)
             
-        return {
-            "lesson_plan": self.lesson_plan,
-            "lesson_content": self.lesson_content,
-            "quiz": self.quiz,
-            "user_answers": user_answers,
-            "quiz_feedback": self.quiz_feedback
-        }
+            # Run session analysis
+            session_analysis = await self.analyze_session(session_duration)
+            
+            # If we have an output logger, log the session analysis
+            if session_analysis and hasattr(self, 'output_logger') and self.output_logger:
+                self.output_logger.log_session_analysis_output(session_analysis)
+            
+            if session_analysis:
+                print(f"✓ Session analysis complete")
+                print(f"   Overall effectiveness: {session_analysis.overall_effectiveness:.2f}/5.0")
+                print(f"   Identified {len(session_analysis.strengths)} strengths and {len(session_analysis.improvement_areas)} areas for improvement")
+                print(f"   Session analysis has been added to the Knowledge Base")
+
+                # Add session analysis to the return dictionary
+                output_dict = {
+                    "lesson_plan": self.lesson_plan,
+                    "lesson_content": self.lesson_content,
+                    "quiz": self.quiz,
+                    "user_answers": user_answers,
+                    "quiz_feedback": self.quiz_feedback,
+                    "session_analysis": session_analysis
+                }
+            else:
+                print(f"✓ Session analysis process ran but no results were generated")
+                # Return without session analysis if it's None
+                output_dict = {
+                    "lesson_plan": self.lesson_plan,
+                    "lesson_content": self.lesson_content,
+                    "quiz": self.quiz,
+                    "user_answers": user_answers,
+                    "quiz_feedback": self.quiz_feedback
+                }
+        except Exception as e:
+            print(f"Error running session analysis: {str(e)}")
+            # Return without session analysis if it fails
+            output_dict = {
+                "lesson_plan": self.lesson_plan,
+                "lesson_content": self.lesson_content,
+                "quiz": self.quiz,
+                "user_answers": user_answers,
+                "quiz_feedback": self.quiz_feedback
+            }
+            
+        return output_dict
 
     async def submit_quiz_answers(self, user_answers: QuizUserAnswers) -> QuizFeedback:
         """Submit user answers to the quiz and get feedback."""
@@ -777,31 +820,38 @@ class AITutorManager:
             raw_agent_outputs = {}
             if hasattr(self, 'output_logger') and self.output_logger:
                 # Get the raw outputs for all the important agents
-                raw_agent_outputs = self.output_logger.get_captured_outputs()
+                try:
+                    raw_agent_outputs = self.output_logger.get_captured_outputs()
+                except (AttributeError, Exception) as e:
+                    print(f"Warning: Could not get captured outputs: {e}")
+                    # Continue with empty agent outputs
                 
             # Create the session analyzer agent and analyze the session
-            try:
-                # RunConfig will be passed inside analyze_teaching_session
-                self.session_analysis = await analyze_teaching_session(
-                    document_analysis=self.document_analysis,
-                    lesson_plan=self.lesson_plan,
-                    lesson_content=self.lesson_content,
-                    quiz=self.quiz,
-                    user_answers=user_answers,  # Use the reconstructed user answers
-                    quiz_feedback=self.quiz_feedback,
-                    session_duration_seconds=session_duration_seconds,
-                    raw_agent_outputs=raw_agent_outputs,  # Pass the raw outputs to the analyzer
-                    context=self.context  # Pass context
-                )
-                
-                return self.session_analysis
-            except Exception as e:
-                print(f"ERROR: Session analyzer agent failed: {e}")
-                if hasattr(self, 'output_logger') and self.output_logger:
-                    self.output_logger.log_error("Session Analyzer Agent", e)
-                print(f"Error analyzing session: {str(e)}")
-                return None
+            # RunConfig will be passed inside analyze_teaching_session
+            self.session_analysis = await analyze_teaching_session(
+                document_analysis=self.document_analysis,
+                lesson_plan=self.lesson_plan,
+                lesson_content=self.lesson_content,
+                quiz=self.quiz,
+                user_answers=user_answers,  # Use the reconstructed user answers
+                quiz_feedback=self.quiz_feedback,
+                session_duration_seconds=session_duration_seconds,
+                raw_agent_outputs=raw_agent_outputs,  # Pass the raw outputs to the analyzer
+                context=self.context  # Pass context
+            )
+            
+            # Store the session analysis in the context for future reference
+            if hasattr(self, 'context'):
+                try:
+                    self.context.session_analysis = self.session_analysis
+                except AttributeError as e:
+                    print(f"Warning: Could not set session_analysis in context: {e}")
+            
+            return self.session_analysis
         except Exception as e:
+            print(f"ERROR: Session analyzer agent failed: {e}")
+            if hasattr(self, 'output_logger') and self.output_logger:
+                self.output_logger.log_error("Session Analyzer Agent", e)
             print(f"Error analyzing session: {str(e)}")
             return None
 

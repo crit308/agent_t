@@ -63,9 +63,10 @@ tutor_parser.add_argument(
     help="Skip the interactive quiz-taking and evaluation steps"
 )
 tutor_parser.add_argument(
-    "--session-analysis",
+    "--no-session-analysis",
     action="store_true",
-    help="Run session analysis after the workflow is complete"
+    help="Skip running session analysis after the workflow is complete",
+    default=False
 )
 
 # Document analyzer command
@@ -379,7 +380,7 @@ async def run_tutor(args):
                     print(f"- {step}")
             
             # Run session analysis if requested
-            if args.session_analysis and manager.lesson_content and manager.quiz and manager.quiz_feedback:
+            if not args.no_session_analysis and manager.lesson_content and manager.quiz and manager.quiz_feedback:
                 step_num += 1
                 print(f"\n{step_num}. Running session analysis...")
                 try:
@@ -390,13 +391,16 @@ async def run_tutor(args):
                     try:
                         session_analysis = await manager.analyze_session(session_duration)
                         
-                        # Log the session analysis output
-                        logger.log_session_analyzer_output(session_analysis)
-                        
-                        print(f"✓ Session analysis complete")
-                        print(f"   Overall effectiveness: {session_analysis.overall_effectiveness:.2f}/5.0")
-                        print(f"   Identified {len(session_analysis.strengths)} strengths and {len(session_analysis.improvement_areas)} areas for improvement")
-                        print(f"   Session analysis has been added to the Knowledge Base")
+                        # Log the session analysis output only if it's not None
+                        if session_analysis:
+                            logger.log_session_analysis_output(session_analysis)
+                            
+                            print(f"✓ Session analysis complete")
+                            print(f"   Overall effectiveness: {session_analysis.overall_effectiveness:.2f}/5.0")
+                            print(f"   Identified {len(session_analysis.strengths)} strengths and {len(session_analysis.improvement_areas)} areas for improvement")
+                            print(f"   Session analysis has been added to the Knowledge Base")
+                        else:
+                            print(f"✓ Session analysis process ran but no results were generated")
                     except Exception as e:
                         print(f"ERROR: Session analysis failed in CLI: {e}")
                         raise  # Re-raise to the outer try-except

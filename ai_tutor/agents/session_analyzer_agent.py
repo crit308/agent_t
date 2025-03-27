@@ -378,58 +378,64 @@ async def analyze_teaching_session(
         # Append the session analysis to the Knowledge Base file
         try:
             # Convert the session analysis to a formatted string
-            session_analysis_text = f"""
+            try:
+                session_analysis_text = f"""
+                
+                SESSION ANALYSIS: {session_id}
+                ==============================================
+                
+                Overall Effectiveness: {session_analysis.overall_effectiveness:.2f}/5.0
+                
+                Strengths:
+                {chr(10).join(f"- {s}" for s in session_analysis.strengths)}
+                
+                Improvement Areas:
+                {chr(10).join(f"- {a}" for a in session_analysis.improvement_areas)}
+                
+                Lesson Plan Quality: {session_analysis.lesson_plan_quality:.2f}/5.0
+                Content Quality: {session_analysis.content_quality:.2f}/5.0
+                Quiz Quality: {session_analysis.quiz_quality:.2f}/5.0
+                Student Performance: {session_analysis.student_performance:.2f}/5.0
+                Teaching Effectiveness: {session_analysis.teaching_effectiveness:.2f}/5.0
+                
+                Recommendations:
+                {chr(10).join(f"- {r}" for r in session_analysis.recommendations)}
+                
+                Suggested Resources:
+                {chr(10).join(f"- {r}" for r in session_analysis.suggested_resources)}
+                """
+            except Exception as formatting_error:
+                print(f"Warning: Error formatting session analysis: {formatting_error}")
+                session_analysis_text = f"\n\nSESSION ANALYSIS: {session_id}\n============================\n{str(session_analysis)}\n"
             
-            SESSION ANALYSIS: {session_id}
-            ==============================================
+            # Check if the Knowledge Base file exists (using the same filename as the document analyzer)
+            kb_filename = "Knowledge Base"  # This is the filename used by the document analyzer
             
-            Overall Effectiveness: {session_analysis.overall_effectiveness:.2f}/5.0
-            
-            Strengths:
-            {chr(10).join(f"- {s}" for s in session_analysis.strengths)}
-            
-            Improvement Areas:
-            {chr(10).join(f"- {a}" for a in session_analysis.improvement_areas)}
-            
-            Lesson Plan Quality: {session_analysis.lesson_plan_quality:.2f}/5.0
-            Content Quality: {session_analysis.content_quality:.2f}/5.0
-            Quiz Quality: {session_analysis.quiz_quality:.2f}/5.0
-            Student Performance: {session_analysis.student_performance:.2f}/5.0
-            Teaching Effectiveness: {session_analysis.teaching_effectiveness:.2f}/5.0
-            
-            Recommendations:
-            {chr(10).join(f"- {r}" for r in session_analysis.recommendations)}
-            
-            Suggested Resources:
-            {chr(10).join(f"- {r}" for r in session_analysis.suggested_resources)}
-            """
-            
-            # Check if the Knowledge Base file exists
-            if os.path.exists("Knowledge Base"):
+            if os.path.exists(kb_filename):
                 # Append to the existing file
-                with open("Knowledge Base", "a", encoding="utf-8") as f:
+                with open(kb_filename, "a", encoding="utf-8") as f:
                     f.write(session_analysis_text)
-                print("Session analysis appended to 'Knowledge Base' file")
+                print(f"Session analysis appended to '{kb_filename}' file")
             else:
                 # Create a new file if it doesn't exist
-                with open("Knowledge Base", "w", encoding="utf-8") as f:
+                with open(kb_filename, "w", encoding="utf-8") as f:
                     f.write("KNOWLEDGE BASE\n=============\n\nSession Analysis:\n")
                     f.write(session_analysis_text)
-                print("Created new 'Knowledge Base' file with session analysis")
+                print(f"Created new '{kb_filename}' file with session analysis")
         except Exception as e:
-            print(f"Error appending session analysis to 'Knowledge Base': {str(e)}")
+            print(f"Error appending session analysis to '{kb_filename}': {str(e)}")
             # Try with fallback encoding
             try:
-                if os.path.exists("Knowledge Base"):
-                    with open("Knowledge Base", "a", encoding="ascii", errors="ignore") as f:
+                if os.path.exists(kb_filename):
+                    with open(kb_filename, "a", encoding="ascii", errors="ignore") as f:
                         f.write(session_analysis_text)
                 else:
-                    with open("Knowledge Base", "w", encoding="ascii", errors="ignore") as f:
+                    with open(kb_filename, "w", encoding="ascii", errors="ignore") as f:
                         f.write("KNOWLEDGE BASE\n=============\n\nSession Analysis:\n")
                         f.write(session_analysis_text)
-                print("Session analysis appended to 'Knowledge Base' file (with encoding fallback)")
+                print(f"Session analysis appended to '{kb_filename}' file (with encoding fallback)")
             except Exception as e2:
-                print(f"Could not append session analysis to 'Knowledge Base': {str(e2)}")
+                print(f"Could not append session analysis to '{kb_filename}': {str(e2)}")
         
         return session_analysis
     except Exception as e:

@@ -207,6 +207,8 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
     # Save the analysis to a file named "Knowledge Base"
     try:
         with open("Knowledge Base", "w", encoding="utf-8") as f:
+            f.write("KNOWLEDGE BASE\n=============\n\n")
+            f.write("DOCUMENT ANALYSIS:\n=================\n\n")
             f.write(analysis_text)
         print("Analysis saved to 'Knowledge Base' file")
     except Exception as e:
@@ -214,6 +216,8 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
         # Try with fallback encoding
         try:
             with open("Knowledge Base", "w", encoding="ascii", errors="ignore") as f:
+                f.write("KNOWLEDGE BASE\n=============\n\n")
+                f.write("DOCUMENT ANALYSIS:\n=================\n\n")
                 f.write(analysis_text)
             print("Analysis saved to 'Knowledge Base' file (with encoding fallback)")
         except Exception as e2:

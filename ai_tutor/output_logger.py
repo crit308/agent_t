@@ -83,6 +83,20 @@ class TutorOutputLogger:
         self.logs["session_analysis_output"] = self._format_output(output)
         self._append_to_session("Session Analyzer Agent", output)
     
+    def get_captured_outputs(self) -> Dict[str, str]:
+        """Get all captured outputs from all agents.
+        
+        Returns:
+            A dictionary mapping agent names to their outputs
+        """
+        return {
+            "planner_agent": self.logs["planner_agent_output"],
+            "teacher_agent": self.logs["teacher_agent_output"],
+            "quiz_creator_agent": self.logs["quiz_creator_agent_output"],
+            "quiz_teacher_agent": self.logs["quiz_teacher_agent_output"],
+            "session_analysis_agent": self.logs["session_analysis_output"],
+        }
+    
     def log_error(self, agent_name: str, error: Exception) -> None:
         """Log an error that occurred during an agent's execution."""
         error_entry = {

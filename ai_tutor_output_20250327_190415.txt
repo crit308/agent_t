@@ -1,0 +1,632 @@
+AI TUTOR SESSION LOG
+================================================================================
+Timestamp: 2025-03-27T19:04:15.227515
+
+PLANNER AGENT OUTPUT
+--------------------------------------------------------------------------------
+{
+  "title": "Lesson Plan for Machine Learning Fundamentals Quiz",
+  "description": "Auto-generated lesson plan based on quiz: This quiz assesses understanding of key concepts from the lesson on machine learning fundamentals, including its definition, types, common algorithms, and applications. Answer each multiple-choice question carefully to reinforce your learning.",
+  "target_audience": "Learners",
+  "prerequisites": [],
+  "sections": [
+    {
+      "title": "Section on Machine Learning Fundamentals Quiz",
+      "objectives": [
+        {
+          "title": "Complete the quiz",
+          "description": "Successfully complete the associated quiz",
+          "priority": 5
+        }
+      ],
+      "estimated_duration_minutes": 60,
+      "concepts_to_cover": [
+        "Quiz topics"
+      ]
+    }
+  ],
+  "total_estimated_duration_minutes": 60,
+  "additional_resources": []
+}
+
+TEACHER AGENT OUTPUT
+--------------------------------------------------------------------------------
+{
+  "title": "Introduction to Machine Learning: Fundamentals and Applications",
+  "introduction": "This lesson content was derived from the quiz 'Machine Learning Fundamentals Quiz'.",
+  "sections": [
+    {
+      "title": "Introduction to Machine Learning",
+      "introduction": "Introduction to Introduction to Machine Learning",
+      "explanations": [
+        {
+          "topic": "What is the primary focus of machine learning as e...",
+          "explanation": "This explains the concept of What is the primary focus of m...",
+          "examples": [
+            "Example: Enabling systems to learn from data and improve performance over time."
+          ]
+        }
+      ],
+      "exercises": [],
+      "summary": "Summary of Introduction to Machine Learning"
+    },
+    {
+      "title": "Applications of Machine Learning",
+      "introduction": "Introduction to Applications of Machine Learning",
+      "explanations": [
+        {
+          "topic": "How is machine learning applied in the medical fie...",
+          "explanation": "This explains the concept of How is machine learning applie...",
+          "examples": [
+            "Example: By using neural networks for medical image analysis to assist in early disease detection."
+          ]
+        }
+      ],
+      "exercises": [],
+      "summary": "Summary of Applications of Machine Learning"
+    },
+    {
+      "title": "Types of Machine Learning",
+      "introduction": "Introduction to Types of Machine Learning",
+      "explanations": [
+        {
+          "topic": "Which of the following is NOT one of the three mai...",
+          "explanation": "This explains the concept of Which of the following is NOT ...",
+          "examples": [
+            "Example: Collaborative Learning"
+          ]
+        },
+        {
+          "topic": "In supervised learning, which of the following bes...",
+          "explanation": "This explains the concept of In supervised learning, which ...",
+          "examples": [
+            "Example: Using labeled data to map inputs to known outputs."
+          ]
+        }
+      ],
+      "exercises": [],
+      "summary": "Summary of Types of Machine Learning"
+    },
+    {
+      "title": "Common Algorithms in Machine Learning",
+      "introduction": "Introduction to Common Algorithms in Machine Learning",
+      "explanations": [
+        {
+          "topic": "Which algorithm is best suited for predicting nume...",
+          "explanation": "This explains the concept of Which algorithm is best suited...",
+          "examples": [
+            "Example: Linear Regression"
+          ]
+        }
+      ],
+      "exercises": [],
+      "summary": "Summary of Common Algorithms in Machine Learning"
+    }
+  ],
+  "conclusion": "See the quiz for assessment of learning objectives.",
+  "next_steps": []
+}
+
+QUIZ CREATOR AGENT OUTPUT
+--------------------------------------------------------------------------------
+{
+  "title": "Machine Learning Fundamentals Quiz",
+  "description": "This quiz assesses understanding of key concepts from the lesson on machine learning fundamentals, including its definition, types, common algorithms, and applications. Answer each multiple-choice question carefully to reinforce your learning.",
+  "lesson_title": "Introduction to Machine Learning: Fundamentals and Applications",
+  "questions": [
+    {
+      "question": "What is the primary focus of machine learning as explained in the lesson?",
+      "options": [
+        "Manually programming every decision rule.",
+        "Enabling systems to learn from data and improve performance over time.",
+        "Designing static software with fixed rules.",
+        "Avoiding the use of statistical techniques."
+      ],
+      "correct_answer_index": 1,
+      "explanation": "Machine learning focuses on developing algorithms that enable systems to learn from data and improve their performance over time without explicit programming.",
+      "difficulty": "Easy",
+      "related_section": "Introduction to Machine Learning"
+    },
+    {
+      "question": "Which of the following is NOT one of the three main types of machine learning discussed in the lesson?",
+      "options": [
+        "Supervised Learning",
+        "Unsupervised Learning",
+        "Reinforcement Learning",
+        "Collaborative Learning"
+      ],
+      "correct_answer_index": 3,
+      "explanation": "The lesson discusses supervised, unsupervised, and reinforcement learning. Collaborative learning is not mentioned as a type in the context of machine learning.",
+      "difficulty": "Medium",
+      "related_section": "Types of Machine Learning"
+    },
+    {
+      "question": "In supervised learning, which of the following best describes the training process?",
+      "options": [
+        "Training on unlabeled data.",
+        "Relying on trial and error without rewards.",
+        "Using labeled data to map inputs to known outputs.",
+        "Avoiding the use of historical data."
+      ],
+      "correct_answer_index": 2,
+      "explanation": "Supervised learning involves training a model on labeled data, where both the inputs and the desired outputs are provided to the algorithm.",
+      "difficulty": "Easy",
+      "related_section": "Types of Machine Learning"
+    },
+    {
+      "question": "Which algorithm is best suited for predicting numerical outcomes based on a linear relationship between variables?",
+      "options": [
+        "Decision Trees",
+        "Neural Networks",
+        "Linear Regression",
+        "Support Vector Machines"
+      ],
+      "correct_answer_index": 2,
+      "explanation": "Linear Regression is specifically designed to model the relationship between a dependent variable and one or more independent variables in a linear manner, making it ideal for predicting numerical outcomes.",
+      "difficulty": "Medium",
+      "related_section": "Common Algorithms in Machine Learning"
+    },
+    {
+      "question": "How is machine learning applied in the medical field as mentioned in the lesson?",
+      "options": [
+        "By using neural networks for medical image analysis to assist in early disease detection.",
+        "By using decision trees to eliminate medical errors completely.",
+        "By using unsupervised learning solely for image clustering.",
+        "By using linear regression to design new medications."
+      ],
+      "correct_answer_index": 0,
+      "explanation": "The lesson highlights that neural networks can be applied in medical image analysis, which helps in early detection of diseases and improves diagnostic accuracy.",
+      "difficulty": "Hard",
+      "related_section": "Applications of Machine Learning"
+    }
+  ],
+  "passing_score": 4,
+  "total_points": 5,
+  "estimated_completion_time_minutes": 10
+}
+
+USER QUIZ ANSWERS
+--------------------------------------------------------------------------------
+Question 1: What is the primary focus of machine learning as explained in the lesson?
+Options: Manually programming every decision rule., Enabling systems to learn from data and improve performance over time., Designing static software with fixed rules., Avoiding the use of statistical techniques.
+Your Answer: Manually programming every decision rule.
+Correct Answer: Enabling systems to learn from data and improve performance over time.
+Result: ✗ Incorrect
+
+Question 2: Which of the following is NOT one of the three main types of machine learning discussed in the lesson?
+Options: Supervised Learning, Unsupervised Learning, Reinforcement Learning, Collaborative Learning
+Your Answer: Unsupervised Learning
+Correct Answer: Collaborative Learning
+Result: ✗ Incorrect
+
+Question 3: In supervised learning, which of the following best describes the training process?
+Options: Training on unlabeled data., Relying on trial and error without rewards., Using labeled data to map inputs to known outputs., Avoiding the use of historical data.
+Your Answer: Using labeled data to map inputs to known outputs.
+Correct Answer: Using labeled data to map inputs to known outputs.
+Result: ✓ Correct
+
+Question 4: Which algorithm is best suited for predicting numerical outcomes based on a linear relationship between variables?
+Options: Decision Trees, Neural Networks, Linear Regression, Support Vector Machines
+Your Answer: Support Vector Machines
+Correct Answer: Linear Regression
+Result: ✗ Incorrect
+
+Question 5: How is machine learning applied in the medical field as mentioned in the lesson?
+Options: By using neural networks for medical image analysis to assist in early disease detection., By using decision trees to eliminate medical errors completely., By using unsupervised learning solely for image clustering., By using linear regression to design new medications.
+Your Answer: By using neural networks for medical image analysis to assist in early disease detection.
+Correct Answer: By using neural networks for medical image analysis to assist in early disease detection.
+Result: ✓ Correct
+
+QUIZ TEACHER AGENT OUTPUT
+--------------------------------------------------------------------------------
+{
+  "quiz_title": "Machine Learning Fundamentals Quiz",
+  "total_questions": 5,
+  "correct_answers": 2,
+  "score_percentage": 40.0,
+  "passed": false,
+  "total_time_taken_seconds": 4,
+  "feedback_items": [
+    {
+      "question_index": 1,
+      "question_text": "What is the primary focus of machine learning as explained in the lesson?",
+      "user_selected_option": "Option 1 - Manually programming every decision rule.",
+      "is_correct": false,
+      "correct_option": "Option 2 - Enabling systems to learn from data and improve performance over time.",
+      "explanation": "Machine learning focuses on developing algorithms that enable systems to learn from data and improve their performance over time without explicit programming.",
+      "improvement_suggestion": "Review the definition of machine learning in the lesson and focus on its emphasis on data-driven learning instead of manual programming."
+    },
+    {
+      "question_index": 2,
+      "question_text": "Which of the following is NOT one of the three main types of machine learning discussed in the lesson?",
+      "user_selected_option": "Option 2 - Unsupervised Learning",
+      "is_correct": false,
+      "correct_option": "Option 4 - Collaborative Learning",
+      "explanation": "The lesson discusses supervised, unsupervised, and reinforcement learning. Collaborative learning is not mentioned as a type in this context.",
+      "improvement_suggestion": "Revisit the section on types of machine learning to clearly understand the differences among supervised, unsupervised, and reinforcement learning."
+    },
+    {
+      "question_index": 3,
+      "question_text": "In supervised learning, which of the following best describes the training process?",
+      "user_selected_option": "Option 3 - Using labeled data to map inputs to known outputs.",
+      "is_correct": true,
+      "correct_option": "Option 3 - Using labeled data to map inputs to known outputs.",
+      "explanation": "Supervised learning involves training a model on labeled data where both inputs and known outputs are provided, thereby helping the model learn the mapping.",
+      "improvement_suggestion": ""
+    },
+    {
+      "question_index": 4,
+      "question_text": "Which algorithm is best suited for predicting numerical outcomes based on a linear relationship between variables?",
+      "user_selected_option": "Option 4 - Support Vector Machines",
+      "is_correct": false,
+      "correct_option": "Option 3 - Linear Regression",
+      "explanation": "Linear Regression is designed to model the relationship between a dependent variable and one or more independent variables in a linear manner, which makes it ideal for predicting numerical outcomes.",
+      "improvement_suggestion": "Review the concepts of regression analysis and understand the specific strengths of Linear Regression compared to other algorithms."
+    },
+    {
+      "question_index": 5,
+      "question_text": "How is machine learning applied in the medical field as mentioned in the lesson?",
+      "user_selected_option": "Option 1 - By using neural networks for medical image analysis to assist in early disease detection.",
+      "is_correct": true,
+      "correct_option": "Option 1 - By using neural networks for medical image analysis to assist in early disease detection.",
+      "explanation": "The lesson highlights that neural networks can be applied in medical image analysis to help in early disease detection, thereby improving diagnostic accuracy.",
+      "improvement_suggestion": ""
+    }
+  ],
+  "overall_feedback": "Overall, you answered 2 out of 5 questions correctly (40%). You struggled with key concepts such as the definition of machine learning, understanding the different types of learning, and selecting appropriate algorithms. Consider reviewing these topics to strengthen your understanding.",
+  "suggested_study_topics": [
+    "Definition of Machine Learning",
+    "Types of Machine Learning",
+    "Common Algorithms in Machine Learning"
+  ],
+  "next_steps": [
+    "Revisit the lesson on machine learning fundamentals to reinforce core concepts.",
+    "Focus on understanding the differences between various types of machine learning and their applications.",
+    "Engage in additional practice exercises and quizzes to deepen your mastery of these topics."
+  ]
+}
+
+ERRORS LOGGED
+--------------------------------------------------------------------------------
+[
+  {
+    "timestamp": "2025-03-27T19:06:36.168950",
+    "agent": "Session Analyzer Agent",
+    "error_type": "AttributeError",
+    "error_message": "'TutorOutputLogger' object has no attribute 'get_captured_outputs'"
+  }
+]
+
+FULL SESSION LOG (CHRONOLOGICAL)
+================================================================================
+
+[2025-03-27T19:05:58.984397] Planner Agent
+--------------------------------------------------------------------------------
+{
+  "title": "Lesson Plan for Machine Learning Fundamentals Quiz",
+  "description": "Auto-generated lesson plan based on quiz: This quiz assesses understanding of key concepts from the lesson on machine learning fundamentals, including its definition, types, common algorithms, and applications. Answer each multiple-choice question carefully to reinforce your learning.",
+  "target_audience": "Learners",
+  "prerequisites": [],
+  "sections": [
+    {
+      "title": "Section on Machine Learning Fundamentals Quiz",
+      "objectives": [
+        {
+          "title": "Complete the quiz",
+          "description": "Successfully complete the associated quiz",
+          "priority": 5
+        }
+      ],
+      "estimated_duration_minutes": 60,
+      "concepts_to_cover": [
+        "Quiz topics"
+      ]
+    }
+  ],
+  "total_estimated_duration_minutes": 60,
+  "additional_resources": []
+}
+
+[2025-03-27T19:05:58.991051] Teacher Agent
+--------------------------------------------------------------------------------
+{
+  "title": "Introduction to Machine Learning: Fundamentals and Applications",
+  "introduction": "This lesson content was derived from the quiz 'Machine Learning Fundamentals Quiz'.",
+  "sections": [
+    {
+      "title": "Introduction to Machine Learning",
+      "introduction": "Introduction to Introduction to Machine Learning",
+      "explanations": [
+        {
+          "topic": "What is the primary focus of machine learning as e...",
+          "explanation": "This explains the concept of What is the primary focus of m...",
+          "examples": [
+            "Example: Enabling systems to learn from data and improve performance over time."
+          ]
+        }
+      ],
+      "exercises": [],
+      "summary": "Summary of Introduction to Machine Learning"
+    },
+    {
+      "title": "Applications of Machine Learning",
+      "introduction": "Introduction to Applications of Machine Learning",
+      "explanations": [
+        {
+          "topic": "How is machine learning applied in the medical fie...",
+          "explanation": "This explains the concept of How is machine learning applie...",
+          "examples": [
+            "Example: By using neural networks for medical image analysis to assist in early disease detection."
+          ]
+        }
+      ],
+      "exercises": [],
+      "summary": "Summary of Applications of Machine Learning"
+    },
+    {
+      "title": "Types of Machine Learning",
+      "introduction": "Introduction to Types of Machine Learning",
+      "explanations": [
+        {
+          "topic": "Which of the following is NOT one of the three mai...",
+          "explanation": "This explains the concept of Which of the following is NOT ...",
+          "examples": [
+            "Example: Collaborative Learning"
+          ]
+        },
+        {
+          "topic": "In supervised learning, which of the following bes...",
+          "explanation": "This explains the concept of In supervised learning, which ...",
+          "examples": [
+            "Example: Using labeled data to map inputs to known outputs."
+          ]
+        }
+      ],
+      "exercises": [],
+      "summary": "Summary of Types of Machine Learning"
+    },
+    {
+      "title": "Common Algorithms in Machine Learning",
+      "introduction": "Introduction to Common Algorithms in Machine Learning",
+      "explanations": [
+        {
+          "topic": "Which algorithm is best suited for predicting nume...",
+          "explanation": "This explains the concept of Which algorithm is best suited...",
+          "examples": [
+            "Example: Linear Regression"
+          ]
+        }
+      ],
+      "exercises": [],
+      "summary": "Summary of Common Algorithms in Machine Learning"
+    }
+  ],
+  "conclusion": "See the quiz for assessment of learning objectives.",
+  "next_steps": []
+}
+
+[2025-03-27T19:05:59.000179] Quiz Creator Agent
+--------------------------------------------------------------------------------
+{
+  "title": "Machine Learning Fundamentals Quiz",
+  "description": "This quiz assesses understanding of key concepts from the lesson on machine learning fundamentals, including its definition, types, common algorithms, and applications. Answer each multiple-choice question carefully to reinforce your learning.",
+  "lesson_title": "Introduction to Machine Learning: Fundamentals and Applications",
+  "questions": [
+    {
+      "question": "What is the primary focus of machine learning as explained in the lesson?",
+      "options": [
+        "Manually programming every decision rule.",
+        "Enabling systems to learn from data and improve performance over time.",
+        "Designing static software with fixed rules.",
+        "Avoiding the use of statistical techniques."
+      ],
+      "correct_answer_index": 1,
+      "explanation": "Machine learning focuses on developing algorithms that enable systems to learn from data and improve their performance over time without explicit programming.",
+      "difficulty": "Easy",
+      "related_section": "Introduction to Machine Learning"
+    },
+    {
+      "question": "Which of the following is NOT one of the three main types of machine learning discussed in the lesson?",
+      "options": [
+        "Supervised Learning",
+        "Unsupervised Learning",
+        "Reinforcement Learning",
+        "Collaborative Learning"
+      ],
+      "correct_answer_index": 3,
+      "explanation": "The lesson discusses supervised, unsupervised, and reinforcement learning. Collaborative learning is not mentioned as a type in the context of machine learning.",
+      "difficulty": "Medium",
+      "related_section": "Types of Machine Learning"
+    },
+    {
+      "question": "In supervised learning, which of the following best describes the training process?",
+      "options": [
+        "Training on unlabeled data.",
+        "Relying on trial and error without rewards.",
+        "Using labeled data to map inputs to known outputs.",
+        "Avoiding the use of historical data."
+      ],
+      "correct_answer_index": 2,
+      "explanation": "Supervised learning involves training a model on labeled data, where both the inputs and the desired outputs are provided to the algorithm.",
+      "difficulty": "Easy",
+      "related_section": "Types of Machine Learning"
+    },
+    {
+      "question": "Which algorithm is best suited for predicting numerical outcomes based on a linear relationship between variables?",
+      "options": [
+        "Decision Trees",
+        "Neural Networks",
+        "Linear Regression",
+        "Support Vector Machines"
+      ],
+      "correct_answer_index": 2,
+      "explanation": "Linear Regression is specifically designed to model the relationship between a dependent variable and one or more independent variables in a linear manner, making it ideal for predicting numerical outcomes.",
+      "difficulty": "Medium",
+      "related_section": "Common Algorithms in Machine Learning"
+    },
+    {
+      "question": "How is machine learning applied in the medical field as mentioned in the lesson?",
+      "options": [
+        "By using neural networks for medical image analysis to assist in early disease detection.",
+        "By using decision trees to eliminate medical errors completely.",
+        "By using unsupervised learning solely for image clustering.",
+        "By using linear regression to design new medications."
+      ],
+      "correct_answer_index": 0,
+      "explanation": "The lesson highlights that neural networks can be applied in medical image analysis, which helps in early detection of diseases and improves diagnostic accuracy.",
+      "difficulty": "Hard",
+      "related_section": "Applications of Machine Learning"
+    }
+  ],
+  "passing_score": 4,
+  "total_points": 5,
+  "estimated_completion_time_minutes": 10
+}
+
+[2025-03-27T19:06:11.763543] Quiz User Answer
+--------------------------------------------------------------------------------
+Question: What is the primary focus of machine learning as explained in the lesson?
+Options: Manually programming every decision rule., Enabling systems to learn from data and improve performance over time., Designing static software with fixed rules., Avoiding the use of statistical techniques.
+Your Answer: Manually programming every decision rule.
+Correct Answer: Enabling systems to learn from data and improve performance over time.
+Result: ✗ Incorrect
+
+[2025-03-27T19:06:12.446922] Quiz User Answer
+--------------------------------------------------------------------------------
+Question: Which of the following is NOT one of the three main types of machine learning discussed in the lesson?
+Options: Supervised Learning, Unsupervised Learning, Reinforcement Learning, Collaborative Learning
+Your Answer: Unsupervised Learning
+Correct Answer: Collaborative Learning
+Result: ✗ Incorrect
+
+[2025-03-27T19:06:13.214189] Quiz User Answer
+--------------------------------------------------------------------------------
+Question: In supervised learning, which of the following best describes the training process?
+Options: Training on unlabeled data., Relying on trial and error without rewards., Using labeled data to map inputs to known outputs., Avoiding the use of historical data.
+Your Answer: Using labeled data to map inputs to known outputs.
+Correct Answer: Using labeled data to map inputs to known outputs.
+Result: ✓ Correct
+
+[2025-03-27T19:06:13.922019] Quiz User Answer
+--------------------------------------------------------------------------------
+Question: Which algorithm is best suited for predicting numerical outcomes based on a linear relationship between variables?
+Options: Decision Trees, Neural Networks, Linear Regression, Support Vector Machines
+Your Answer: Support Vector Machines
+Correct Answer: Linear Regression
+Result: ✗ Incorrect
+
+[2025-03-27T19:06:15.002009] Quiz User Answer
+--------------------------------------------------------------------------------
+Question: How is machine learning applied in the medical field as mentioned in the lesson?
+Options: By using neural networks for medical image analysis to assist in early disease detection., By using decision trees to eliminate medical errors completely., By using unsupervised learning solely for image clustering., By using linear regression to design new medications.
+Your Answer: By using neural networks for medical image analysis to assist in early disease detection.
+Correct Answer: By using neural networks for medical image analysis to assist in early disease detection.
+Result: ✓ Correct
+
+[2025-03-27T19:06:15.015676] Raw User Answers
+--------------------------------------------------------------------------------
+{
+  "quiz_title": "Machine Learning Fundamentals Quiz",
+  "user_answers": [
+    {
+      "question_index": 0,
+      "selected_option_index": 0,
+      "time_taken_seconds": 1
+    },
+    {
+      "question_index": 1,
+      "selected_option_index": 1,
+      "time_taken_seconds": 0
+    },
+    {
+      "question_index": 2,
+      "selected_option_index": 2,
+      "time_taken_seconds": 0
+    },
+    {
+      "question_index": 3,
+      "selected_option_index": 3,
+      "time_taken_seconds": 0
+    },
+    {
+      "question_index": 4,
+      "selected_option_index": 0,
+      "time_taken_seconds": 1
+    }
+  ],
+  "total_time_taken_seconds": 4
+}
+
+[2025-03-27T19:06:36.135411] Quiz Teacher Agent
+--------------------------------------------------------------------------------
+{
+  "quiz_title": "Machine Learning Fundamentals Quiz",
+  "total_questions": 5,
+  "correct_answers": 2,
+  "score_percentage": 40.0,
+  "passed": false,
+  "total_time_taken_seconds": 4,
+  "feedback_items": [
+    {
+      "question_index": 1,
+      "question_text": "What is the primary focus of machine learning as explained in the lesson?",
+      "user_selected_option": "Option 1 - Manually programming every decision rule.",
+      "is_correct": false,
+      "correct_option": "Option 2 - Enabling systems to learn from data and improve performance over time.",
+      "explanation": "Machine learning focuses on developing algorithms that enable systems to learn from data and improve their performance over time without explicit programming.",
+      "improvement_suggestion": "Review the definition of machine learning in the lesson and focus on its emphasis on data-driven learning instead of manual programming."
+    },
+    {
+      "question_index": 2,
+      "question_text": "Which of the following is NOT one of the three main types of machine learning discussed in the lesson?",
+      "user_selected_option": "Option 2 - Unsupervised Learning",
+      "is_correct": false,
+      "correct_option": "Option 4 - Collaborative Learning",
+      "explanation": "The lesson discusses supervised, unsupervised, and reinforcement learning. Collaborative learning is not mentioned as a type in this context.",
+      "improvement_suggestion": "Revisit the section on types of machine learning to clearly understand the differences among supervised, unsupervised, and reinforcement learning."
+    },
+    {
+      "question_index": 3,
+      "question_text": "In supervised learning, which of the following best describes the training process?",
+      "user_selected_option": "Option 3 - Using labeled data to map inputs to known outputs.",
+      "is_correct": true,
+      "correct_option": "Option 3 - Using labeled data to map inputs to known outputs.",
+      "explanation": "Supervised learning involves training a model on labeled data where both inputs and known outputs are provided, thereby helping the model learn the mapping.",
+      "improvement_suggestion": ""
+    },
+    {
+      "question_index": 4,
+      "question_text": "Which algorithm is best suited for predicting numerical outcomes based on a linear relationship between variables?",
+      "user_selected_option": "Option 4 - Support Vector Machines",
+      "is_correct": false,
+      "correct_option": "Option 3 - Linear Regression",
+      "explanation": "Linear Regression is designed to model the relationship between a dependent variable and one or more independent variables in a linear manner, which makes it ideal for predicting numerical outcomes.",
+      "improvement_suggestion": "Review the concepts of regression analysis and understand the specific strengths of Linear Regression compared to other algorithms."
+    },
+    {
+      "question_index": 5,
+      "question_text": "How is machine learning applied in the medical field as mentioned in the lesson?",
+      "user_selected_option": "Option 1 - By using neural networks for medical image analysis to assist in early disease detection.",
+      "is_correct": true,
+      "correct_option": "Option 1 - By using neural networks for medical image analysis to assist in early disease detection.",
+      "explanation": "The lesson highlights that neural networks can be applied in medical image analysis to help in early disease detection, thereby improving diagnostic accuracy.",
+      "improvement_suggestion": ""
+    }
+  ],
+  "overall_feedback": "Overall, you answered 2 out of 5 questions correctly (40%). You struggled with key concepts such as the definition of machine learning, understanding the different types of learning, and selecting appropriate algorithms. Consider reviewing these topics to strengthen your understanding.",
+  "suggested_study_topics": [
+    "Definition of Machine Learning",
+    "Types of Machine Learning",
+    "Common Algorithms in Machine Learning"
+  ],
+  "next_steps": [
+    "Revisit the lesson on machine learning fundamentals to reinforce core concepts.",
+    "Focus on understanding the differences between various types of machine learning and their applications.",
+    "Engage in additional practice exercises and quizzes to deepen your mastery of these topics."
+  ]
+}
+
+[2025-03-27T19:06:36.168950] Session Analyzer Agent Error
+--------------------------------------------------------------------------------
+'TutorOutputLogger' object has no attribute 'get_captured_outputs'
+
