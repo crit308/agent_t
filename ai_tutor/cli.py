@@ -9,7 +9,7 @@ import uuid
 
 from ai_tutor.manager import AITutorManager
 from ai_tutor.agents.analyzer_agent import analyze_documents
-from ai_tutor.agents.models import Quiz, LessonPlan, QuizUserAnswer, QuizUserAnswers
+from ai_tutor.agents.models import Quiz, LessonPlan, QuizUserAnswer, QuizUserAnswers, SessionAnalysis, QuizFeedback
 from ai_tutor.output_logger import get_logger
 
 # Create parser outside of the __main__ block so it can be imported
@@ -55,6 +55,11 @@ tutor_parser.add_argument(
     action="store_true",
     help="Skip the interactive quiz-taking and evaluation steps"
 )
+tutor_parser.add_argument(
+    "--session-analysis",
+    action="store_true",
+    help="Run session analysis after the workflow is complete"
+)
 
 # Document analyzer command
 analyzer_parser = subparsers.add_parser("analyze", help="Run only the document analyzer")
@@ -94,15 +99,15 @@ async def run_tutor(args):
     elif not os.environ.get("OPENAI_API_KEY"):
         print("WARNING: OPENAI_API_KEY environment variable is not set!")
     
-    # Create the AI tutor manager with auto-analyze option
-    manager = AITutorManager(args.api_key, auto_analyze=args.auto_analyze)
-    
-    # Get the logger instance
+    # Get the logger instance first
     logger = get_logger()
+    
+    # Create the AI tutor manager with auto-analyze option and the logger
+    manager = AITutorManager(args.api_key, auto_analyze=args.auto_analyze, output_logger=logger)
     
     print("AI Tutor System")
     print("==============")
-    
+
     # Run the full workflow
     print("\n1. Uploading documents...")
     try:
@@ -224,8 +229,12 @@ async def run_tutor(args):
     step_num += 1
     print(f"\n{step_num}. Creating quiz...")
     try:
+        # Check if quiz may already be generated from handoff chain
+        if hasattr(manager, 'quiz') and manager.quiz and hasattr(manager.quiz, 'questions') and len(manager.quiz.questions) > 0:
+            quiz = manager.quiz
+            print(f"✓ Using quiz that was already generated via handoff chain: {quiz.title}")
         # Quiz may already be generated if lesson plan was a Quiz
-        if isinstance(lesson_plan, Quiz):
+        elif isinstance(lesson_plan, Quiz):
             quiz = lesson_plan
             print(f"✓ Quiz already generated as part of lesson plan")
         else:
@@ -338,12 +347,50 @@ async def run_tutor(args):
         if quiz_feedback.suggested_study_topics:
             print("\nAreas for Improvement/Suggested Study Topics:")
             for topic in quiz_feedback.suggested_study_topics:
-                print(f"- {topic}")
+                if topic.strip():  # Only print non-empty topics
+                    print(f"- {topic}")
         
         if quiz_feedback.next_steps:
             print("\nRecommended Next Steps:")
             for step in quiz_feedback.next_steps:
                 print(f"- {step}")
+                
+        # Run session analysis if requested
+        if args.session_analysis:
+            step_num += 1
+            print(f"\n{step_num}. Running session analysis...")
+            try:
+                session_analysis = await manager.analyze_session()
+                
+                # Log the session analysis output
+                logger.log_session_analysis_output(session_analysis)
+                
+                print(f"\n=== Session Analysis Summary ===")
+                print(f"Overall Effectiveness: {session_analysis.overall_effectiveness:.1f}/100")
+                print(f"Lesson Plan Quality: {session_analysis.lesson_plan_quality:.1f}/100")
+                print(f"Content Quality: {session_analysis.content_quality:.1f}/100")
+                print(f"Quiz Quality: {session_analysis.quiz_quality:.1f}/100")
+                print(f"Student Performance: {session_analysis.student_performance:.1f}/100")
+                print(f"Teaching Effectiveness: {session_analysis.teaching_effectiveness:.1f}/100")
+                
+                print("\nKey Strengths:")
+                for strength in session_analysis.strengths[:3]:  # Show top 3 strengths
+                    print(f"- {strength}")
+                
+                print("\nKey Areas for Improvement:")
+                for area in session_analysis.improvement_areas[:3]:  # Show top 3 improvement areas
+                    print(f"- {area}")
+                
+                print("\nTop Recommendations:")
+                for rec in session_analysis.recommendations[:3]:  # Show top 3 recommendations
+                    print(f"- {rec}")
+                
+                print(f"\nComplete session analysis has been saved to the log file.")
+                
+            except Exception as e:
+                print(f"Error running session analysis: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 
         # Save the session log
         output_file = logger.save()
@@ -354,6 +401,10 @@ async def run_tutor(args):
         # Save the session log even if there was an error
         logger.save()
         return
+    
+    print("\nAI Tutor workflow complete!")
+    print(f"Detailed logs have been saved to: {logger.output_file}")
+    return 0
 
 async def run_analyzer(args):
     """Run only the document analyzer."""

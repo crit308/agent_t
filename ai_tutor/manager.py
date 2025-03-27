@@ -4,6 +4,7 @@ from typing import List, Optional, Any
 import openai
 import threading
 import uuid
+import time
 
 from agents import Runner, trace, gen_trace_id, set_tracing_export_api_key
 
@@ -13,18 +14,20 @@ from ai_tutor.agents.teacher_agent import generate_lesson_content, create_teache
 from ai_tutor.agents.analyzer_agent import analyze_documents
 from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent, generate_quiz, create_quiz_creator_agent_with_teacher_handoff
 from ai_tutor.agents.quiz_teacher_agent import create_quiz_teacher_agent, generate_quiz_feedback
-from ai_tutor.agents.models import LessonContent, Quiz, LessonPlan, LessonSection, LearningObjective, QuizUserAnswers, QuizFeedback, QuizUserAnswer, SectionContent, ExplanationContent, Exercise
+from ai_tutor.agents.session_analyzer_agent import create_session_analyzer_agent, analyze_teaching_session
+from ai_tutor.agents.models import LessonContent, Quiz, LessonPlan, LessonSection, LearningObjective, QuizUserAnswers, QuizFeedback, QuizUserAnswer, SectionContent, ExplanationContent, Exercise, SessionAnalysis
 
 
 class AITutorManager:
     """Main manager class for the AI Tutor system."""
     
-    def __init__(self, api_key: str, auto_analyze: bool = False):
+    def __init__(self, api_key: str, auto_analyze: bool = False, output_logger=None):
         """Initialize the AI Tutor manager with the OpenAI API key.
         
         Args:
             api_key: The OpenAI API key to use for all agents
             auto_analyze: Whether to automatically run document analysis when documents are uploaded
+            output_logger: Optional logger for capturing agent outputs
         """
         self.api_key = api_key
         self.auto_analyze = auto_analyze
@@ -46,10 +49,20 @@ class AITutorManager:
         self.quiz = None
         self.document_analysis = None
         self.quiz_feedback = None
+        self.session_analysis = None
         self.file_paths = []
         self._analysis_task = None
         self._analysis_complete = asyncio.Event()
         self._current_trace_id = None
+        self._session_start_time = None
+        
+        # Initialize or set the output logger
+        if output_logger:
+            self.output_logger = output_logger
+        else:
+            # Import the logger here to avoid circular imports
+            from ai_tutor.output_logger import get_logger
+            self.output_logger = get_logger()
     
     def get_trace_id(self) -> Optional[str]:
         """Get the current trace ID for OpenAI tracing.
@@ -557,164 +570,87 @@ class AITutorManager:
             
             return lesson_content_result
     
-    async def generate_quiz(self, enable_teacher_handoff: bool = False) -> Optional[Quiz]:
+    async def generate_quiz(self) -> Optional[Quiz]:
         """Generate a quiz based on the lesson content.
         
-        Args:
-            enable_teacher_handoff: Whether to enable handoff to the quiz teacher agent
-            
         Returns:
-            Quiz object or None if generation fails
+            The generated quiz, or None if an error occurred
         """
         # If we already have a quiz from a previous handoff, return it
         if self.quiz and hasattr(self.quiz, 'questions') and len(self.quiz.questions) > 0:
-            print("Using quiz that was already generated via handoff")
+            print("Using quiz that was already generated via handoff chain")
             print(f"Quiz has {len(self.quiz.questions)} questions")
             return self.quiz
-            
-        if not self.lesson_content:
-            print("No lesson content available. Will create minimal content to generate a quiz.")
-            # Create minimal content if needed
-            if not hasattr(self, 'lesson_plan') or not self.lesson_plan:
-                print("Creating a minimal lesson plan first")
-                from ai_tutor.agents.models import LessonPlan, LessonSection, LearningObjective
-                self.lesson_plan = LessonPlan(
-                    title="Sample Lesson",
-                    description="A sample lesson for quiz generation",
-                    target_audience="General audience",
-                    prerequisites=["Basic understanding"],
-                    sections=[
-                        LessonSection(
-                            title="Introduction",
-                            objectives=[
-                                LearningObjective(
-                                    title="Learn basics",
-                                    description="Understand basic concepts",
-                                    priority=5
-                                )
-                            ],
-                            estimated_duration_minutes=30,
-                            concepts_to_cover=["Basic concepts"]
-                        )
-                    ],
-                    total_estimated_duration_minutes=30,
-                    additional_resources=[]
-                )
-            
-            # Create minimal lesson content
-            from ai_tutor.agents.models import LessonContent, SectionContent, ExplanationContent, Exercise
-            self.lesson_content = LessonContent(
-                title="Sample Content",
-                introduction="This is sample content for quiz generation",
-                sections=[
-                    SectionContent(
-                        title="Introduction",
-                        introduction="Introduction to sample content",
-                        explanations=[
-                            ExplanationContent(
-                                topic="Sample Topic",
-                                explanation="This is a sample explanation",
-                                examples=["Example 1"]
-                            )
-                        ],
-                        exercises=[
-                            Exercise(
-                                question="Sample question?",
-                                difficulty_level="Easy",
-                                answer="Sample answer",
-                                explanation="This is a sample explanation"
-                            )
-                        ],
-                        summary="Summary of sample content"
-                    )
-                ],
-                conclusion="Conclusion of sample content",
-                next_steps=["Next step"]
-            )
-            print("Created minimal lesson content for quiz generation")
         
+        if not self.lesson_content:
+            print("Cannot generate quiz: Lesson content has not been generated yet")
+            return None
+        
+        # Create and configure trace
         trace_id = gen_trace_id()
         print(f"Generating quiz with trace ID: {trace_id}")
         print(f"View trace at: https://platform.openai.com/traces/{trace_id}")
         
-        # Ensure API key is set for tracing before creating the trace
-        if self.api_key:
-            set_tracing_export_api_key(self.api_key)
+        # Determine if we should use teacher handoff
+        if self.quiz_feedback is not None:
+            # Quiz feedback already exists, so we already executed a quiz teacher handoff
+            enable_teacher_handoff = False
+            print("Using quiz creator without teacher handoff to prevent duplicate workflows")
+        else:
+            # Quiz feedback does not exist, so it's safe to enable teacher handoff
+            enable_teacher_handoff = True
+            print("Using quiz creator with teacher handoff")
         
-        with trace("Generating quiz", trace_id=trace_id):
-            try:
-                # Generate the quiz using the quiz creator agent
-                # ALWAYS disable teacher handoff to prevent duplicate workflows
-                print("Using quiz creator without teacher handoff to prevent duplicate workflows")
-                quiz_result = await generate_quiz(
-                    self.lesson_content, 
-                    self.api_key, 
-                    enable_teacher_handoff=False  # Always disable to prevent duplicate workflows
-                )
-                
-                # Store the quiz for later reference
-                if quiz_result and hasattr(quiz_result, 'questions'):
-                    # Keep the existing quiz if it has questions but the new one doesn't
-                    if len(quiz_result.questions) == 0 and self.quiz and hasattr(self.quiz, 'questions') and len(self.quiz.questions) > 0:
-                        print(f"WARNING: New quiz has no questions, keeping existing quiz with {len(self.quiz.questions)} questions.")
-                    else:
-                        self.quiz = quiz_result
-                        
-                        # Basic validation to ensure the quiz has questions
-                        if not hasattr(self.quiz, 'questions') or len(self.quiz.questions) == 0:
-                            print("WARNING: Generated quiz has no questions.")
-                        else:
-                            print(f"Successfully generated quiz: {self.quiz.title}")
-                            print(f"  Questions: {len(self.quiz.questions)}")
-                            print(f"  Passing score: {self.quiz.passing_score}/{self.quiz.total_points}")
-                elif quiz_result:
-                    # We got something, but it doesn't have questions
-                    print("WARNING: Quiz result doesn't have questions attribute")
-                    self.quiz = quiz_result
-                else:
-                    print("WARNING: Quiz generation returned None")
-                
-                # Return the quiz object
-                return self.quiz
-                
-            except Exception as e:
-                print(f"Error generating quiz: {e}")
-                # Return a minimal quiz if something went wrong
-                from ai_tutor.agents.models import Quiz, QuizQuestion
-                self.quiz = Quiz(
-                    title=f"Quiz on {self.lesson_content.title}",
-                    description="Error generating complete quiz.",
-                    lesson_title=self.lesson_content.title,
-                    questions=[
-                        QuizQuestion(
-                            question="What is the main topic of this lesson?",
-                            options=[
-                                f"Understanding {self.lesson_content.title}", 
-                                "Learning general knowledge", 
-                                "Testing the quiz system", 
-                                "None of the above"
-                            ],
-                            correct_answer_index=0,
-                            explanation=f"This quiz is about {self.lesson_content.title}.",
-                            difficulty="Easy",
-                            related_section="Introduction"
-                        )
-                    ],
-                    passing_score=1,
-                    total_points=1,
-                    estimated_completion_time_minutes=5
-                )
-                return self.quiz
+        # Generate the quiz
+        try:
+            from ai_tutor.agents.quiz_creator_agent import generate_quiz
+            self.quiz = await generate_quiz(self.lesson_content, self.api_key, enable_teacher_handoff=enable_teacher_handoff)
+            print(f"Successfully generated quiz: {self.quiz.title}")
+            print(f"  Questions: {len(self.quiz.questions)}")
+            print(f"  Passing score: {self.quiz.passing_score}/{self.quiz.total_points}")
+            return self.quiz
+        except Exception as e:
+            print(f"Error generating quiz: {e}")
+            # Create a minimal quiz with at least one question
+            from ai_tutor.agents.models import Quiz, QuizQuestion
+            self.quiz = Quiz(
+                title=f"Quiz on {self.lesson_content.title}",
+                description="This is a test quiz.",
+                lesson_title=self.lesson_content.title,
+                questions=[
+                    QuizQuestion(
+                        question="What is the main topic of this lesson?",
+                        options=[
+                            f"The main topic is {self.lesson_content.title}",
+                            "The main topic is history",
+                            "The main topic is science",
+                            "The main topic is mathematics"
+                        ],
+                        correct_answer_index=0,
+                        explanation=f"This quiz is about {self.lesson_content.title}.",
+                        difficulty="Easy",
+                        related_section="Introduction"
+                    )
+                ],
+                passing_score=1,
+                total_points=1,
+                estimated_completion_time_minutes=5
+            )
+            return self.quiz
     
     async def run_full_workflow_with_quiz_teacher(self, file_paths: List[str]) -> dict:
         """Run the full workflow from document upload to quiz creation and feedback.
         
         Args:
-            file_paths: List of paths to documents to upload
+            file_paths: A list of file paths to upload for the lesson
             
         Returns:
-            Dictionary with lesson plan, lesson content, quiz, user answers, and quiz feedback
+            A dictionary containing the lesson plan, lesson content, quiz, 
+            user's answers, and quiz feedback
         """
+        # Record the session start time
+        self._session_start_time = time.time()
+        
         print("Running full workflow with quiz teacher...")
         
         # 1. Upload documents
@@ -818,8 +754,7 @@ class AITutorManager:
             if not self.quiz or not hasattr(self.quiz, 'questions') or len(self.quiz.questions) == 0:
                 try:
                     print("\n4. Creating quiz...")
-                    # Always use enable_teacher_handoff=False to prevent triggering automatic handoff
-                    self.quiz = await self.generate_quiz(enable_teacher_handoff=False)
+                    self.quiz = await self.generate_quiz()
                     if not self.quiz or not hasattr(self.quiz, 'questions'):
                         raise ValueError("Failed to generate valid quiz with questions")
                 except Exception as e:
@@ -929,6 +864,15 @@ class AITutorManager:
         if not self.quiz:
             raise ValueError("No quiz is available. Generate a quiz first.")
         
+        # If we already have quiz feedback from a handoff, return it
+        if self.quiz_feedback:
+            print("Using existing quiz feedback from handoff chain")
+            return self.quiz_feedback
+        
+        # Log the raw user answers if we have an output logger
+        if hasattr(self, 'output_logger') and self.output_logger:
+            self.output_logger.log_raw_user_answers(user_answers)
+        
         # Create and configure trace
         trace_id = gen_trace_id()
         print(f"Processing quiz answers with trace ID: {trace_id}")
@@ -1015,3 +959,112 @@ class AITutorManager:
             return f"Successfully uploaded {uploaded_file.filename}"
         except Exception as e:
             return f"Error uploading {file_path}: {str(e)}"
+
+    async def analyze_session(self) -> SessionAnalysis:
+        """Analyze the complete teaching session after it has finished.
+        
+        This should be called after the full workflow is complete to get insights
+        about the effectiveness of the teaching session.
+        
+        Returns:
+            A SessionAnalysis object with insights about the session
+        """
+        if not all([self.lesson_plan, self.lesson_content, self.quiz, self.quiz_feedback]):
+            raise ValueError("Cannot analyze session: Complete workflow has not been run.")
+            
+        # Calculate session duration
+        session_end_time = time.time()
+        if self._session_start_time is None:
+            # If session start time wasn't recorded, use a default duration
+            session_duration_seconds = 0
+        else:
+            session_duration_seconds = int(session_end_time - self._session_start_time)
+            
+        # Create and configure trace
+        trace_id = gen_trace_id()
+        print(f"Analyzing teaching session with trace ID: {trace_id}")
+        print(f"View trace at: https://platform.openai.com/traces/{trace_id}")
+        
+        # Ensure API key is set for tracing before creating the trace
+        if self.api_key:
+            set_tracing_export_api_key(self.api_key)
+        
+        try:
+            # Create a simple QuizUserAnswers object from the quiz feedback
+            # This reconstructs the user answers from the feedback items
+            user_answers = QuizUserAnswers(
+                quiz_title=self.quiz_feedback.quiz_title,
+                total_time_taken_seconds=self.quiz_feedback.total_time_taken_seconds,
+                user_answers=[]
+            )
+            
+            # Process feedback items to create user answers
+            for item in self.quiz_feedback.feedback_items:
+                if not hasattr(item, 'question_index') or item.question_index is None:
+                    # Skip items that don't have question index
+                    continue
+                    
+                # Ensure the question index is valid
+                if item.question_index < len(self.quiz.questions):
+                    question = self.quiz.questions[item.question_index]
+                    # Find the selected option index
+                    selected_option_index = 0  # Default to first option if not found
+                    
+                    # Try to find the matching option
+                    for i, option in enumerate(question.options):
+                        if option == item.user_selected_option:
+                            selected_option_index = i
+                            break
+                    
+                    user_answer = QuizUserAnswer(
+                        question_index=item.question_index,
+                        selected_option_index=selected_option_index,
+                        time_taken_seconds=0  # We don't have this information from the feedback
+                    )
+                    user_answers.user_answers.append(user_answer)
+            
+            # Collect raw outputs from all agents in the workflow
+            raw_agent_outputs = {}
+            
+            # Get raw outputs from output logger if available
+            if hasattr(self, 'output_logger') and self.output_logger:
+                # Access the logs dictionary from the output logger
+                logs = getattr(self.output_logger, 'logs', {})
+                
+                # Extract the raw outputs for each agent
+                if 'planner_agent_output' in logs:
+                    raw_agent_outputs['planner_agent'] = logs['planner_agent_output']
+                
+                if 'teacher_agent_output' in logs:
+                    raw_agent_outputs['teacher_agent'] = logs['teacher_agent_output']
+                
+                if 'quiz_creator_agent_output' in logs:
+                    raw_agent_outputs['quiz_creator_agent'] = logs['quiz_creator_agent_output']
+                
+                if 'quiz_teacher_agent_output' in logs:
+                    raw_agent_outputs['quiz_teacher_agent'] = logs['quiz_teacher_agent_output']
+                
+                # Get user answers if available
+                if 'user_answers' in logs:
+                    raw_agent_outputs['user_answers'] = logs['user_answers']
+            
+            with trace("Session analysis", trace_id=trace_id):
+                # Run the session analyzer agent
+                self.session_analysis = await analyze_teaching_session(
+                    lesson_plan=self.lesson_plan,
+                    lesson_content=self.lesson_content,
+                    quiz=self.quiz,
+                    user_answers=user_answers,  # Use the reconstructed user answers
+                    quiz_feedback=self.quiz_feedback,
+                    session_duration_seconds=session_duration_seconds,
+                    raw_agent_outputs=raw_agent_outputs,  # Pass the raw outputs to the analyzer
+                    api_key=self.api_key
+                )
+                
+                return self.session_analysis
+            
+        except Exception as e:
+            import traceback
+            print(f"Error running session analysis: {str(e)}")
+            print(traceback.format_exc())
+            raise

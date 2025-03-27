@@ -183,4 +183,56 @@ class QuizFeedback(BaseModel):
     feedback_items: List[QuizFeedbackItem] = Field(description="Feedback for each answer")
     overall_feedback: str = Field(description="Overall feedback on the quiz performance")
     suggested_study_topics: List[str] = Field(description="Topics suggested for further study")
-    next_steps: List[str] = Field(description="Recommended next steps for learning") 
+    next_steps: List[str] = Field(description="Recommended next steps for learning")
+
+
+class LearningInsight(BaseModel):
+    """A specific insight about the learning session."""
+    topic: str = Field(description="The topic or area this insight relates to")
+    observation: str = Field(description="What was observed during the session")
+    strength: bool = Field(description="Whether this is a strength (True) or area for improvement (False)")
+    recommendation: str = Field(description="Recommendation based on this insight")
+
+
+class TeachingInsight(BaseModel):
+    """A specific insight about the teaching approach."""
+    approach: str = Field(description="The teaching approach or method used")
+    effectiveness: str = Field(description="How effective this approach was")
+    evidence: str = Field(description="Evidence from the session supporting this assessment")
+    suggestion: str = Field(description="Suggestion for improvement or continuation")
+
+
+class SessionAnalysis(BaseModel):
+    """Complete analysis of a teaching session workflow."""
+    session_id: str = Field(description="Unique identifier for the teaching session")
+    session_duration_seconds: int = Field(description="Total duration of the session in seconds")
+    
+    # Overall session assessment
+    overall_effectiveness: float = Field(description="Overall effectiveness score (0-100)")
+    strengths: List[str] = Field(description="Key strengths of the session")
+    improvement_areas: List[str] = Field(description="Areas that need improvement")
+    
+    # Lesson plan assessment
+    lesson_plan_quality: float = Field(description="Quality score for the lesson plan (0-100)")
+    lesson_plan_insights: List[str] = Field(description="Insights about the lesson plan")
+    
+    # Teaching content assessment
+    content_quality: float = Field(description="Quality score for the teaching content (0-100)")
+    content_insights: List[str] = Field(description="Insights about the teaching content")
+    
+    # Quiz assessment 
+    quiz_quality: float = Field(description="Quality score for the quiz (0-100)")
+    quiz_insights: List[str] = Field(description="Insights about the quiz")
+    
+    # Student performance assessment
+    student_performance: float = Field(description="Student performance score (0-100)")
+    learning_insights: List[LearningInsight] = Field(description="Detailed insights about student learning")
+    
+    # Teaching methodology assessment
+    teaching_effectiveness: float = Field(description="Score for teaching effectiveness (0-100)")
+    teaching_insights: List[TeachingInsight] = Field(description="Detailed insights about teaching methodology")
+    
+    # Recommendations
+    recommendations: List[str] = Field(description="Actionable recommendations for future sessions")
+    recommended_adjustments: List[str] = Field(description="Specific adjustments for the next session")
+    suggested_resources: List[str] = Field(description="Additional resources to address gaps") 

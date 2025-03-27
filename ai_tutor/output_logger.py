@@ -20,27 +20,29 @@ class TutorOutputLogger:
         self.output_file = output_file
         self.logs = {
             "timestamp": datetime.now().isoformat(),
-            "planner_output": "",
-            "teacher_output": "",
-            "quiz_creator_output": "",
+            "planner_agent_output": "",
+            "teacher_agent_output": "",
+            "quiz_creator_agent_output": "",
             "quiz_user_answers": [],
-            "quiz_teacher_output": "",
+            "user_answers": "",
+            "quiz_teacher_agent_output": "",
+            "session_analysis_output": "",
             "full_session": []
         }
     
     def log_planner_output(self, output: Any) -> None:
         """Log output from the planner agent."""
-        self.logs["planner_output"] = self._format_output(output)
+        self.logs["planner_agent_output"] = self._format_output(output)
         self._append_to_session("Planner Agent", output)
     
     def log_teacher_output(self, output: Any) -> None:
         """Log output from the teacher agent."""
-        self.logs["teacher_output"] = self._format_output(output)
+        self.logs["teacher_agent_output"] = self._format_output(output)
         self._append_to_session("Teacher Agent", output)
     
     def log_quiz_creator_output(self, output: Any) -> None:
         """Log output from the quiz creator agent."""
-        self.logs["quiz_creator_output"] = self._format_output(output)
+        self.logs["quiz_creator_agent_output"] = self._format_output(output)
         self._append_to_session("Quiz Creator Agent", output)
     
     def log_quiz_user_answer(self, question: str, options: List[str], 
@@ -65,10 +67,20 @@ class TutorOutputLogger:
         )
         self._append_to_session("Quiz User Answer", answer_text)
     
+    def log_raw_user_answers(self, user_answers: Any) -> None:
+        """Log the complete raw user answers object."""
+        self.logs["user_answers"] = self._format_output(user_answers)
+        self._append_to_session("Raw User Answers", user_answers)
+    
     def log_quiz_teacher_output(self, output: Any) -> None:
         """Log output from the quiz teacher agent."""
-        self.logs["quiz_teacher_output"] = self._format_output(output)
+        self.logs["quiz_teacher_agent_output"] = self._format_output(output)
         self._append_to_session("Quiz Teacher Agent", output)
+    
+    def log_session_analysis_output(self, output: Any) -> None:
+        """Log output from the session analyzer agent."""
+        self.logs["session_analysis_output"] = self._format_output(output)
+        self._append_to_session("Session Analyzer Agent", output)
     
     def _format_output(self, output: Any) -> str:
         """Format an output object to string representation."""
@@ -103,28 +115,29 @@ class TutorOutputLogger:
         """
         with open(self.output_file, "w", encoding="utf-8") as f:
             # Write a readable format with headers and sections
+            f.write("AI TUTOR SESSION LOG\n")
             f.write("=" * 80 + "\n")
-            f.write(f"AI TUTOR SESSION LOG - {self.logs['timestamp']}\n")
-            f.write("=" * 80 + "\n\n")
+            f.write(f"Timestamp: {self.logs['timestamp']}\n\n")
             
             # Write each section
             f.write("PLANNER AGENT OUTPUT\n")
             f.write("-" * 80 + "\n")
-            f.write(self.logs["planner_output"])
+            f.write(self.logs["planner_agent_output"])
             f.write("\n\n")
             
             f.write("TEACHER AGENT OUTPUT\n")
             f.write("-" * 80 + "\n")
-            f.write(self.logs["teacher_output"])
+            f.write(self.logs["teacher_agent_output"])
             f.write("\n\n")
             
             f.write("QUIZ CREATOR AGENT OUTPUT\n")
             f.write("-" * 80 + "\n")
-            f.write(self.logs["quiz_creator_output"])
+            f.write(self.logs["quiz_creator_agent_output"])
             f.write("\n\n")
             
-            f.write("QUIZ USER ANSWERS\n")
+            f.write("USER QUIZ ANSWERS\n")
             f.write("-" * 80 + "\n")
+            
             for i, answer in enumerate(self.logs["quiz_user_answers"]):
                 f.write(f"Question {i+1}: {answer['question']}\n")
                 f.write(f"Options: {', '.join(answer['options'])}\n")
@@ -134,8 +147,14 @@ class TutorOutputLogger:
             
             f.write("QUIZ TEACHER AGENT OUTPUT\n")
             f.write("-" * 80 + "\n")
-            f.write(self.logs["quiz_teacher_output"])
+            f.write(self.logs["quiz_teacher_agent_output"])
             f.write("\n\n")
+            
+            if self.logs["session_analysis_output"]:
+                f.write("SESSION ANALYSIS AGENT OUTPUT\n")
+                f.write("-" * 80 + "\n")
+                f.write(self.logs["session_analysis_output"])
+                f.write("\n\n")
             
             f.write("FULL SESSION LOG (CHRONOLOGICAL)\n")
             f.write("=" * 80 + "\n\n")
@@ -144,7 +163,7 @@ class TutorOutputLogger:
                 f.write("-" * 80 + "\n")
                 f.write(entry['output'])
                 f.write("\n\n")
-                
+        
         print(f"AI Tutor session log saved to: {self.output_file}")
         return self.output_file
 
