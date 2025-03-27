@@ -14,6 +14,13 @@ from ai_tutor.output_logger import get_logger
 
 # Create parser outside of the __main__ block so it can be imported
 parser = argparse.ArgumentParser(description="AI Tutor System")
+# Add log level argument
+parser.add_argument(
+    "--log-level",
+    default="INFO",
+    choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+    help="Set the logging level for SDK and related libraries."
+)
 subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
 # Full AI tutor workflow command

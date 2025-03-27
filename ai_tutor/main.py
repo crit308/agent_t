@@ -3,6 +3,10 @@ import sys
 import logging # Import standard logging
 from typing import List, Optional
 
+from dotenv import load_dotenv # Import dotenv
+load_dotenv() # Load environment variables from .env file at the start
+
+import asyncio # Import asyncio
 # Add this directory to the system path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -17,11 +21,11 @@ import json as _stdlib_json
 
 
 if __name__ == "__main__":
-    # Import the CLI's parser
-    from ai_tutor.cli_parser import parse_args
+    # Import the parser object defined in cli.py
+    from ai_tutor.cli import parser
     
     # Parse command-line args
-    args = parse_args()
+    args = parser.parse_args()
     
     # Set logger level
     for logger_name in ["openai", "openai_agents", "httpx"]:
@@ -31,7 +35,14 @@ if __name__ == "__main__":
     # SDK Tracing is configured via RunConfig or globally via agents.set_tracing_... functions
     
     # Set default API key to use for all calls (or tries env vars)
-    set_default_openai_key(args.api_key)
+    api_key_to_use = args.api_key or os.environ.get("OPENAI_API_KEY")
+    if not api_key_to_use:
+        print("ERROR: OpenAI API key is required. Provide it via --api-key or OPENAI_API_KEY environment variable.")
+        sys.exit(1)
+    
+    # Set environment variable for direct openai.Client() usage AND set SDK default
+    os.environ["OPENAI_API_KEY"] = api_key_to_use
+    set_default_openai_key(api_key_to_use)
     # If using a separate tracing key:
     # set_tracing_export_api_key("YOUR_TRACING_KEY")
     print("Set default OpenAI API key for SDK.")
@@ -51,22 +62,16 @@ if __name__ == "__main__":
         if args.output:
             output_path = args.output
         
-        # Start tracing
-        # set_tracing_enabled(True)
-        from ai_tutor.tutor import start_ai_tutoring
-        # Start the AI tutoring session (will run until completion)
-        start_ai_tutoring(
-            filename=args.files[0],
-            output_log_file=output_path,
-            topic=args.topic,
-            learning_level=args.learning_level,
-            students_per_group=args.students,
-            max_quiz_questions=args.max_quiz_questions,
-            verbose=args.verbose
-        )
+        # Import and run the main async function from cli.py
+        from ai_tutor.cli import main as cli_main
+        asyncio.run(cli_main(args))
     elif args.command == 'explain':
         from ai_tutor.explain import explain_code
         explain_code(args.files[0], args.verbose)
-    else:
-        print(f"Unknown command: {args.command}")
+    # The 'analyze' command is handled similarly via cli.py's main function
+    elif args.command == 'analyze':
+        from ai_tutor.cli import main as cli_main
+        asyncio.run(cli_main(args))
+    else: # Should ideally be caught by argparse, but good to have a fallback
+        print(f"Unknown command received in main.py: {args.command}")
         sys.exit(1) 
