@@ -2,7 +2,7 @@ import os
 from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field, model_validator
 
-from agents import Agent, FileSearchTool, Runner, trace, gen_trace_id, set_tracing_export_api_key
+from agents import Agent, FileSearchTool, Runner, trace, gen_trace_id, set_tracing_export_api_key, RunConfig
 
 
 class FileMetadata(BaseModel):
@@ -130,112 +130,125 @@ def create_analyzer_agent(vector_store_id: str, api_key: str = None):
     return analyzer_agent
 
 
-async def analyze_documents(vector_store_id: str, api_key: str = None) -> str:
+async def analyze_documents(vector_store_id: str, api_key: str = None, context=None) -> str:
     """Analyze documents in the provided vector store.
     
+    Args:
+        vector_store_id: ID of the vector store containing documents to analyze
+        api_key: Optional OpenAI API key
+        context: Optional context object with session_id for tracing
+        
     Returns:
         A string containing the analysis results in text format.
     """
     # Create the analyzer agent
     agent = create_analyzer_agent(vector_store_id, api_key)
     
-    # Create trace ID for monitoring the analysis process
-    trace_id = gen_trace_id()
-    print(f"Analyzing documents with trace ID: {trace_id}")
-    print(f"View trace at: https://platform.openai.com/traces/{trace_id}")
+    # Setup RunConfig for tracing
+    run_config = None
+    if context and hasattr(context, 'session_id'):
+        run_config = RunConfig(
+            workflow_name="AI Tutor - Document Analysis",
+            group_id=context.session_id # Link traces within the same session
+        )
+    elif api_key:
+        # If no context provided but we have API key, create a basic RunConfig
+        run_config = RunConfig(
+            workflow_name="AI Tutor - Document Analysis"
+        )
     
-    # Ensure API key is set for tracing
-    if api_key:
-        set_tracing_export_api_key(api_key)
+    # Create a prompt that instructs the agent to perform comprehensive analysis
+    prompt = """
+    Analyze all documents in the vector store thoroughly.
     
-    with trace("Document analysis", trace_id=trace_id):
-        # Create a prompt that instructs the agent to perform comprehensive analysis
-        prompt = """
-        Analyze all documents in the vector store thoroughly.
-        
-        Search across the entire content of all documents to:
-        1. Identify all file names and their metadata
-        2. Extract key concepts, topics, and themes
-        3. Find and record any vector store reference IDs
-        4. Extract important terminology and provide clear definitions
-        
-        Be methodical and comprehensive in your analysis. Start with broad searches 
-        and then focus on specific areas. Present your findings in a clear, structured format.
-        
-        The vector store ID you are analyzing is: {0}
-        """.format(vector_store_id)
-        
-        # Run the analyzer agent to perform document analysis
-        result = await Runner.run(agent, prompt)
-        
-        # Get the text output directly
-        analysis_text = result.final_output
-        print("Successfully completed document analysis")
-        
-        # Save the analysis to a file named "Knowledge Base"
+    Search across the entire content of all documents to:
+    1. Identify all file names and their metadata
+    2. Extract key concepts, topics, and themes
+    3. Find and record any vector store reference IDs
+    4. Extract important terminology and provide clear definitions
+    
+    Be methodical and comprehensive in your analysis. Start with broad searches 
+    and then focus on specific areas. Present your findings in a clear, structured format.
+    
+    The vector store ID you are analyzing is: {0}
+    """.format(vector_store_id)
+    
+    # Run the analyzer agent to perform document analysis
+    result = await Runner.run(
+        agent, 
+        prompt,
+        run_config=run_config,
+        context=context
+    )
+    
+    # Get the text output directly
+    analysis_text = result.final_output
+    print("Successfully completed document analysis")
+    
+    # Save the analysis to a file named "Knowledge Base"
+    try:
+        with open("Knowledge Base", "w", encoding="utf-8") as f:
+            f.write(analysis_text)
+        print("Analysis saved to 'Knowledge Base' file")
+    except Exception as e:
+        print(f"Error saving analysis to 'Knowledge Base': {str(e)}")
+        # Try with fallback encoding
         try:
-            with open("Knowledge Base", "w", encoding="utf-8") as f:
+            with open("Knowledge Base", "w", encoding="ascii", errors="ignore") as f:
                 f.write(analysis_text)
-            print("Analysis saved to 'Knowledge Base' file")
-        except Exception as e:
-            print(f"Error saving analysis to 'Knowledge Base': {str(e)}")
-            # Try with fallback encoding
-            try:
-                with open("Knowledge Base", "w", encoding="ascii", errors="ignore") as f:
-                    f.write(analysis_text)
-                print("Analysis saved to 'Knowledge Base' file (with encoding fallback)")
-            except Exception as e2:
-                print(f"Could not save analysis to 'Knowledge Base': {str(e2)}")
+            print("Analysis saved to 'Knowledge Base' file (with encoding fallback)")
+        except Exception as e2:
+            print(f"Could not save analysis to 'Knowledge Base': {str(e2)}")
+    
+    # Extract key concepts for use in other parts of the application
+    try:
+        # Parse key concepts from the text output for easier access
+        key_concepts = []
+        if "KEY CONCEPTS:" in analysis_text:
+            concepts_section = analysis_text.split("KEY CONCEPTS:")[1].split("CONCEPT DETAILS:")[0]
+            key_concepts = [c.strip() for c in concepts_section.strip().split("\n") if c.strip()]
         
-        # Extract key concepts for use in other parts of the application
-        try:
-            # Parse key concepts from the text output for easier access
-            key_concepts = []
-            if "KEY CONCEPTS:" in analysis_text:
-                concepts_section = analysis_text.split("KEY CONCEPTS:")[1].split("CONCEPT DETAILS:")[0]
-                key_concepts = [c.strip() for c in concepts_section.strip().split("\n") if c.strip()]
+        # Extract key terms if available
+        key_terms = {}
+        if "KEY TERMS GLOSSARY:" in analysis_text:
+            terms_section = analysis_text.split("KEY TERMS GLOSSARY:")[1]
+            # Check if there's a section after KEY TERMS GLOSSARY
+            next_sections = ["FILE IDS:", "VECTOR STORE ID:"]
+            for section in next_sections:
+                if section in terms_section:
+                    terms_section = terms_section.split(section)[0]
+                    break
             
-            # Extract key terms if available
-            key_terms = {}
-            if "KEY TERMS GLOSSARY:" in analysis_text:
-                terms_section = analysis_text.split("KEY TERMS GLOSSARY:")[1]
-                # Check if there's a section after KEY TERMS GLOSSARY
-                next_sections = ["FILE IDS:", "VECTOR STORE ID:"]
-                for section in next_sections:
-                    if section in terms_section:
-                        terms_section = terms_section.split(section)[0]
-                        break
-                
-                # Process the terms section to extract terms and definitions
-                terms_lines = [line.strip() for line in terms_section.strip().split("\n") if line.strip()]
-                for line in terms_lines:
-                    if ":" in line:
-                        term, definition = line.split(":", 1)
+            # Process the terms section to extract terms and definitions
+            terms_lines = [line.strip() for line in terms_section.strip().split("\n") if line.strip()]
+            for line in terms_lines:
+                if ":" in line:
+                    term, definition = line.split(":", 1)
+                    key_terms[term.strip()] = definition.strip()
+                elif "–" in line or "-" in line:
+                    # Handle terms with dash separator
+                    parts = line.split("–", 1) if "–" in line else line.split("-", 1)
+                    if len(parts) == 2:
+                        term, definition = parts
                         key_terms[term.strip()] = definition.strip()
-                    elif "–" in line or "-" in line:
-                        # Handle terms with dash separator
-                        parts = line.split("–", 1) if "–" in line else line.split("-", 1)
-                        if len(parts) == 2:
-                            term, definition = parts
-                            key_terms[term.strip()] = definition.strip()
-            
-            # Attach the concepts as an attribute to the text for easy access
-            setattr(analysis_text, "key_concepts", key_concepts)
-            
-            # Attach the key terms as an attribute to the text
-            setattr(analysis_text, "key_terms", key_terms)
-            
-            # Attach the vector store ID as an attribute
-            setattr(analysis_text, "vector_store_id", vector_store_id)
-            
-            # Extract file names if possible
-            file_names = []
-            if "FILES:" in analysis_text:
-                files_section = analysis_text.split("FILES:")[1].split("FILE METADATA:")[0]
-                file_names = [f.strip() for f in files_section.strip().split("\n") if f.strip()]
-            setattr(analysis_text, "file_names", file_names)
-            
-        except Exception as e:
-            print(f"Warning: Could not parse key concepts from analysis: {e}")
         
-        return analysis_text 
+        # Attach the concepts as an attribute to the text for easy access
+        setattr(analysis_text, "key_concepts", key_concepts)
+        
+        # Attach the key terms as an attribute to the text
+        setattr(analysis_text, "key_terms", key_terms)
+        
+        # Attach the vector store ID as an attribute
+        setattr(analysis_text, "vector_store_id", vector_store_id)
+        
+        # Extract file names if possible
+        file_names = []
+        if "FILES:" in analysis_text:
+            files_section = analysis_text.split("FILES:")[1].split("FILE METADATA:")[0]
+            file_names = [f.strip() for f in files_section.strip().split("\n") if f.strip()]
+        setattr(analysis_text, "file_names", file_names)
+        
+    except Exception as e:
+        print(f"Warning: Could not parse key concepts from analysis: {e}")
+    
+    return analysis_text 

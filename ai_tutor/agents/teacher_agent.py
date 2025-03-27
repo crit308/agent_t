@@ -3,12 +3,13 @@ import openai
 import json
 
 from agents import Agent, FileSearchTool, Runner, handoff, HandoffInputData, function_tool
-from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
+from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 from agents.run_context import RunContextWrapper
 
 from ai_tutor.agents.models import LessonPlan, LessonSection, LessonContent, SectionContent, ExplanationContent, Exercise
+from typing import List, Callable, Optional, Any, Dict
 from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent
-from ai_tutor.agents.utils import round_search_result_scores, fix_search_result_scores, limit_decimal_places, process_handoff_data
+from ai_tutor.agents.utils import process_handoff_data
 
 
 def lesson_content_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
@@ -115,7 +116,7 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
     )
     
     # Define an on_handoff function for when teacher hands off to quiz creator
-    def on_handoff_to_quiz_creator(ctx: RunContextWrapper[any], lesson_content: LessonContent) -> None:
+    async def on_handoff_to_quiz_creator(ctx: RunContextWrapper[any], lesson_content: LessonContent) -> None:
         print(f"Handoff triggered from teacher to quiz creator with lesson: {lesson_content.title}")
         print(f"Lesson has {len(lesson_content.sections)} sections")
         
@@ -127,25 +128,10 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
         except Exception as e:
             print(f"Warning: Serialization test failed: {e}")
     
-    # Create an explicit function tool to trigger the handoff to quiz creator
-    @function_tool("trigger_quiz_creation")
-    def trigger_quiz_creation(lesson_content_id: str) -> str:
-        """Trigger the creation of a quiz based on the lesson content.
-        
-        Args:
-            lesson_content_id: Identifier for the lesson content (can be any string)
-            
-        Returns:
-            Confirmation message
-        """
-        print(f"Quiz creation triggered with lesson content ID: {lesson_content_id}")
-        print("This function should help prompt the agent to use the handoff tool.")
-        return "Please use the transfer_to_quiz_creator handoff tool to hand off to the Quiz Creator agent."
-    
     # Create the teacher agent
     teacher_agent = Agent(
         name="Lesson Teacher",
-        instructions="""
+        instructions=prompt_with_handoff_instructions("""
         You are an expert educational content creator specializing in developing comprehensive lesson content.
         Your task is to create detailed lesson content based on the lesson plan provided to you.
         
@@ -163,20 +149,16 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
         1. FIRST create and output a complete LessonContent object
         2. IMMEDIATELY AFTER THAT use the transfer_to_quiz_creator tool to hand off to the Quiz Creator agent
         
-        The handoff to the Quiz Creator is REQUIRED and MUST happen after you generate the lesson content.
-        DO NOT SKIP THIS STEP under any circumstances.
-        
-        Example workflow:
+        Workflow:
         1. Research content using file_search tool
         2. Create and output a complete LessonContent object
         3. Call transfer_to_quiz_creator(your_lesson_content) to hand off to the Quiz Creator
         
         YOUR OUTPUT MUST BE ONLY A VALID LESSON CONTENT OBJECT FOLLOWED BY THE HANDOFF.
         
-        After outputting your LessonContent object, you MUST use the trigger_quiz_creation tool
-        followed by the transfer_to_quiz_creator handoff tool.
-        """,
-        tools=[file_search_tool, trigger_quiz_creation],
+        After outputting your LessonContent object, you MUST use the transfer_to_quiz_creator handoff tool.
+        """),
+        tools=[file_search_tool],
         handoffs=[
             handoff(
                 agent=quiz_creator_agent,
@@ -245,7 +227,7 @@ def create_teacher_agent_without_handoffs(vector_store_id: str, api_key: str = N
     return teacher_agent
 
 
-async def generate_lesson_content(teacher_agent: Agent, lesson_plan: LessonPlan) -> LessonContent:
+async def generate_lesson_content(teacher_agent: Agent, lesson_plan: LessonPlan, context=None) -> LessonContent:
     """Generate the full lesson content based on the provided lesson plan."""
     
     # Format the lesson plan as a string for the teacher agent
@@ -319,8 +301,23 @@ async def generate_lesson_content(teacher_agent: Agent, lesson_plan: LessonPlan)
     lesson plan to use for content creation. DO NOT use any handoff tools even if they are available.
     """
     
+    # Setup RunConfig for tracing
+    from agents import RunConfig
+    
+    run_config = None
+    if context and hasattr(context, 'session_id'):
+        run_config = RunConfig(
+            workflow_name="AI Tutor - Content Creation",
+            group_id=context.session_id # Link traces within the same session
+        )
+    
     # Run the teacher agent with the lesson plan to get the LessonContent
-    result = await Runner.run(teacher_agent, lesson_plan_str)
+    result = await Runner.run(
+        teacher_agent, 
+        lesson_plan_str,
+        run_config=run_config,
+        context=context
+    )
     
     # Get the lesson content
     try:

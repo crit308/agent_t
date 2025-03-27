@@ -3,8 +3,8 @@ import openai
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 
-from agents import Agent, Runner, trace
-from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
+from agents import Agent, Runner, trace, RunConfig
+from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 
 from ai_tutor.agents.models import (
     LessonPlan, 
@@ -41,7 +41,7 @@ def create_session_analyzer_agent(api_key: str = None):
     # Create the session analyzer agent
     session_analyzer_agent = Agent(
         name="Session Analyzer",
-        instructions=f"""{RECOMMENDED_PROMPT_PREFIX}
+        instructions=prompt_with_handoff_instructions("""
         You are an expert educational analyst specialized in evaluating teaching sessions.
         
         Your task is to analyze the entire AI tutor workflow including:
@@ -79,7 +79,7 @@ def create_session_analyzer_agent(api_key: str = None):
         Format your response as a structured SessionAnalysis object.
         
         YOUR OUTPUT MUST BE ONLY A VALID SESSIONANALYSIS OBJECT.
-        """,
+        """),
         output_type=SessionAnalysis,
         model="gpt-4o",  # Changed from "o4" to "gpt-4o" which supports structured output
     )
@@ -95,7 +95,9 @@ async def analyze_teaching_session(
     quiz_feedback: QuizFeedback,
     session_duration_seconds: int,
     raw_agent_outputs: Optional[Dict[str, str]] = None,
-    api_key: str = None
+    api_key: str = None,
+    document_analysis = None,
+    context = None
 ) -> SessionAnalysis:
     """Analyze a complete teaching session and generate insights.
     
@@ -108,6 +110,8 @@ async def analyze_teaching_session(
         session_duration_seconds: Total duration of the session in seconds
         raw_agent_outputs: Dictionary containing the raw outputs from all agents in the workflow
         api_key: The OpenAI API key to use
+        document_analysis: Optional document analysis to include
+        context: Optional context object with session_id for tracing
         
     Returns:
         A SessionAnalysis object with insights about the teaching session
@@ -297,6 +301,15 @@ async def analyze_teaching_session(
     
     for step in quiz_feedback.next_steps:
         prompt += f"- {step}\n"
+
+    # Add document analysis if provided
+    if document_analysis:
+        prompt += f"""
+        
+        DOCUMENT ANALYSIS:
+        =================
+        {document_analysis}
+        """
     
     # Add raw agent outputs if provided
     if raw_agent_outputs:
@@ -331,8 +344,26 @@ async def analyze_teaching_session(
     YOUR OUTPUT MUST BE ONLY A VALID SESSIONANALYSIS OBJECT.
     """
     
+    # Setup RunConfig for tracing
+    run_config = None
+    if context and hasattr(context, 'session_id'):
+        run_config = RunConfig(
+            workflow_name="AI Tutor - Session Analysis",
+            group_id=context.session_id # Link traces within the same session
+        )
+    elif api_key:
+        # If no context provided but we have API key, create a basic RunConfig
+        run_config = RunConfig(
+            workflow_name="AI Tutor - Session Analysis"
+        )
+    
     # Run the session analyzer agent
-    result = await Runner.run(agent, prompt)
+    result = await Runner.run(
+        agent, 
+        prompt,
+        run_config=run_config,
+        context=context
+    )
     
     # Get the session analysis result
     try:

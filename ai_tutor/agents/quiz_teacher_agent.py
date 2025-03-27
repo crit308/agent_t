@@ -3,11 +3,11 @@ import openai
 import json
 
 from agents import Agent, Runner, handoff, HandoffInputData
-from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
+from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 from agents.run_context import RunContextWrapper
 
 from ai_tutor.agents.models import Quiz, QuizUserAnswers, QuizFeedback
-from ai_tutor.agents.utils import round_search_result_scores, limit_decimal_places, process_handoff_data
+from ai_tutor.agents.utils import process_handoff_data
 
 
 def quiz_user_answers_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
@@ -43,7 +43,7 @@ def create_quiz_teacher_agent(api_key: str = None):
     # Create the quiz teacher agent
     quiz_teacher_agent = Agent(
         name="Quiz Teacher",
-        instructions=f"""{RECOMMENDED_PROMPT_PREFIX}
+        instructions=prompt_with_handoff_instructions("""
         You are an expert educational instructor specialized in providing personalized feedback on quiz responses.
         Your task is to evaluate user answers to quiz questions and provide detailed, constructive feedback.
         
@@ -71,7 +71,7 @@ def create_quiz_teacher_agent(api_key: str = None):
         Format your response as a structured QuizFeedback object.
         
         YOUR OUTPUT MUST BE ONLY A VALID QUIZFEEDBACK OBJECT.
-        """,
+        """),
         output_type=QuizFeedback,
         model="o3-mini",
         # No handoffs needed for the quiz teacher agent - it's the last in the chain
@@ -80,7 +80,7 @@ def create_quiz_teacher_agent(api_key: str = None):
     return quiz_teacher_agent
 
 
-async def generate_quiz_feedback(quiz: Quiz, user_answers: QuizUserAnswers, api_key: str = None) -> QuizFeedback:
+async def generate_quiz_feedback(quiz: Quiz, user_answers: QuizUserAnswers, api_key: str = None, context=None) -> QuizFeedback:
     """Generate feedback for a user's quiz answers."""
     # Create the quiz teacher agent
     agent = create_quiz_teacher_agent(api_key)
@@ -160,8 +160,23 @@ async def generate_quiz_feedback(quiz: Quiz, user_answers: QuizUserAnswers, api_
     YOUR OUTPUT MUST BE ONLY A VALID QUIZFEEDBACK OBJECT.
     """
     
+    # Setup RunConfig for tracing
+    from agents import RunConfig
+    
+    run_config = None
+    if context and hasattr(context, 'session_id'):
+        run_config = RunConfig(
+            workflow_name="AI Tutor - Quiz Feedback",
+            group_id=context.session_id # Link traces within the same session
+        )
+    
     # Run the quiz teacher agent
-    result = await Runner.run(agent, prompt)
+    result = await Runner.run(
+        agent, 
+        prompt,
+        run_config=run_config,
+        context=context
+    )
     
     # Return the quiz feedback
     try:

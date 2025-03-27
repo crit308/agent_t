@@ -42,14 +42,12 @@ def save_analysis_to_file(analysis: Any, output_file: str) -> None:
 class VectorStoreWatcher:
     """Watches for vector store creation and triggers analysis."""
     
-    def __init__(self, api_key: Optional[str] = None):
-        """Initialize with optional API key."""
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
-        if not self.api_key:
-            raise ValueError("API key is required. Provide it as a parameter or set OPENAI_API_KEY environment variable.")
+    def __init__(self):
+        """Initialize the watcher."""
+        # API key is expected to be set globally via main.py or environment
         
         # Initialize file upload manager to check for vector stores
-        self.file_upload_manager = FileUploadManager(self.api_key)
+        self.file_upload_manager = FileUploadManager()
     
     async def analyze_on_vector_store_creation(self, vector_store_id: Optional[str] = None):
         """
@@ -73,7 +71,7 @@ class VectorStoreWatcher:
         
         # Run the analyzer on the detected vector store
         print(f"Running document analysis on vector store: {target_vector_store_id}")
-        analysis = await analyze_documents(target_vector_store_id, self.api_key)
+        analysis = await analyze_documents(target_vector_store_id)
         
         if analysis:
             # Generate output filename with vector store ID
@@ -100,16 +98,12 @@ class VectorStoreWatcher:
 async def main():
     # Get vector store ID from command-line arguments if provided
     vector_store_id = None
-    api_key = None
     
     if len(sys.argv) > 1:
         vector_store_id = sys.argv[1]
     
-    if len(sys.argv) > 2:
-        api_key = sys.argv[2]
-    
     # Create and run the watcher
-    watcher = VectorStoreWatcher(api_key)
+    watcher = VectorStoreWatcher()
     await watcher.analyze_on_vector_store_creation(vector_store_id)
 
 

@@ -17,11 +17,10 @@ class UploadedFile(BaseModel):
 class FileUploadManager:
     """Manages the upload and processing of files for the AI tutor."""
     
-    def __init__(self, api_key: str):
-        """Initialize the FileUploadManager with the OpenAI API key."""
-        self.api_key = api_key
-        openai.api_key = api_key
-        self.client = openai.Client(api_key=api_key)
+    def __init__(self):
+        """Initialize the FileUploadManager."""
+        # API key is handled globally by the SDK setup
+        self.client = openai.Client() # Relies on globally configured key/client
         self.uploaded_files = []
         self.vector_store_id = None
     
@@ -92,11 +91,8 @@ def upload_document(file_path: str) -> str:
     Returns:
         A confirmation message with the file ID and vector store ID.
     """
-    # This would typically be passed via environment variables or configuration
-    api_key = "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"
-    
     # Create a file upload manager
-    manager = FileUploadManager(api_key)
+    manager = FileUploadManager() # API key handled globally
     
     # Upload and process the file
     try:

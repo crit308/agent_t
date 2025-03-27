@@ -4,9 +4,10 @@ import json
 
 from agents import Agent, Runner, handoff, HandoffInputData
 from agents.run_context import RunContextWrapper
+from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 
 from ai_tutor.agents.models import LessonContent, Quiz
-from ai_tutor.agents.utils import round_search_result_scores, limit_decimal_places, process_handoff_data
+from ai_tutor.agents.utils import process_handoff_data
 from ai_tutor.agents.quiz_teacher_agent import create_quiz_teacher_agent
 
 
@@ -102,14 +103,14 @@ def create_quiz_creator_agent_with_teacher_handoff(api_key: str = None):
     quiz_teacher_agent = create_quiz_teacher_agent(api_key)
     
     # Define an on_handoff function for when quiz creator hands off to quiz teacher
-    def on_handoff_to_quiz_teacher(ctx: RunContextWrapper[any], quiz: Quiz) -> None:
+    async def on_handoff_to_quiz_teacher(ctx: RunContextWrapper[any], quiz: Quiz) -> None:
         print(f"Handoff triggered from quiz creator to quiz teacher: {quiz.title}")
         print(f"Quiz has {len(quiz.questions)} questions")
     
     # Create the quiz creator agent
     quiz_creator_agent = Agent(
         name="Quiz Creator",
-        instructions="""
+        instructions=prompt_with_handoff_instructions("""
         You are an expert educational assessment designer specialized in creating effective quizzes.
         Your task is to create a comprehensive quiz based on the lesson content provided to you.
         
@@ -148,7 +149,7 @@ def create_quiz_creator_agent_with_teacher_handoff(api_key: str = None):
         
         After generating the quiz, use the transfer_to_quiz_teacher tool to hand off to the Quiz Teacher agent
         which will evaluate user responses and provide feedback.
-        """,
+        """),
         handoffs=[
             handoff(
                 agent=quiz_teacher_agent,
@@ -165,13 +166,14 @@ def create_quiz_creator_agent_with_teacher_handoff(api_key: str = None):
     return quiz_creator_agent
 
 
-async def generate_quiz(lesson_content: LessonContent, api_key: str = None, enable_teacher_handoff: bool = False) -> Quiz:
+async def generate_quiz(lesson_content: LessonContent, api_key: str = None, enable_teacher_handoff: bool = False, context=None) -> Quiz:
     """Generate a quiz based on the provided lesson content.
     
     Args:
         lesson_content: The lesson content to base the quiz on
         api_key: Optional OpenAI API key
         enable_teacher_handoff: Whether to enable handoff to the quiz teacher agent
+        context: Optional context object with session_id for tracing
         
     Returns:
         Quiz object
@@ -245,8 +247,23 @@ async def generate_quiz(lesson_content: LessonContent, api_key: str = None, enab
     - estimated_completion_time_minutes: Estimated time to complete
     """
     
+    # Setup RunConfig for tracing
+    from agents import RunConfig
+    
+    run_config = None
+    if context and hasattr(context, 'session_id'):
+        run_config = RunConfig(
+            workflow_name="AI Tutor - Quiz Creation",
+            group_id=context.session_id # Link traces within the same session
+        )
+    
     # Run the quiz creator agent with the lesson content
-    result = await Runner.run(agent, lesson_content_str)
+    result = await Runner.run(
+        agent, 
+        lesson_content_str,
+        run_config=run_config,
+        context=context
+    )
     
     # Return the quiz
     try:

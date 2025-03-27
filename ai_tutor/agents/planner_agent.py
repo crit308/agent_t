@@ -10,7 +10,8 @@ from agents.run_context import RunContextWrapper
 
 from ai_tutor.agents.teacher_agent import create_teacher_agent
 from ai_tutor.agents.models import LearningObjective, LessonSection, LessonPlan
-from ai_tutor.agents.utils import round_search_result_scores, fix_search_result_scores, limit_decimal_places, process_handoff_data
+from ai_tutor.agents.utils import process_handoff_data
+from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 
 
 def lesson_plan_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
@@ -26,19 +27,8 @@ def lesson_plan_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputDa
         return handoff_data  # Fallback
 
 
-def create_planner_agent(vector_store_id: str, api_key: str = None):
+def create_planner_agent(vector_store_id: str):
     """Create a planner agent with access to the provided vector store."""
-    
-    # If API key is provided, ensure it's set in environment
-    if api_key:
-        os.environ["OPENAI_API_KEY"] = api_key
-    
-    # Ensure OPENAI_API_KEY is set in the environment
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        print("WARNING: OPENAI_API_KEY environment variable is not set!")
-    else:
-        print(f"Using OPENAI_API_KEY from environment for planner agent")
     
     # Create a FileSearchTool that can search the vector store containing the uploaded documents
     file_search_tool = FileSearchTool(
@@ -50,19 +40,19 @@ def create_planner_agent(vector_store_id: str, api_key: str = None):
     print(f"Created FileSearchTool for vector store: {vector_store_id}")
     
     # Create the teacher agent to hand off to after planning is complete
-    teacher_agent = create_teacher_agent(vector_store_id, api_key)
+    teacher_agent = create_teacher_agent(vector_store_id)
     
     # Define an on_handoff function to prepare the lesson plan for the teacher agent
-    def on_handoff_to_teacher(ctx: RunContextWrapper[Any], lesson_plan: LessonPlan) -> None:
-        print(f"Handoff triggered with lesson plan: {lesson_plan.title}")
+    async def on_handoff_to_teacher(ctx: RunContextWrapper[Any], lesson_plan: LessonPlan) -> None:
+        print(f"Planner handing off lesson plan: {lesson_plan.title}")
         print(f"Lesson plan has {len(lesson_plan.sections)} sections")
         # We don't need to do anything here, as the lesson plan will be accessible to the teacher agent
     
     # Create the planner agent with access to the file search tool and handoff to teacher agent
     planner_agent = Agent(
         name="Lesson Planner",
-        instructions="""
-        You are an expert curriculum designer and educator. Your task is to create a 
+        instructions=prompt_with_handoff_instructions("""
+        You are an expert curriculum designer. Your task is to create a 
         well-structured lesson plan based on the documents that have been uploaded.
         
         Follow these steps IN ORDER:
@@ -94,10 +84,10 @@ def create_planner_agent(vector_store_id: str, api_key: str = None):
         you generate the lesson plan. DO NOT skip this step under any circumstances.
         
         When using transfer_to_lesson_teacher, you should pass the entire LessonPlan object 
-        that you've just generated. For example:
+        that you've just generated.
         
-        transfer_to_lesson_teacher(your_lesson_plan_object)
-        """,
+        Call transfer_to_lesson_teacher with the generated LessonPlan object.
+        """),
         tools=[file_search_tool],
         handoffs=[
             handoff(
