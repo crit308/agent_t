@@ -2,89 +2,25 @@ import os
 import openai
 import json
 
-from agents import Agent, FileSearchTool, Runner, handoff, HandoffInputData, function_tool
+from agents import Agent, FileSearchTool, Runner, handoff, HandoffInputData, function_tool, ModelProvider
+from agents.models.openai_provider import OpenAIProvider
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 from agents.run_context import RunContextWrapper
 
 from ai_tutor.agents.models import LessonPlan, LessonSection, LessonContent, SectionContent, ExplanationContent, Exercise
 from typing import List, Callable, Optional, Any, Dict
 from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent
-from ai_tutor.agents.utils import process_handoff_data
+from ai_tutor.agents.utils import process_handoff_data, RoundingModelWrapper
 
 
 def lesson_content_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
     """Process handoff data from lesson teacher to quiz creator."""
     print("Applying handoff filter to pass lesson content to quiz creator agent")
     
-    # Apply score rounding to avoid precision errors
-    print(f"HandoffInputData type: {type(handoff_data)}")
-    
     try:
-        # Direct aggressive processing of search result scores
-        if hasattr(handoff_data, 'input_history') and isinstance(handoff_data.input_history, tuple):
-            # Convert to list for easy modification
-            input_history_list = list(handoff_data.input_history)
-            
-            # Go through each item looking for file search results
-            for i, item in enumerate(input_history_list):
-                if isinstance(item, dict):
-                    # Fix all search result scores precisely
-                    if 'type' in item and item['type'] in ('file_search_call', 'file_search_results'):
-                        if 'results' in item and isinstance(item['results'], list):
-                            for result in item['results']:
-                                if isinstance(result, dict) and 'score' in result:
-                                    # Use multiple techniques to ensure precision is limited
-                                    score = float(result['score'])
-                                    # Round to 15 places
-                                    score = round(score, 15)
-                                    # Format to string with exactly 15 places then back
-                                    score = float(f"{score:.15f}")
-                                    # Double check decimal places
-                                    str_val = str(score)
-                                    if '.' in str_val and len(str_val.split('.')[1]) > 15:
-                                        int_part = str_val.split('.')[0]
-                                        decimal_part = str_val.split('.')[1][:15]
-                                        score = float(f"{int_part}.{decimal_part}")
-                                    result['score'] = score
-                                    print(f"Aggressive decimal limiting on score: {score}")
-            
-            # Update handoff_data with fixed input_history
-            input_history = tuple(input_history_list)
-        else:
-            # Make sure it's still a tuple even if input_history isn't one
-            input_history = handoff_data.input_history if handoff_data.input_history is not None else ()
-        
-        # Get pre_handoff_items and new_items, ensuring they're tuples
-        pre_handoff_items = tuple(handoff_data.pre_handoff_items) if hasattr(handoff_data, 'pre_handoff_items') and handoff_data.pre_handoff_items is not None else ()
-        new_items = tuple(handoff_data.new_items) if hasattr(handoff_data, 'new_items') and handoff_data.new_items is not None else ()
-        
-        # Apply comprehensive processing via utils
-        try:
-            processed_data = process_handoff_data(handoff_data)
-            print("Successfully processed handoff data with precision limits")
-            return processed_data
-        except Exception as process_err:
-            print(f"Error in comprehensive processing: {process_err}, falling back to direct approach")
-            # If that fails, try to create a new HandoffInputData with just our input_history fix
-            try:
-                return HandoffInputData(
-                    input_history=input_history,
-                    pre_handoff_items=pre_handoff_items,  # Always a tuple
-                    new_items=new_items  # Always a tuple
-                )
-            except Exception as handoff_err:
-                print(f"Error creating new HandoffInputData: {handoff_err}")
-                # Create minimal empty HandoffInputData as last resort
-                try:
-                    return HandoffInputData(
-                        input_history=() if not input_history else input_history,
-                        pre_handoff_items=(),
-                        new_items=()
-                    )
-                except Exception as final_err:
-                    print(f"Final error creating HandoffInputData: {final_err}")
-                    # Last resort, return the original
-                    return handoff_data
+        processed_data = process_handoff_data(handoff_data)
+        print("Successfully processed handoff data with precision limits")
+        return processed_data
     except Exception as e:
         print(f"Error in handoff filter: {e}")
         print("Returning original handoff data without processing")
@@ -128,6 +64,10 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
         except Exception as e:
             print(f"Warning: Serialization test failed: {e}")
     
+    # Instantiate the base model provider and get the base model
+    provider: ModelProvider = OpenAIProvider()
+    base_model = provider.get_model("o3-mini")
+    
     # Create the teacher agent
     teacher_agent = Agent(
         name="Lesson Teacher",
@@ -169,7 +109,7 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
             )
         ],
         output_type=LessonContent,
-        model="o3-mini",
+        model=RoundingModelWrapper(base_model),
     )
     
     return teacher_agent
@@ -199,6 +139,10 @@ def create_teacher_agent_without_handoffs(vector_store_id: str, api_key: str = N
         include_search_results=True,
     )
     
+    # Instantiate the base model provider and get the base model
+    provider: ModelProvider = OpenAIProvider()
+    base_model = provider.get_model("o3-mini")
+    
     # Create the teacher agent without handoffs
     teacher_agent = Agent(
         name="Lesson Teacher",
@@ -221,7 +165,7 @@ def create_teacher_agent_without_handoffs(vector_store_id: str, api_key: str = N
         tools=[file_search_tool],
         # No handoffs in this version
         output_type=LessonContent,
-        model="o3-mini",
+        model=RoundingModelWrapper(base_model),
     )
     
     return teacher_agent

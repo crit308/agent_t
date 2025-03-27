@@ -3,7 +3,8 @@ import openai
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 
-from agents import Agent, Runner, trace, RunConfig
+from agents import Agent, Runner, trace, RunConfig, ModelProvider
+from agents.models.openai_provider import OpenAIProvider
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 
 from ai_tutor.agents.models import (
@@ -16,6 +17,7 @@ from ai_tutor.agents.models import (
     TeachingInsight,
     SessionAnalysis
 )
+from ai_tutor.agents.utils import RoundingModelWrapper
 
 
 def create_session_analyzer_agent(api_key: str = None):
@@ -37,6 +39,10 @@ def create_session_analyzer_agent(api_key: str = None):
         print("WARNING: OPENAI_API_KEY environment variable is not set for session analyzer agent!")
     else:
         print(f"Using OPENAI_API_KEY from environment for session analyzer agent")
+    
+    # Instantiate the base model provider and get the base model
+    provider: ModelProvider = OpenAIProvider()
+    base_model = provider.get_model("gpt-4o")  # Using gpt-4o which supports structured output
     
     # Create the session analyzer agent
     session_analyzer_agent = Agent(
@@ -81,7 +87,7 @@ def create_session_analyzer_agent(api_key: str = None):
         YOUR OUTPUT MUST BE ONLY A VALID SESSIONANALYSIS OBJECT.
         """),
         output_type=SessionAnalysis,
-        model="gpt-4o",  # Changed from "o4" to "gpt-4o" which supports structured output
+        model=RoundingModelWrapper(base_model),
     )
     
     return session_analyzer_agent

@@ -180,7 +180,6 @@ class AITutorManager:
         # with trace("Generating lesson plan"):
         print(f"Generating lesson plan...")
 
-        # --- Error Handling Example ---
         # Create the planner agent
         planner_agent = create_planner_agent(self.context.vector_store_id) # No api_key
 
@@ -204,7 +203,7 @@ class AITutorManager:
         """
 
         print("Running planner agent with explicit handoff instructions...")
-        # --- Configure Tracing via RunConfig ---
+        # Configure Tracing via RunConfig
         run_config = RunConfig(
             workflow_name="AI Tutor - Lesson Planning",
             group_id=self.context.session_id # Link traces within the same session
@@ -222,20 +221,123 @@ class AITutorManager:
                 self.output_logger.log_error("Planner Agent", e)
             # Decide how to handle - raise, return None, create minimal plan?
             raise # Re-raise for now
-        
-        # Store the lesson plan
-        if isinstance(result, (LessonPlan, Quiz)):
-            self.lesson_plan = result
-            # If a quiz was returned directly, also store it as the quiz
-            if isinstance(result, Quiz):
-                self.quiz = result
+            
+        # Extract LessonPlan/Quiz from result FIRST
+        # NOTE: When handoffs occur, result.final_output will contain the output
+        # of the LAST agent in the chain (e.g., Quiz), not necessarily the
+        # output type requested by the *first* agent (LessonPlan).
+        final_output_obj = None
+        output_is_lesson_plan = False # Initialize flag
+        handoff_chain_completed = False # Initialize flag
+
+        if result and hasattr(result, 'final_output'):
+            final_output_obj = result.final_output
+            print(f"DEBUG: Extracted final_output from RunResult. Type: {type(final_output_obj)}")
         else:
-            print(f"Warning: Planner agent returned unexpected type: {type(result)}")
+            print(f"Warning: Planner agent RunResult has no 'final_output'. Result: {result}")
+
+        # Check the type of the actual final output to determine workflow path
+        if isinstance(final_output_obj, LessonPlan):
+            print("DEBUG: Final output IS a LessonPlan.")
+            self.lesson_plan = final_output_obj
+            output_is_lesson_plan = True
+            # No need to set handoff_chain_completed here
+        elif isinstance(final_output_obj, Quiz):
+            print("DEBUG: Final output IS a Quiz.")
+            self.quiz = final_output_obj
+            print(f"Got Quiz directly from handoff chain: {self.quiz.title}")
+            handoff_chain_completed = True
+            
+            # Create a synthetic lesson plan so the CLI doesn't get a None result
+            # IMPORTANT: Ensure all required fields of LessonPlan are provided,
+            # even if using default values like an empty list here.
+            if not self.lesson_plan:
+                print("Creating synthetic lesson plan from Quiz for consistent API")
+                self.lesson_plan = LessonPlan(
+                    title=f"Lesson Plan for {self.quiz.title}",
+                    description=f"Auto-generated lesson plan based on quiz: {self.quiz.description}",
+                    target_audience="Learners",
+                    prerequisites=[],
+                    total_estimated_duration_minutes=60,
+                    sections=[
+                        LessonSection(
+                            title=f"Section on {self.quiz.title}",
+                            estimated_duration_minutes=60,
+                            objectives=[
+                                LearningObjective(
+                                    title="Complete the quiz",
+                                    description="Successfully complete the associated quiz",
+                                    priority=5
+                                )
+                            ],
+                            concepts_to_cover=["Quiz topics"]
+                        )
+                    ],
+                    additional_resources=[]
+                )
+        elif isinstance(final_output_obj, LessonContent):
+            print("DEBUG: Final output IS a LessonContent.")
+            self.lesson_content = final_output_obj
+            print(f"Got lesson content directly from handoff: {self.lesson_content.title}")
+            
+            # Create a synthetic lesson plan based on the lesson content
+            print("Creating synthetic lesson plan from LessonContent for consistent API")
+            self.lesson_plan = LessonPlan(
+                title=f"Lesson Plan for {self.lesson_content.title}",
+                description=f"Auto-generated lesson plan based on lesson content",
+                target_audience="Learners",
+                prerequisites=[],
+                total_estimated_duration_minutes=60,
+                sections=[
+                    LessonSection(
+                        title=section.title,
+                        estimated_duration_minutes=30,
+                        objectives=[
+                            LearningObjective(
+                                title=f"Learn {section.title}",
+                                description=f"Understand {section.title}",
+                                priority=3
+                            )
+                        ],
+                        concepts_to_cover=["Content topics"]
+                    ) for section in self.lesson_content.sections
+                ],
+                additional_resources=[]
+            )
+        else:
+            # Handle unexpected or missing output type
+            print(f"ERROR: Final output was None or unexpected type: {type(final_output_obj)}. Cannot proceed directly.")
             if hasattr(result, 'model_dump'):
                 print(f"Result: {result.model_dump()}")
             else:
                 print(f"Result: {result}")
                 
+            # Create a minimal fallback lesson plan as a last resort
+            print("Creating minimal fallback lesson plan")
+            self.lesson_plan = LessonPlan(
+                title="Fallback Lesson Plan",
+                description="A minimal lesson plan created when no proper output was available",
+                target_audience="General audience",
+                prerequisites=[],
+                total_estimated_duration_minutes=30,
+                sections=[
+                    LessonSection(
+                        title="Introduction",
+                        estimated_duration_minutes=30,
+                        objectives=[
+                            LearningObjective(
+                                title="Learn basics",
+                                description="Understand fundamental concepts",
+                                priority=5
+                            )
+                        ],
+                        concepts_to_cover=["Basic concepts"]
+                    )
+                ],
+                additional_resources=[]
+            )
+                
+        # Always return self.lesson_plan, which is now guaranteed to be a valid LessonPlan object
         return self.lesson_plan
     
     async def generate_lesson_content(self) -> Optional[LessonContent]:
@@ -250,12 +352,18 @@ class AITutorManager:
         # with trace("Generating lesson content"):
         print(f"Generating lesson content...")
 
+        # IMPORTANT: Check if we already have a quiz from the handoff chain
+        # If so, create lesson content directly without calling the teacher agent
+        # This prevents unnecessary teacher agent calls when we already have a quiz
         if self.quiz and hasattr(self.quiz, 'questions') and len(self.quiz.questions) > 0:
-            print("Using teacher agent without handoffs since we already have a quiz")
-            teacher_agent = create_teacher_agent_without_handoffs(self.context.vector_store_id) # No api_key
-        else:
-            print("Using teacher agent with handoff to quiz creator")
-            teacher_agent = create_teacher_agent(self.context.vector_store_id) # No api_key
+            print("Quiz already exists - creating lesson content directly from quiz without calling teacher agent")
+            self.lesson_content = self._create_lesson_content_from_quiz(self.quiz)
+            print("Successfully generated LessonContent from existing quiz")
+            return self.lesson_content
+        
+        # Otherwise, use the teacher agent with handoff to quiz creator
+        print("Using teacher agent with handoff to quiz creator")
+        teacher_agent = create_teacher_agent(self.context.vector_store_id) # No api_key
         
         # Generate the lesson content
         try:
@@ -346,13 +454,8 @@ class AITutorManager:
         
         # 2. Generate the lesson plan (which may trigger handoff to teacher)
         try:
-            print("\n2. Generating lesson plan (with expected handoff to teacher)...")
+            print("\n2. Generating lesson plan...")
             self.lesson_plan = await self.generate_lesson_plan()
-            
-            # Check if we got lesson content from the handoff chain (planner -> teacher)
-            if self.lesson_content is not None and hasattr(self.lesson_content, 'sections'):
-                print("Lesson content was generated via handoff from planner to teacher")
-                lesson_content_generated = True
             
             # Check if we got a complete handoff chain with quiz
             if self.quiz is not None and hasattr(self.quiz, 'questions') and len(self.quiz.questions) > 0:
@@ -360,13 +463,11 @@ class AITutorManager:
                 print(f"Quiz was generated automatically through the handoff chain: {self.quiz.title}")
                 print(f"Quiz has {len(self.quiz.questions)} questions")
                 full_handoff_completed = True
-                lesson_content_generated = True
             elif not self.lesson_plan:
                 raise ValueError("Failed to generate a lesson plan")
         except Exception as e:
             print(f"Error generating lesson plan: {e}")
             # Create a minimal lesson plan
-            from ai_tutor.agents.models import LessonPlan, LessonSection, LearningObjective
             self.lesson_plan = LessonPlan(
                 title="Test Lesson Plan",
                 description="This is a test lesson plan.",
@@ -390,45 +491,51 @@ class AITutorManager:
                 additional_resources=[]
             )
         
-        # If lesson content wasn't created via planner -> teacher handoff, generate it
-        if not lesson_content_generated:
-            # 3. Generate the lesson content from the lesson plan
-            try:
-                print("\n3. Creating lesson content...")
-                self.lesson_content = await self.generate_lesson_content()
-                
-                if not self.lesson_content or not hasattr(self.lesson_content, 'sections'):
-                    raise ValueError("Failed to generate valid lesson content with sections")
-            except Exception as e:
-                print(f"Error generating lesson content: {e}")
-                # Create minimal lesson content
-                from ai_tutor.agents.models import LessonContent, SectionContent, ExplanationContent, Exercise
-                self.lesson_content = LessonContent(
-                    title=self.lesson_plan.title,
-                    introduction="This is automatically generated test content.",
-                    sections=[
-                        SectionContent(
-                            title="Test Section",
-                            explanations=[
-                                ExplanationContent(
-                                    title="Test Explanation",
-                                    content="This is a test explanation.",
-                                    examples=["Example 1"]
-                                )
-                            ],
-                            exercises=[
-                                Exercise(
-                                    question="Test exercise question?",
-                                    answer="Test exercise answer."
-                                )
-                            ]
-                        )
-                    ],
-                    conclusion="This concludes the test content.",
-                    next_steps=["Review the material"]
-                )
-        else:
-            print("\n3. Lesson content already created via handoff chain - skipping generation")
+        # 3. Generate the lesson content
+        try:
+            print("\n3. Creating lesson content...")
+            self.lesson_content = await self.generate_lesson_content()
+            
+            if self.lesson_content and hasattr(self.lesson_content, 'sections'):
+                lesson_content_generated = True
+            else:
+                raise ValueError("Failed to generate valid lesson content with sections")
+        except Exception as e:
+            print(f"Error generating lesson content: {e}")
+            # Create minimal lesson content
+            # IMPORTANT: Make sure to use the correct field names as defined in the models.py file
+            # For ExplanationContent model: use 'topic' (not 'title') and 'explanation' (not 'content')
+            # For Exercise model: include required 'difficulty_level' and 'explanation' fields
+            # Validation errors can occur if required fields are missing or field names don't match
+            from ai_tutor.agents.models import LessonContent, SectionContent, ExplanationContent, Exercise
+            self.lesson_content = LessonContent(
+                title=self.lesson_plan.title,
+                introduction="This is automatically generated test content.",
+                sections=[
+                    SectionContent(
+                        title="Test Section",
+                        introduction="Introduction to test section",
+                        explanations=[
+                            ExplanationContent(
+                                topic="Test Explanation",
+                                explanation="This is a test explanation.",
+                                examples=["Example 1"]
+                            )
+                        ],
+                        exercises=[
+                            Exercise(
+                                question="Test exercise question?",
+                                answer="Test exercise answer.",
+                                difficulty_level="Easy",
+                                explanation="This is a test exercise explanation."
+                            )
+                        ],
+                        summary="Summary of test section"
+                    )
+                ],
+                conclusion="This concludes the test content.",
+                next_steps=["Review the material"]
+            )
         
         # Only generate quiz if we don't already have one from the handoff chain
         if not full_handoff_completed:
@@ -760,11 +867,15 @@ class AITutorManager:
             # Create explanations from questions
             explanations = []
             for question in section_questions[:3]:  # Limit to first 3 questions per section
+                # IMPORTANT: The ExplanationContent model requires specific fields:
+                # - 'topic' (not 'title') for the explanation topic
+                # - 'explanation' (not 'content') for the actual explanation text
+                # - 'examples' list for examples
+                # Make sure field names exactly match the model definition to prevent validation errors
                 explanations.append(ExplanationContent(
                     topic=question.question.split('?')[0][:50] + "...",
-                    content=f"This explains the concept of {question.question.split('?')[0][:30]}...",
-                    examples=[f"Example: {question.options[question.correct_answer_index]}"],
-                    key_points=[f"Key point: {question.explanation.split('.')[0]}"]
+                    explanation=f"This explains the concept of {question.question.split('?')[0][:30]}...",
+                    examples=[f"Example: {question.options[question.correct_answer_index]}"]
                 ))
             
             # Create section content

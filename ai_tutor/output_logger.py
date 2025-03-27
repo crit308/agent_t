@@ -27,7 +27,8 @@ class TutorOutputLogger:
             "user_answers": "",
             "quiz_teacher_agent_output": "",
             "session_analysis_output": "",
-            "full_session": []
+            "full_session": [],
+            "errors": []
         }
     
     def log_planner_output(self, output: Any) -> None:
@@ -81,6 +82,17 @@ class TutorOutputLogger:
         """Log output from the session analyzer agent."""
         self.logs["session_analysis_output"] = self._format_output(output)
         self._append_to_session("Session Analyzer Agent", output)
+    
+    def log_error(self, agent_name: str, error: Exception) -> None:
+        """Log an error that occurred during an agent's execution."""
+        error_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "agent": agent_name,
+            "error_type": type(error).__name__,
+            "error_message": str(error)
+        }
+        self.logs["errors"].append(error_entry)
+        self._append_to_session(f"{agent_name} Error", str(error))
     
     def _format_output(self, output: Any) -> str:
         """Format an output object to string representation."""
@@ -154,6 +166,13 @@ class TutorOutputLogger:
                 f.write("SESSION ANALYSIS AGENT OUTPUT\n")
                 f.write("-" * 80 + "\n")
                 f.write(self.logs["session_analysis_output"])
+                f.write("\n\n")
+            
+            # Write errors if any occurred
+            if self.logs["errors"]:
+                f.write("ERRORS LOGGED\n")
+                f.write("-" * 80 + "\n")
+                f.write(json.dumps(self.logs["errors"], indent=2, default=str))
                 f.write("\n\n")
             
             f.write("FULL SESSION LOG (CHRONOLOGICAL)\n")

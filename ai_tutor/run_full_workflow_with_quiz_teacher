@@ -1,0 +1,109 @@
+# Note: Path correction to actual file
+async def run_full_workflow_with_quiz_teacher(self, file_paths: List[str]) -> dict:
+        """Run the full workflow from document upload to quiz creation and feedback.
+        
+        Args:
+            file_paths: A list of file paths to upload for the lesson
+            
+        Returns:
+            A dictionary containing the lesson plan, lesson content, quiz, 
+            user's answers, and quiz feedback
+        """
+        # Record the session start time
+        self._session_start_time = time.time()
+        
+        print("Running full workflow with quiz teacher...")
+        
+        # 1. Upload documents
+        print("\n1. Uploading documents...")
+        for file_path in file_paths:
+            await self.upload_file(file_path)
+        
+        # Track workflow completion
+        full_handoff_completed = False
+        lesson_content_generated = False
+        
+        # 2. Generate the lesson plan (which may trigger handoff to teacher)
+        try:
+            print("\n2. Generating lesson plan...")
+            self.lesson_plan = await self.generate_lesson_plan()
+            
+            # Check if we got a complete handoff chain with quiz
+            if self.quiz is not None and hasattr(self.quiz, 'questions') and len(self.quiz.questions) > 0:
+                print("Full handoff chain completed successfully! (Planner → Teacher → Quiz Creator)")
+                print(f"Quiz was generated automatically through the handoff chain: {self.quiz.title}")
+                print(f"Quiz has {len(self.quiz.questions)} questions")
+                full_handoff_completed = True
+            elif not self.lesson_plan:
+                raise ValueError("Failed to generate a lesson plan")
+        except Exception as e:
+            print(f"Error generating lesson plan: {e}")
+            # Create a minimal lesson plan
+            self.lesson_plan = LessonPlan(
+                title="Test Lesson Plan",
+                description="This is a test lesson plan.",
+                target_audience="Beginner learners",
+                prerequisites=["Basic reading skills"],
+                sections=[
+                    LessonSection(
+                        title="Introduction",
+                        objectives=[
+                            LearningObjective(
+                                title="Learn basics",
+                                description="Understand the fundamental concepts",
+                                priority=5
+                            )
+                        ],
+                        estimated_duration_minutes=15,
+                        concepts_to_cover=["Basic concept"]
+                    )
+                ],
+                total_estimated_duration_minutes=15,
+                additional_resources=[]
+            )
+        
+        # 3. Generate the lesson content
+        try:
+            print("\n3. Creating lesson content...")
+            self.lesson_content = await self.generate_lesson_content()
+            
+            if self.lesson_content and hasattr(self.lesson_content, 'sections'):
+                lesson_content_generated = True
+            else:
+                raise ValueError("Failed to generate valid lesson content with sections")
+        except Exception as e:
+            print(f"Error generating lesson content: {e}")
+            # Create minimal lesson content
+            # IMPORTANT: Make sure to use the correct field names as defined in the models.py file
+            # For ExplanationContent model: use 'topic' (not 'title') and 'explanation' (not 'content')
+            # For Exercise model: include required 'difficulty_level' and 'explanation' fields
+            # Validation errors can occur if required fields are missing or field names don't match
+            from ai_tutor.agents.models import LessonContent, SectionContent, ExplanationContent, Exercise
+            self.lesson_content = LessonContent(
+                title=self.lesson_plan.title,
+                introduction="This is automatically generated test content.",
+                sections=[
+                    SectionContent(
+                        title="Test Section",
+                        introduction="Introduction to test section",
+                        explanations=[
+                            ExplanationContent(
+                                topic="Test Explanation",
+                                explanation="This is a test explanation.",
+                                examples=["Example 1"]
+                            )
+                        ],
+                        exercises=[
+                            Exercise(
+                                question="Test exercise question?",
+                                answer="Test exercise answer.",
+                                difficulty_level="Easy",
+                                explanation="This is a test exercise explanation."
+                            )
+                        ],
+                        summary="Summary of test section"
+                    )
+                ],
+                conclusion="This concludes the test content.",
+                next_steps=["Review the material"]
+            ) 

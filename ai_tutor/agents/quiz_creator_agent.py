@@ -2,12 +2,13 @@ import os
 import openai
 import json
 
-from agents import Agent, Runner, handoff, HandoffInputData
+from agents import Agent, Runner, handoff, HandoffInputData, ModelProvider
+from agents.models.openai_provider import OpenAIProvider
 from agents.run_context import RunContextWrapper
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 
 from ai_tutor.agents.models import LessonContent, Quiz
-from ai_tutor.agents.utils import process_handoff_data
+from ai_tutor.agents.utils import process_handoff_data, RoundingModelWrapper
 from ai_tutor.agents.quiz_teacher_agent import create_quiz_teacher_agent
 
 
@@ -37,6 +38,10 @@ def create_quiz_creator_agent(api_key: str = None):
         print("WARNING: OPENAI_API_KEY environment variable is not set for quiz creator agent!")
     else:
         print(f"Using OPENAI_API_KEY from environment for quiz creator agent")
+    
+    # Instantiate the base model provider and get the base model
+    provider: ModelProvider = OpenAIProvider()
+    base_model = provider.get_model("o3-mini")
     
     # Create the quiz creator agent
     quiz_creator_agent = Agent(
@@ -79,7 +84,7 @@ def create_quiz_creator_agent(api_key: str = None):
         YOUR OUTPUT MUST BE ONLY A VALID QUIZ OBJECT.
         """,
         output_type=Quiz,
-        model="o3-mini",
+        model=RoundingModelWrapper(base_model),
     )
     
     return quiz_creator_agent
@@ -106,6 +111,10 @@ def create_quiz_creator_agent_with_teacher_handoff(api_key: str = None):
     async def on_handoff_to_quiz_teacher(ctx: RunContextWrapper[any], quiz: Quiz) -> None:
         print(f"Handoff triggered from quiz creator to quiz teacher: {quiz.title}")
         print(f"Quiz has {len(quiz.questions)} questions")
+    
+    # Instantiate the base model provider and get the base model
+    provider: ModelProvider = OpenAIProvider()
+    base_model = provider.get_model("o3-mini")
     
     # Create the quiz creator agent
     quiz_creator_agent = Agent(
@@ -160,7 +169,7 @@ def create_quiz_creator_agent_with_teacher_handoff(api_key: str = None):
             )
         ],
         output_type=Quiz,
-        model="o3-mini",
+        model=RoundingModelWrapper(base_model),
     )
     
     return quiz_creator_agent

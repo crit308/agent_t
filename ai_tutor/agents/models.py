@@ -144,7 +144,7 @@ class LessonPlan(BaseModel):
     prerequisites: List[str] = Field(description="Prerequisites that students should know before taking this lesson")
     sections: List[LessonSection] = Field(description="The sections that make up this lesson plan")
     total_estimated_duration_minutes: int = Field(description="Total estimated time to complete the lesson")
-    additional_resources: List[str] = Field(description="Additional resources that might help students")
+    additional_resources: List[str] = Field(default_factory=list, description="Additional resources that might help students")
 
 
 class QuizUserAnswer(BaseModel):

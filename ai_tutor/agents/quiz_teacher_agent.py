@@ -2,12 +2,13 @@ import os
 import openai
 import json
 
-from agents import Agent, Runner, handoff, HandoffInputData
+from agents import Agent, Runner, handoff, HandoffInputData, ModelProvider
+from agents.models.openai_provider import OpenAIProvider
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 from agents.run_context import RunContextWrapper
 
 from ai_tutor.agents.models import Quiz, QuizUserAnswers, QuizFeedback
-from ai_tutor.agents.utils import process_handoff_data
+from ai_tutor.agents.utils import process_handoff_data, RoundingModelWrapper
 
 
 def quiz_user_answers_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
@@ -39,6 +40,10 @@ def create_quiz_teacher_agent(api_key: str = None):
         print("WARNING: OPENAI_API_KEY environment variable is not set for quiz teacher agent!")
     else:
         print(f"Using OPENAI_API_KEY from environment for quiz teacher agent")
+    
+    # Instantiate the base model provider and get the base model
+    provider: ModelProvider = OpenAIProvider()
+    base_model = provider.get_model("o3-mini")
     
     # Create the quiz teacher agent
     quiz_teacher_agent = Agent(
@@ -73,7 +78,7 @@ def create_quiz_teacher_agent(api_key: str = None):
         YOUR OUTPUT MUST BE ONLY A VALID QUIZFEEDBACK OBJECT.
         """),
         output_type=QuizFeedback,
-        model="o3-mini",
+        model=RoundingModelWrapper(base_model),
         # No handoffs needed for the quiz teacher agent - it's the last in the chain
     )
     

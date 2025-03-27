@@ -3,14 +3,15 @@ from typing import List, Dict, Any
 import os
 import openai
 import json
-import re
+# import re # No longer needed if not used elsewhere
 
-from agents import Agent, FileSearchTool, function_tool, handoff, HandoffInputData
+from agents import Agent, FileSearchTool, function_tool, handoff, HandoffInputData, ModelProvider
+from agents.models.openai_provider import OpenAIProvider # Assuming you use this
 from agents.run_context import RunContextWrapper
 
 from ai_tutor.agents.teacher_agent import create_teacher_agent
 from ai_tutor.agents.models import LearningObjective, LessonSection, LessonPlan
-from ai_tutor.agents.utils import process_handoff_data
+from ai_tutor.agents.utils import process_handoff_data, RoundingModelWrapper # Import the wrapper
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 
 
@@ -47,6 +48,10 @@ def create_planner_agent(vector_store_id: str):
         print(f"Planner handing off lesson plan: {lesson_plan.title}")
         print(f"Lesson plan has {len(lesson_plan.sections)} sections")
         # We don't need to do anything here, as the lesson plan will be accessible to the teacher agent
+
+    # Instantiate the base model provider and get the base model
+    provider: ModelProvider = OpenAIProvider() # Or your specific provider
+    base_model = provider.get_model("o3-mini") # Or the desired model name
     
     # Create the planner agent with access to the file search tool and handoff to teacher agent
     planner_agent = Agent(
@@ -57,7 +62,7 @@ def create_planner_agent(vector_store_id: str):
         
         Follow these steps IN ORDER:
         1. First, analyze the uploaded documents to understand their content and structure.
-           Use the file_search tool to search through the documents.
+           Use the file_search tool to search through the documents. Perform multiple searches if necessary.
         2. Identify the key topics, concepts, and skills that should be taught.
         3. Create a coherent lesson plan that organizes the content into logical sections.
         4. For each section, define clear learning objectives, key concepts, and estimate 
@@ -65,11 +70,10 @@ def create_planner_agent(vector_store_id: str):
         5. Consider the appropriate sequence for teaching the material.
         6. Consider who the target audience might be and any prerequisites they should know.
         7. YOU MUST FIRST output a complete structured LessonPlan object before proceeding.
-        8. IMMEDIATELY AFTER generating the complete lesson plan, YOU MUST hand off to the Teacher agent who
+           **Your final response before the handoff MUST ONLY be the valid LessonPlan JSON object.**
+        8. IMMEDIATELY AFTER outputting the LessonPlan object, YOU MUST use the 
+           `transfer_to_lesson_teacher` tool to hand off to the Teacher agent who
            will create the detailed lesson content based on your plan.
-        
-        Your lesson plan should be comprehensive but focused on the most important aspects 
-        of the material. Break complex topics into manageable sections.
         
         IMPORTANT: You MUST use the file_search tool to find information in the uploaded documents.
         Start by searching for general terms like "introduction", "overview", or specific topics
@@ -78,13 +82,12 @@ def create_planner_agent(vector_store_id: str):
         CRITICAL WORKFLOW INSTRUCTIONS:
         1. Search through documents using file_search tool
         2. Create and output a complete LessonPlan object
-        3. IMMEDIATELY use the transfer_to_lesson_teacher tool with your lesson plan as input
+           **(Ensure ONLY the LessonPlan JSON is the output before the tool call)**
+        3. IMMEDIATELY use the `transfer_to_lesson_teacher` tool with the generated lesson plan as input
         
         The handoff to the teacher agent is REQUIRED and MUST happen immediately after
         you generate the lesson plan. DO NOT skip this step under any circumstances.
-        
-        When using transfer_to_lesson_teacher, you should pass the entire LessonPlan object 
-        that you've just generated.
+        Ensure you pass the complete LessonPlan object to the `transfer_to_lesson_teacher` tool.
         
         Call transfer_to_lesson_teacher with the generated LessonPlan object.
         """),
@@ -99,7 +102,7 @@ def create_planner_agent(vector_store_id: str):
             )
         ],
         output_type=LessonPlan,
-        model="o3-mini",
+        model=RoundingModelWrapper(base_model), # Wrap the base model
     )
     
     return planner_agent 

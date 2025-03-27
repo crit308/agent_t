@@ -34,18 +34,20 @@ if __name__ == "__main__":
     
     # SDK Tracing is configured via RunConfig or globally via agents.set_tracing_... functions
     
-    # Set default API key to use for all calls (or tries env vars)
+    # --- SDK Configuration ---
+    # Ensure API key is available
     api_key_to_use = args.api_key or os.environ.get("OPENAI_API_KEY")
     if not api_key_to_use:
         print("ERROR: OpenAI API key is required. Provide it via --api-key or OPENAI_API_KEY environment variable.")
         sys.exit(1)
     
-    # Set environment variable for direct openai.Client() usage AND set SDK default
+    # CRITICAL: Set environment variable BEFORE any direct openai.Client() calls (e.g., in file_upload.py)
     os.environ["OPENAI_API_KEY"] = api_key_to_use
+    # ALSO set the SDK default key for agents.set_default_... functions
     set_default_openai_key(api_key_to_use)
     # If using a separate tracing key:
     # set_tracing_export_api_key("YOUR_TRACING_KEY")
-    print("Set default OpenAI API key for SDK.")
+    print("Set default OpenAI API key for SDK and environment.")
     
     # Ensure we're using the Responses API for o3-mini model
     set_default_openai_api("responses")

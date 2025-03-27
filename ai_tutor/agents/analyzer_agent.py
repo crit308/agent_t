@@ -2,7 +2,9 @@ import os
 from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field, model_validator
 
-from agents import Agent, FileSearchTool, Runner, trace, gen_trace_id, set_tracing_export_api_key, RunConfig
+from agents import Agent, FileSearchTool, Runner, trace, gen_trace_id, set_tracing_export_api_key, RunConfig, ModelProvider
+from agents.models.openai_provider import OpenAIProvider
+from ai_tutor.agents.utils import RoundingModelWrapper
 
 
 class FileMetadata(BaseModel):
@@ -57,6 +59,15 @@ class DocumentAnalysis(BaseModel):
         return self
 
 
+class AnalysisResult(BaseModel):
+    """Structured result from document analysis."""
+    analysis_text: str
+    key_concepts: List[str] = Field(default_factory=list)
+    key_terms: Dict[str, str] = Field(default_factory=dict)
+    file_names: List[str] = Field(default_factory=list)
+    vector_store_id: str
+
+
 def create_analyzer_agent(vector_store_id: str, api_key: str = None):
     """Create an analyzer agent with access to the provided vector store."""
     
@@ -79,6 +90,10 @@ def create_analyzer_agent(vector_store_id: str, api_key: str = None):
     )
     
     print(f"Created FileSearchTool for analyzer agent using vector store: {vector_store_id}")
+    
+    # Instantiate the base model provider and get the base model
+    provider = OpenAIProvider()
+    base_model = provider.get_model("o3-mini")
     
     # Create the analyzer agent with access to the file search tool
     analyzer_agent = Agent(
@@ -124,13 +139,13 @@ def create_analyzer_agent(vector_store_id: str, api_key: str = None):
         """,
         tools=[file_search_tool],
         # No specific output type - will return plain text
-        model="o3-mini",  # Using a model that's good at analysis
+        model=RoundingModelWrapper(base_model),
     )
     
     return analyzer_agent
 
 
-async def analyze_documents(vector_store_id: str, api_key: str = None, context=None) -> str:
+async def analyze_documents(vector_store_id: str, api_key: str = None, context=None) -> Optional[AnalysisResult]:
     """Analyze documents in the provided vector store.
     
     Args:
@@ -139,7 +154,7 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
         context: Optional context object with session_id for tracing
         
     Returns:
-        A string containing the analysis results in text format.
+        An AnalysisResult object containing the text and extracted metadata, or None on failure.
     """
     # Create the analyzer agent
     agent = create_analyzer_agent(vector_store_id, api_key)
@@ -182,7 +197,11 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
     )
     
     # Get the text output directly
-    analysis_text = result.final_output
+    analysis_text = result.final_output if isinstance(result.final_output, str) else str(result.final_output)
+    if not analysis_text:
+         print("Error: Document analysis agent returned empty output.")
+         return None
+
     print("Successfully completed document analysis")
     
     # Save the analysis to a file named "Knowledge Base"
@@ -201,15 +220,16 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
             print(f"Could not save analysis to 'Knowledge Base': {str(e2)}")
     
     # Extract key concepts for use in other parts of the application
+    key_concepts = []
+    key_terms = {}
+    file_names = []
     try:
         # Parse key concepts from the text output for easier access
-        key_concepts = []
         if "KEY CONCEPTS:" in analysis_text:
             concepts_section = analysis_text.split("KEY CONCEPTS:")[1].split("CONCEPT DETAILS:")[0]
             key_concepts = [c.strip() for c in concepts_section.strip().split("\n") if c.strip()]
-        
+
         # Extract key terms if available
-        key_terms = {}
         if "KEY TERMS GLOSSARY:" in analysis_text:
             terms_section = analysis_text.split("KEY TERMS GLOSSARY:")[1]
             # Check if there's a section after KEY TERMS GLOSSARY
@@ -232,23 +252,19 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
                         term, definition = parts
                         key_terms[term.strip()] = definition.strip()
         
-        # Attach the concepts as an attribute to the text for easy access
-        setattr(analysis_text, "key_concepts", key_concepts)
-        
-        # Attach the key terms as an attribute to the text
-        setattr(analysis_text, "key_terms", key_terms)
-        
-        # Attach the vector store ID as an attribute
-        setattr(analysis_text, "vector_store_id", vector_store_id)
-        
         # Extract file names if possible
-        file_names = []
         if "FILES:" in analysis_text:
             files_section = analysis_text.split("FILES:")[1].split("FILE METADATA:")[0]
             file_names = [f.strip() for f in files_section.strip().split("\n") if f.strip()]
-        setattr(analysis_text, "file_names", file_names)
         
     except Exception as e:
         print(f"Warning: Could not parse key concepts from analysis: {e}")
     
-    return analysis_text 
+    # Return the structured result
+    return AnalysisResult(
+        analysis_text=analysis_text,
+        key_concepts=key_concepts,
+        key_terms=key_terms,
+        file_names=file_names,
+        vector_store_id=vector_store_id
+    ) 
