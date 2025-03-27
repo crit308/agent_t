@@ -1,12 +1,15 @@
 import os
 import sys
+import logging # Import standard logging
 from typing import List, Optional
 
 # Add this directory to the system path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Register default OpenAI API key(s) from environment
-from openai_agents.helpers import set_default_openai_api_key, set_default_openai_api, set_logger_level, set_default_openai_client
+# Import SDK configuration functions directly from 'agents'
+from agents import (
+    set_default_openai_key, set_default_openai_api, set_default_openai_client
+)
 from ai_tutor.output_logger import get_logger
 
 # Keep a reference to the original methods
@@ -22,15 +25,13 @@ if __name__ == "__main__":
     
     # Set logger level
     for logger_name in ["openai", "openai_agents", "httpx"]:
-        set_logger_level(logger_name, level=args.log_level)
+        # Use standard logging configuration
+        logging.getLogger(logger_name).setLevel(args.log_level.upper())
     
-    # For tracing with LangSmith
-    # from langsmith.run_helpers import traceable
-    # set_tracing_project_name("openai-agents-project")
-    # set_tracing_enabled(True)
+    # SDK Tracing is configured via RunConfig or globally via agents.set_tracing_... functions
     
     # Set default API key to use for all calls (or tries env vars)
-    set_default_openai_api_key(args.api_key)
+    set_default_openai_key(args.api_key)
     # If using a separate tracing key:
     # set_tracing_export_api_key("YOUR_TRACING_KEY")
     print("Set default OpenAI API key for SDK.")

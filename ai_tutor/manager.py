@@ -61,17 +61,15 @@ class AITutorManager:
     async def _run_analyzer_in_background(self) -> None:
         """Run the analyzer agent in background and set the document_analysis property."""
         try:
+            # Run the analyzer on the vector store
             try:
                 # RunConfig will be passed inside analyze_documents
-                self.document_analysis = await analyze_documents(self.context.vector_store_id, context=self.context)
-                # Get number of files and key concepts if available
-                file_count = len(getattr(self.document_analysis, "file_names", [])) 
-                concept_count = len(getattr(self.document_analysis, "key_concepts", []))
-                print(f"Background document analysis complete. Found {file_count} files and {concept_count} key concepts.")
+                self.document_analysis = await analyze_documents(self.context.vector_store_id, context=self.context) # Removed api_key arg
+                return self.document_analysis
             except Exception as e:
-                print(f"ERROR: Background analyzer agent failed: {e}")
+                print(f"ERROR: Analyzer agent failed: {e}")
                 if hasattr(self, 'output_logger') and self.output_logger:
-                    self.output_logger.log_error("Background Analyzer Agent", e)
+                    self.output_logger.log_error("Analyzer Agent", e)
                 # We're already in a try-except block, so we don't need to re-raise
                 self.document_analysis = None
         except Exception as e:
@@ -84,20 +82,22 @@ class AITutorManager:
     def start_background_analysis(self) -> None:
         """Start analyzing documents in the background."""
         if not self.context.vector_store_id:
-            print("Cannot start background analysis: No vector store ID available")
+            print("Cannot start background analysis: No vector store ID available.")
             return
         
         # Use asyncio.create_task instead of threading
         if self._analysis_task is None or self._analysis_task.done():
              print("Creating new asyncio task for background analysis.")
+             # Ensure the event loop is running if this is called from sync code? No, manager methods are async.
              self._analysis_task = asyncio.create_task(self._run_analyzer_in_background())
-        
-        print(f"Started background document analysis for vector store {self.context.vector_store_id}")
+             print(f"Started background document analysis task for vector store {self.context.vector_store_id}")
+        else:
+            print("Background analysis task already running.")
     
     async def upload_documents(self, file_paths: List[str]) -> str:
         """Upload documents to be used by the AI tutor."""
         results = []
-        self.context.uploaded_file_paths = file_paths  # Store file paths for reference
+        self.context.uploaded_file_paths = file_paths # Store file paths in context
         
         for file_path in file_paths:
             try:
@@ -109,7 +109,7 @@ class AITutorManager:
             except Exception as e:
                 results.append(f"Error uploading {file_path}: {str(e)}")
         
-        # If auto-analyze is enabled and we have a vector store ID, start the analyzer agent in background
+        # If auto-analyze is enabled and we have a vector store ID, start background analysis
         if self.auto_analyze and self.context.vector_store_id:
             # Reset the completion event
             self._analysis_complete = asyncio.Event()
