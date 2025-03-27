@@ -102,6 +102,10 @@ async def run_tutor(args):
     # Get the logger instance first
     logger = get_logger()
     
+    # Always enable auto_analyze to ensure analyzer runs at the beginning
+    args.auto_analyze = True
+    print("Auto-analyze enabled: Analyzer agent will run at the start and generate Knowledge Base")
+    
     # Create the AI tutor manager with auto-analyze option and the logger
     manager = AITutorManager(args.api_key, auto_analyze=args.auto_analyze, output_logger=logger)
     
@@ -111,6 +115,9 @@ async def run_tutor(args):
     # Run the full workflow
     print("\n1. Uploading documents...")
     try:
+        # Record session start time
+        session_start_time = time.time()
+        
         upload_results = await manager.upload_documents(args.files)
         print(upload_results)
     except Exception as e:
@@ -356,41 +363,25 @@ async def run_tutor(args):
                 print(f"- {step}")
                 
         # Run session analysis if requested
-        if args.session_analysis:
+        if args.session_analysis and manager.lesson_content and manager.quiz and manager.quiz_feedback:
             step_num += 1
             print(f"\n{step_num}. Running session analysis...")
             try:
-                session_analysis = await manager.analyze_session()
+                # Calculate session duration
+                session_duration = int(time.time() - session_start_time)
+                
+                # Run session analysis
+                session_analysis = await manager.analyze_session(session_duration)
                 
                 # Log the session analysis output
-                logger.log_session_analysis_output(session_analysis)
+                logger.log_session_analyzer_output(session_analysis)
                 
-                print(f"\n=== Session Analysis Summary ===")
-                print(f"Overall Effectiveness: {session_analysis.overall_effectiveness:.1f}/100")
-                print(f"Lesson Plan Quality: {session_analysis.lesson_plan_quality:.1f}/100")
-                print(f"Content Quality: {session_analysis.content_quality:.1f}/100")
-                print(f"Quiz Quality: {session_analysis.quiz_quality:.1f}/100")
-                print(f"Student Performance: {session_analysis.student_performance:.1f}/100")
-                print(f"Teaching Effectiveness: {session_analysis.teaching_effectiveness:.1f}/100")
-                
-                print("\nKey Strengths:")
-                for strength in session_analysis.strengths[:3]:  # Show top 3 strengths
-                    print(f"- {strength}")
-                
-                print("\nKey Areas for Improvement:")
-                for area in session_analysis.improvement_areas[:3]:  # Show top 3 improvement areas
-                    print(f"- {area}")
-                
-                print("\nTop Recommendations:")
-                for rec in session_analysis.recommendations[:3]:  # Show top 3 recommendations
-                    print(f"- {rec}")
-                
-                print(f"\nComplete session analysis has been saved to the log file.")
-                
+                print(f"✓ Session analysis complete")
+                print(f"   Overall effectiveness: {session_analysis.overall_effectiveness:.2f}/5.0")
+                print(f"   Identified {len(session_analysis.strengths)} strengths and {len(session_analysis.improvement_areas)} areas for improvement")
+                print(f"   Session analysis has been added to the Knowledge Base")
             except Exception as e:
                 print(f"Error running session analysis: {str(e)}")
-                import traceback
-                traceback.print_exc()
                 
         # Save the session log
         output_file = logger.save()

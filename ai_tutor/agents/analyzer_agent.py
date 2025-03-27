@@ -172,6 +172,21 @@ async def analyze_documents(vector_store_id: str, api_key: str = None) -> str:
         analysis_text = result.final_output
         print("Successfully completed document analysis")
         
+        # Save the analysis to a file named "Knowledge Base"
+        try:
+            with open("Knowledge Base", "w", encoding="utf-8") as f:
+                f.write(analysis_text)
+            print("Analysis saved to 'Knowledge Base' file")
+        except Exception as e:
+            print(f"Error saving analysis to 'Knowledge Base': {str(e)}")
+            # Try with fallback encoding
+            try:
+                with open("Knowledge Base", "w", encoding="ascii", errors="ignore") as f:
+                    f.write(analysis_text)
+                print("Analysis saved to 'Knowledge Base' file (with encoding fallback)")
+            except Exception as e2:
+                print(f"Could not save analysis to 'Knowledge Base': {str(e2)}")
+        
         # Extract key concepts for use in other parts of the application
         try:
             # Parse key concepts from the text output for easier access

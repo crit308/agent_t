@@ -54,7 +54,7 @@ class AITutorManager:
         self._analysis_task = None
         self._analysis_complete = asyncio.Event()
         self._current_trace_id = None
-        self._session_start_time = None
+        self._session_start_time = time.time()
         
         # Initialize or set the output logger
         if output_logger:
@@ -960,11 +960,15 @@ class AITutorManager:
         except Exception as e:
             return f"Error uploading {file_path}: {str(e)}"
 
-    async def analyze_session(self) -> SessionAnalysis:
+    async def analyze_session(self, session_duration_seconds: int = None) -> SessionAnalysis:
         """Analyze the complete teaching session after it has finished.
         
         This should be called after the full workflow is complete to get insights
         about the effectiveness of the teaching session.
+        
+        Args:
+            session_duration_seconds: Optional duration of the session in seconds. If not provided,
+                                      will calculate from session start time if available.
         
         Returns:
             A SessionAnalysis object with insights about the session
@@ -972,13 +976,14 @@ class AITutorManager:
         if not all([self.lesson_plan, self.lesson_content, self.quiz, self.quiz_feedback]):
             raise ValueError("Cannot analyze session: Complete workflow has not been run.")
             
-        # Calculate session duration
-        session_end_time = time.time()
-        if self._session_start_time is None:
-            # If session start time wasn't recorded, use a default duration
-            session_duration_seconds = 0
-        else:
-            session_duration_seconds = int(session_end_time - self._session_start_time)
+        # Calculate session duration if not provided
+        if session_duration_seconds is None:
+            session_end_time = time.time()
+            if self._session_start_time is None:
+                # If session start time wasn't recorded, use a default duration
+                session_duration_seconds = 0
+            else:
+                session_duration_seconds = int(session_end_time - self._session_start_time)
             
         # Create and configure trace
         trace_id = gen_trace_id()
