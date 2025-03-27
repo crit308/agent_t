@@ -108,7 +108,7 @@ async def run_tutor(args):
     print("Auto-analyze enabled: Analyzer agent will run at the start and generate Knowledge Base")
     
     # Create the AI tutor manager with auto-analyze option and the logger
-    manager = AITutorManager(auto_analyze=args.auto_analyze, output_logger=logger)
+    manager = AITutorManager(auto_analyze=False, output_logger=logger)  # Set auto_analyze to False to control the flow manually
     
     print("AI Tutor System")
     print("==============")
@@ -129,60 +129,49 @@ async def run_tutor(args):
         print(f"Error uploading documents: {str(e)}")
         return
     
-    # Run the analyzer if requested and not already run via auto-analyze
-    run_synchronously = args.run_analyzer_sync
-    if args.analyze and not manager.document_analysis:
-        print("\n2. Analyzing documents...")
+    # Always run the analyzer synchronously and wait for completion
+    print("\n2. Analyzing documents...")
+    try:
+        # Run analyzer and wait for completion
         try:
-            if run_synchronously:
-                # Run analyzer and wait for completion
-                try:
-                    analysis = await manager.analyze_documents(run_in_background=False)
-                    if analysis:
-                        print(f"✓ Document analysis complete")
-                        # Extract metadata if possible
-                        file_count = len(getattr(analysis, "file_names", []))
-                        concept_count = len(getattr(analysis, "key_concepts", []))
-                        term_count = len(getattr(analysis, "key_terms", {}))
-                        print(f"   Files analyzed: {file_count}")
-                        print(f"   Key concepts: {concept_count}")
-                        print(f"   Key terms: {term_count}")
-                        
-                        # Save analysis to file if output specified
-                        if args.output:
-                            analysis_output = f"{os.path.splitext(args.output)[0]}_analysis.txt"
-                            try:
-                                with open(analysis_output, "w", encoding="utf-8") as f:
-                                    f.write(analysis if isinstance(analysis, str) else str(analysis))
-                                print(f"   Analysis saved to {analysis_output}")
-                            except Exception as e:
-                                print(f"   Error saving analysis: {e}")
-                                # Try with fallback encoding
-                                try:
-                                    with open(analysis_output, "w", encoding="ascii", errors="ignore") as f:
-                                        f.write(analysis if isinstance(analysis, str) else str(analysis))
-                                    print(f"   Analysis saved to {analysis_output} (with encoding fallback)")
-                                except Exception as e2:
-                                    print(f"   Could not save analysis: {e2}")
-                    else:
-                        print("✗ Document analysis failed")
-                except Exception as e:
-                    print(f"ERROR: Document analysis failed in CLI: {e}")
-                    raise  # Re-raise to the outer try-except
+            analysis = await manager.analyze_documents(run_in_background=False)
+            if analysis:
+                print(f"✓ Document analysis complete")
+                # Extract metadata if possible
+                file_count = len(getattr(analysis, "file_names", []))
+                concept_count = len(getattr(analysis, "key_concepts", []))
+                term_count = len(getattr(analysis, "key_terms", {}))
+                print(f"   Files analyzed: {file_count}")
+                print(f"   Key concepts: {concept_count}")
+                print(f"   Key terms: {term_count}")
+                
+                # Save analysis to file if output specified
+                if args.output:
+                    analysis_output = f"{os.path.splitext(args.output)[0]}_analysis.txt"
+                    try:
+                        with open(analysis_output, "w", encoding="utf-8") as f:
+                            f.write(analysis if isinstance(analysis, str) else str(analysis))
+                        print(f"   Analysis saved to {analysis_output}")
+                    except Exception as e:
+                        print(f"   Error saving analysis: {e}")
+                        # Try with fallback encoding
+                        try:
+                            with open(analysis_output, "w", encoding="ascii", errors="ignore") as f:
+                                f.write(analysis if isinstance(analysis, str) else str(analysis))
+                            print(f"   Analysis saved to {analysis_output} (with encoding fallback)")
+                        except Exception as e2:
+                            print(f"   Could not save analysis: {e2}")
             else:
-                # Start analyzer in background
-                try:
-                    await manager.analyze_documents(run_in_background=True)
-                    print(f"✓ Document analysis started in background")
-                    print(f"   Analysis will run in parallel with lesson generation")
-                except Exception as e:
-                    print(f"ERROR: Starting background document analysis failed in CLI: {e}")
-                    raise  # Re-raise to the outer try-except
+                print("✗ Document analysis failed")
         except Exception as e:
-            print(f"Error analyzing documents: {str(e)}")
+            print(f"ERROR: Document analysis failed in CLI: {e}")
+            raise  # Re-raise to the outer try-except
+    except Exception as e:
+        print(f"Error analyzing documents: {str(e)}")
+        return  # Exit if document analysis fails
     
     # Generate lesson plan with step number adjusted based on whether analysis was run
-    step_num = 3 if (args.analyze or args.auto_analyze) else 2
+    step_num = 3
     print(f"\n{step_num}. Generating lesson plan...")
     try:
         try:

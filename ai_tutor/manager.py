@@ -176,6 +176,18 @@ class AITutorManager:
         if not self.context.vector_store_id:
             raise ValueError("No documents have been uploaded yet")
         
+        # Check if the Knowledge Base file exists before starting the planner agent
+        if not os.path.exists("Knowledge Base"):
+            print("Waiting for Document Analyzer to create 'Knowledge Base' file...")
+            # Wait for the file to be created with a timeout
+            start_time = time.time()
+            timeout = 120  # 2 minutes timeout
+            while not os.path.exists("Knowledge Base"):
+                await asyncio.sleep(1)
+                if time.time() - start_time > timeout:
+                    raise TimeoutError("Timed out waiting for Document Analyzer to create 'Knowledge Base' file. Please ensure the analyzer has completed.")
+            print("'Knowledge Base' file created. Starting Planner Agent...")
+        
         # No need for outer trace() if Runner.run uses RunConfig
         # with trace("Generating lesson plan"):
         print(f"Generating lesson plan...")
