@@ -23,6 +23,7 @@ class TutorOutputLogger:
             "planner_agent_output": "",
             "teacher_agent_output": "",
             "quiz_creator_agent_output": "",
+            "user_summaries": [],
             "mini_quiz_attempts": [],
             "quiz_user_answers": [],
             "user_answers": "",
@@ -96,6 +97,17 @@ class TutorOutputLogger:
         self.logs["mini_quiz_attempts"].append(attempt_log)
         # Also add to the chronological session log
         self._append_to_session("Mini-Quiz Attempt", attempt_log)
+    
+    def log_user_summary(self, section_title: str, topic: str, summary_text: str) -> None:
+        """Log a user's summary attempt."""
+        summary_log = {
+            "section": section_title,
+            "topic": topic,
+            "summary": summary_text,
+            "timestamp": datetime.now().isoformat()
+        }
+        self.logs["user_summaries"].append(summary_log)
+        self._append_to_session("User Summary Attempt", summary_log)
     
     def get_captured_outputs(self) -> Dict[str, str]:
         """Get all captured outputs from all agents.
@@ -173,6 +185,12 @@ class TutorOutputLogger:
             f.write("QUIZ CREATOR AGENT OUTPUT\n")
             f.write("-" * 80 + "\n")
             f.write(self.logs["quiz_creator_agent_output"])
+            f.write("\n\n")
+            
+            f.write("USER SUMMARY ATTEMPTS\n")
+            f.write("-" * 80 + "\n")
+            for summary in self.logs["user_summaries"]:
+                f.write(f"Section: {summary['section']} | Topic: {summary['topic']}\nSummary: {summary['summary']}\n\n")
             f.write("\n\n")
             
             f.write("MINI-QUIZ ATTEMPTS\n")

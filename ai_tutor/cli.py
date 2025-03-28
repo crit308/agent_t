@@ -300,6 +300,14 @@ async def run_tutor(args):
                     print("\n>>> End Quick Check <<<\n")
                 # --- END MINI-QUIZ LOGIC ---
 
+                # --- ADD RECITE/SUMMARIZE PROMPT ---
+                print("\n>>> Time to Summarize! <<<")
+                print("This helps reinforce your understanding of the concept.")
+                user_summary = input("In your own words, what was the main idea of the concept you just learned? ")
+                logger.log_user_summary(section.title, explanation.topic, user_summary)
+                print(">>> Got it! <<<")
+                # --- END RECITE/SUMMARIZE PROMPT ---
+
                 # Prompt to continue after explanation/mini-quiz
                 input("Press Enter to continue...")
 
