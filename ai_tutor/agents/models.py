@@ -152,14 +152,14 @@ class QuizUserAnswer(BaseModel):
     """A single user answer to a quiz question."""
     question_index: int = Field(description="Index of the question in the quiz questions list")
     selected_option_index: int = Field(description="Index of the option selected by the user")
-    time_taken_seconds: int = Field(description="Time taken to answer the question in seconds")
+    time_taken_seconds: Optional[int] = Field(default=None, description="Time taken to answer the question in seconds")
 
 
 class QuizUserAnswers(BaseModel):
     """Collection of user answers to a quiz."""
     quiz_title: str = Field(description="Title of the quiz being answered")
     user_answers: List[QuizUserAnswer] = Field(description="List of user answers to quiz questions")
-    total_time_taken_seconds: int = Field(description="Total time taken to complete the quiz in seconds")
+    total_time_taken_seconds: Optional[int] = Field(default=None, description="Total time taken to complete the quiz in seconds")
 
 
 class QuizFeedbackItem(BaseModel):
