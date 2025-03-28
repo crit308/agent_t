@@ -23,6 +23,7 @@ class TutorOutputLogger:
             "planner_agent_output": "",
             "teacher_agent_output": "",
             "quiz_creator_agent_output": "",
+            "mini_quiz_attempts": [],
             "quiz_user_answers": [],
             "user_answers": "",
             "quiz_teacher_agent_output": "",
@@ -82,6 +83,19 @@ class TutorOutputLogger:
         """Log output from the session analyzer agent."""
         self.logs["session_analysis_output"] = self._format_output(output)
         self._append_to_session("Session Analyzer Agent", output)
+    
+    def log_mini_quiz_attempt(self, question: str, selected_option: str, correct_option: str, is_correct: bool) -> None:
+        """Log a user attempt on an in-lesson mini-quiz question."""
+        attempt_log = {
+            "question": question,
+            "selected_option": selected_option,
+            "correct_option": correct_option,
+            "is_correct": is_correct,
+            "timestamp": datetime.now().isoformat()
+        }
+        self.logs["mini_quiz_attempts"].append(attempt_log)
+        # Also add to the chronological session log
+        self._append_to_session("Mini-Quiz Attempt", attempt_log)
     
     def get_captured_outputs(self) -> Dict[str, str]:
         """Get all captured outputs from all agents.
@@ -159,6 +173,12 @@ class TutorOutputLogger:
             f.write("QUIZ CREATOR AGENT OUTPUT\n")
             f.write("-" * 80 + "\n")
             f.write(self.logs["quiz_creator_agent_output"])
+            f.write("\n\n")
+            
+            f.write("MINI-QUIZ ATTEMPTS\n")
+            f.write("-" * 80 + "\n")
+            for attempt in self.logs["mini_quiz_attempts"]:
+                f.write(f"Question: {attempt['question']}\nSelected: {attempt['selected_option']} | Correct: {attempt['correct_option']} | Result: {'✓ Correct' if attempt['is_correct'] else '✗ Incorrect'}\n\n")
             f.write("\n\n")
             
             f.write("USER QUIZ ANSWERS\n")

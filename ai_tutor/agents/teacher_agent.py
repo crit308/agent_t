@@ -83,6 +83,9 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
         5. Summarize key points at the end of each section
         6. Provide a comprehensive conclusion and suggest next steps for further learning
         
+        *** NEW REQUIREMENT ***
+        7. For each significant concept within an ExplanationContent, create 1-2 simple multiple-choice mini-quiz questions (using the QuizQuestion schema) focused on immediate recall of that specific concept. Embed these questions directly within the `mini_quiz` field of the corresponding `ExplanationContent` object. These mini-quizzes are for immediate reinforcement, not the final assessment.
+        
         Use the file_search tool to search for relevant information in the uploaded documents.
         
         CRITICAL WORKFLOW INSTRUCTIONS:
@@ -157,6 +160,9 @@ def create_teacher_agent_without_handoffs(vector_store_id: str, api_key: str = N
         4. Ensure content flows logically from basic to more advanced concepts
         5. Summarize key points at the end of each section
         6. Provide a comprehensive conclusion and suggest next steps for further learning
+        
+        *** NEW REQUIREMENT ***
+        7. For each significant concept within an ExplanationContent, create 1-2 simple multiple-choice mini-quiz questions (using the QuizQuestion schema) focused on immediate recall of that specific concept. Embed these questions directly within the `mini_quiz` field of the corresponding `ExplanationContent` object. These mini-quizzes are for immediate reinforcement, not the final assessment.
         
         Use the file_search tool to search for relevant information in the uploaded documents.
         

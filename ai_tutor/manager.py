@@ -899,61 +899,69 @@ class AITutorManager:
         return user_answers
 
     def _create_lesson_content_from_quiz(self, quiz: Quiz) -> LessonContent:
-        """Create synthetic lesson content from a quiz object.
+        """Create a LessonContent object from a Quiz.
+        
+        This is used when we already have a quiz (e.g., from handoff chain)
+        and need to create a lesson content object for consistency.
         
         Args:
             quiz: The quiz to create lesson content from
             
-        Returns:
+        Returns: 
             A LessonContent object derived from the quiz
         """
-        from ai_tutor.agents.models import LessonContent, SectionContent, ExplanationContent
+        from ai_tutor.agents.models import LessonContent, SectionContent, ExplanationContent, QuizQuestion
         
-        # Extract section titles from quiz questions
-        section_titles = set()
+        # Group questions by section
+        sections = {}
         for question in quiz.questions:
-            if hasattr(question, 'related_section') and question.related_section:
-                section_titles.add(question.related_section)
+            section_title = question.related_section
+            if section_title not in sections:
+                sections[section_title] = []
+            sections[section_title].append(question)
         
-        # If no sections found, use a default one
-        if not section_titles:
-            section_titles = ["Main Concepts"]
-        
-        # Create sections based on question topics
-        sections = []
-        for section_title in section_titles:
-            # Find all questions for this section
-            section_questions = [q for q in quiz.questions 
-                               if hasattr(q, 'related_section') and q.related_section == section_title]
-            
-            # Create explanations from questions
+        # Create section content for each group
+        section_contents = []
+        for section_title, questions in sections.items():
             explanations = []
-            for question in section_questions[:3]:  # Limit to first 3 questions per section
-                # IMPORTANT: The ExplanationContent model requires specific fields:
-                # - 'topic' (not 'title') for the explanation topic
-                # - 'explanation' (not 'content') for the actual explanation text
-                # - 'examples' list for examples
-                # Make sure field names exactly match the model definition to prevent validation errors
+            
+            for question in questions:
+                # --- ADD Mini-Quiz Generation ---
+                mini_quiz_for_concept = None
+                if question.options and len(question.options) >= 2: # Ensure we have options to make a mini-quiz
+                    mini_quiz_for_concept = [
+                        QuizQuestion(
+                            question=f"Recall: {question.question}", # Simple recall prompt
+                            options=question.options, # Reuse options
+                            correct_answer_index=question.correct_answer_index, # Reuse correct answer
+                            explanation=f"Recall check: {question.explanation}", # Reuse explanation
+                            difficulty="Easy", # Mini-quizzes should be easy
+                            related_section=section_title # Link back
+                        )
+                    ]
+                # --- END Mini-Quiz Generation ---
+
                 explanations.append(ExplanationContent(
                     topic=question.question.split('?')[0][:50] + "...",
                     explanation=f"This explains the concept of {question.question.split('?')[0][:30]}...",
-                    examples=[f"Example: {question.options[question.correct_answer_index]}"]
+                    examples=[f"Example related to correct answer: {question.options[question.correct_answer_index]}"],
+                    mini_quiz=mini_quiz_for_concept # Add the generated mini-quiz
                 ))
             
             # Create section content
-            sections.append(SectionContent(
+            section_contents.append(SectionContent(
                 title=section_title,
                 introduction=f"Introduction to {section_title}",
                 explanations=explanations,
-                exercises=[],
+                exercises=[],  # No exercises in synthesized content
                 summary=f"Summary of {section_title}"
             ))
         
-        # Create lesson content from the quiz
+        # Create the full lesson content
         return LessonContent(
-            title=quiz.lesson_title or "Lesson from Quiz",
+            title=quiz.title,
             introduction=f"This lesson content was derived from the quiz '{quiz.title}'.",
-            sections=sections,
+            sections=section_contents,
             conclusion="See the quiz for assessment of learning objectives.",
-            next_steps=[]
+            next_steps=["Review the quiz feedback", "Practice with additional exercises"]
         )

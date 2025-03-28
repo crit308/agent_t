@@ -221,6 +221,7 @@ async def run_tutor(args):
                     f.write(json.dumps(lesson_content.model_dump(), indent=2))
                 print(f"\nLesson content saved to {args.output}")
             
+            # Show a brief preview instead of full content
             print("\nLesson content preview:")
             print(f"Title: {lesson_content.title}")
             print(f"Introduction: {lesson_content.introduction[:200]}...")
@@ -242,6 +243,82 @@ async def run_tutor(args):
         # Save the session log before exiting
         logger.save()
         return
+    
+    # --- NEW INTERACTIVE LESSON DELIVERY STEP ---
+    step_num += 1
+    print(f"\n{step_num}. Starting Interactive Lesson...")
+    print("="*60)
+    print(f"LESSON: {lesson_content.title}")
+    print("="*60)
+    print(f"\nIntroduction: {lesson_content.introduction}\n")
+    input("Press Enter to begin the first section...")
+
+    for i, section in enumerate(lesson_content.sections):
+        print(f"\n--- Section {i+1}: {section.title} ---")
+        print(f"\n{section.introduction}\n")
+
+        if section.explanations:
+            for j, explanation in enumerate(section.explanations):
+                print(f"\n>> Concept: {explanation.topic}")
+                print(f"\n{explanation.explanation}")
+
+                if explanation.examples:
+                    print("\nExamples:")
+                    for ex in explanation.examples:
+                        print(f"- {ex}")
+
+                # --- MINI-QUIZ LOGIC ---
+                if explanation.mini_quiz:
+                    print("\n\n>>> Quick Check! <<<")
+                    for k, mini_q in enumerate(explanation.mini_quiz):
+                        print(f"\nMini-Question {k+1}: {mini_q.question}")
+                        for opt_idx, option in enumerate(mini_q.options):
+                            print(f"  {opt_idx+1}. {option}")
+
+                        valid_mini_answer = False
+                        while not valid_mini_answer:
+                            try:
+                                mini_answer_str = input(f"  Your answer (1-{len(mini_q.options)}): ")
+                                selected_mini_option = int(mini_answer_str) - 1
+                                if 0 <= selected_mini_option < len(mini_q.options):
+                                    valid_mini_answer = True
+                                else:
+                                    print(f"  Please enter a number between 1 and {len(mini_q.options)}.")
+                            except ValueError:
+                                print("  Please enter a valid number.")
+
+                        is_correct = (selected_mini_option == mini_q.correct_answer_index)
+                        user_choice = mini_q.options[selected_mini_option]
+                        correct_choice = mini_q.options[mini_q.correct_answer_index]
+
+                        if is_correct:
+                            print(f"  ✓ Correct!")
+                        else:
+                            print(f"  ✗ Incorrect. The correct answer was: {correct_choice}")
+                        print(f"  Explanation: {mini_q.explanation}")
+                        logger.log_mini_quiz_attempt(mini_q.question, user_choice, correct_choice, is_correct)
+                    print("\n>>> End Quick Check <<<\n")
+                # --- END MINI-QUIZ LOGIC ---
+
+                # Prompt to continue after explanation/mini-quiz
+                input("Press Enter to continue...")
+
+        # Optionally, add interaction for exercises later
+        if section.exercises:
+            print("\nExercises for this section (solutions provided by agent):")
+            for ex in section.exercises:
+                print(f"- {ex.question} ({ex.difficulty_level})")
+
+        print(f"\nSection Summary: {section.summary}")
+        print(f"\n--- End of Section {i+1} ---")
+        if i < len(lesson_content.sections) - 1:
+            input("Press Enter for the next section...")
+
+    print(f"\nLesson Conclusion: {lesson_content.conclusion}")
+    print("\n" + "="*60)
+    print("Lesson delivery complete.")
+    print("="*60)
+    # --- END INTERACTIVE LESSON DELIVERY STEP ---
     
     # Create and take quiz
     step_num += 1

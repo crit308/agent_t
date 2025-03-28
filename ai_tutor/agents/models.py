@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import json
 
 # Custom JSON encoder to control floating point precision
@@ -72,6 +72,7 @@ class ExplanationContent(BaseModel):
     topic: str = Field(description="The topic being explained")
     explanation: str = Field(description="A clear, detailed explanation of the topic")
     examples: List[str] = Field(description="Examples that illustrate the topic")
+    mini_quiz: Optional[List['QuizQuestion']] = Field(default=None, description="Optional short quiz (1-2 questions) for immediate recall practice after this explanation.")
 
 
 class Exercise(BaseModel):
@@ -235,4 +236,7 @@ class SessionAnalysis(BaseModel):
     # Recommendations
     recommendations: List[str] = Field(description="Actionable recommendations for future sessions")
     recommended_adjustments: List[str] = Field(description="Specific adjustments for the next session")
-    suggested_resources: List[str] = Field(description="Additional resources to address gaps") 
+    suggested_resources: List[str] = Field(description="Additional resources to address gaps")
+
+# Forward reference resolution for ExplanationContent
+ExplanationContent.model_rebuild() 
