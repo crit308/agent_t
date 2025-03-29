@@ -72,7 +72,19 @@ class ExplanationContent(BaseModel):
     topic: str = Field(description="The topic being explained")
     explanation: str = Field(description="A clear, detailed explanation of the topic")
     examples: List[str] = Field(description="Examples that illustrate the topic")
-    mini_quiz: Optional[List['QuizQuestion']] = Field(default=None, description="Optional short quiz (1-2 questions) for immediate recall practice after this explanation.")
+
+
+class MiniQuizInfo(BaseModel):
+    """Information needed to display a mini-quiz in the practice phase."""
+    related_section_title: str = Field(description="The title of the section this quiz relates to.")
+    related_topic: str = Field(description="The specific topic within the section this quiz relates to.")
+    quiz_question: 'QuizQuestion' = Field(description="The actual quiz question.")
+
+
+class UserSummaryPromptInfo(BaseModel):
+    """Information needed to prompt the user for a summary."""
+    section_title: str = Field(description="The title of the section the summary relates to.")
+    topic: str = Field(description="The specific topic the user should summarize.")
 
 
 class Exercise(BaseModel):
@@ -98,6 +110,8 @@ class LessonContent(BaseModel):
     introduction: str = Field(description="Introduction to the overall lesson")
     sections: List[SectionContent] = Field(description="Content for each section of the lesson")
     conclusion: str = Field(description="Conclusion summarizing the lesson")
+    mini_quizzes: List[MiniQuizInfo] = Field(default_factory=list, description="List of all mini-quizzes for the lesson, collected for the practice phase.")
+    user_summary_prompts: List[UserSummaryPromptInfo] = Field(default_factory=list, description="List of all summary prompts for the lesson, collected for the practice phase.")
     next_steps: List[str] = Field(description="Suggested next steps for continued learning")
 
 
@@ -239,4 +253,6 @@ class SessionAnalysis(BaseModel):
     suggested_resources: List[str] = Field(description="Additional resources to address gaps")
 
 # Forward reference resolution for ExplanationContent
-ExplanationContent.model_rebuild() 
+# And MiniQuizInfo which references QuizQuestion
+ExplanationContent.model_rebuild()
+MiniQuizInfo.model_rebuild() 
