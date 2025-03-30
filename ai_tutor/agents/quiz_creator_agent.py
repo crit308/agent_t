@@ -176,17 +176,7 @@ def create_quiz_creator_agent_with_teacher_handoff(api_key: str = None):
 
 
 async def generate_quiz(lesson_content: LessonContent, api_key: str = None, enable_teacher_handoff: bool = False, context=None) -> Quiz:
-    """Generate a quiz based on the provided lesson content.
-    
-    Args:
-        lesson_content: The lesson content to base the quiz on
-        api_key: Optional OpenAI API key
-        enable_teacher_handoff: Whether to enable handoff to the quiz teacher agent
-        context: Optional context object with session_id for tracing
-        
-    Returns:
-        Quiz object
-    """
+    """Generate a quiz based on the simplified lesson content."""
     # Create the quiz creator agent
     if enable_teacher_handoff:
         agent = create_quiz_creator_agent_with_teacher_handoff(api_key)
@@ -194,96 +184,57 @@ async def generate_quiz(lesson_content: LessonContent, api_key: str = None, enab
     else:
         agent = create_quiz_creator_agent(api_key)
         print("Created quiz creator agent without teacher handoff capability")
-    
-    # Check if the lesson content has sections
-    if not hasattr(lesson_content, 'sections') or len(lesson_content.sections) == 0:
-        print("Warning: Lesson content has no sections. Creating a minimal quiz.")
-        # Create a minimal quiz with just the title and description
-        return Quiz(
-            title=f"Quiz on {lesson_content.title}",
-            description="This is a quiz based on the lesson content.",
-            lesson_title=lesson_content.title,
-            questions=[],
-            passing_score=0,
-            total_points=0,
-            estimated_completion_time_minutes=0
-        )
-    
-    # Format the lesson content as a string for the quiz creator agent
+
+    # --- SIMPLIFIED PROMPT FORMATTING ---
     lesson_content_str = f"""
     LESSON CONTENT:
-    
+
     Title: {lesson_content.title}
-    Introduction: {lesson_content.introduction}
-    
-    Sections:
-    """
-    
-    for i, section in enumerate(lesson_content.sections):
-        lesson_content_str += f"""
-        Section {i+1}: {section.title}
-        Introduction: {section.introduction}
-        
-        Key Concepts:
-        """
-        
-        for j, explanation in enumerate(section.explanations):
-            lesson_content_str += f"""
-            Concept {j+1}: {explanation.topic}
-            Explanation: {explanation.explanation}
-            Examples: {', '.join(explanation.examples)}
-            """
-        
-        lesson_content_str += f"""
-        Summary: {section.summary}
-        """
-    
-    lesson_content_str += f"""
-    Conclusion: {lesson_content.conclusion}
-    
+
+    Text:
+    {lesson_content.text}
+    --- End of Text ---
+
     INSTRUCTIONS:
-    Based on this lesson content, create a comprehensive quiz that tests understanding of the key concepts.
-    Create approximately 2-3 questions per section, with a mix of difficulty levels.
-    Ensure your questions cover the most important concepts from each section.
-    
-    Your output should ONLY be a valid Quiz object with the following structure:
-    - title: The quiz title
-    - description: Brief description of the quiz
-    - lesson_title: Title of the lesson this quiz is based on
-    - questions: Array of QuizQuestion objects
-    - passing_score: Minimum points to pass
-    - total_points: Total possible points
-    - estimated_completion_time_minutes: Estimated time to complete
+    Based on the lesson text provided above (titled '{lesson_content.title}'), create a comprehensive quiz that tests understanding of the key concepts discussed.
+    Create approximately 5-10 questions covering the most important information.
+    Distribute questions across the topics mentioned in the text.
+    Assign a relevant 'related_section' title (e.g., based on headings you infer from the text, or just use the main lesson title if unsure).
+
+    Your output should ONLY be a valid Quiz object structure.
     """
-    
-    # Setup RunConfig for tracing
-    from agents import RunConfig
-    
+    # --- End SIMPLIFIED PROMPT FORMATTING ---
+
+    from agents import RunConfig # Keep RunConfig import
     run_config = None
     if context and hasattr(context, 'session_id'):
         run_config = RunConfig(
             workflow_name="AI Tutor - Quiz Creation",
-            group_id=context.session_id # Link traces within the same session
+            group_id=context.session_id
         )
-    
-    # Run the quiz creator agent with the lesson content
+
     result = await Runner.run(
-        agent, 
+        agent,
         lesson_content_str,
         run_config=run_config,
         context=context
     )
-    
-    # Return the quiz
+
     try:
         quiz = result.final_output_as(Quiz)
+        # --- Add validation for related_section ---
+        if quiz and quiz.questions:
+             for q in quiz.questions:
+                 if not q.related_section:
+                     q.related_section = lesson_content.title # Default if missing
+        # --- End validation ---
         return quiz
     except Exception as e:
         print(f"Error parsing quiz output: {e}")
-        # Return a minimal quiz if parsing fails
+        # Minimal quiz fallback
         return Quiz(
             title=f"Quiz on {lesson_content.title}",
-            description="This is a quiz based on the lesson content.",
+            description="Quiz based on the lesson content.",
             lesson_title=lesson_content.title,
             questions=[],
             passing_score=0,

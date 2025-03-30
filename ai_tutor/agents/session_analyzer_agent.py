@@ -8,10 +8,10 @@ from agents.models.openai_provider import OpenAIProvider
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 
 from ai_tutor.agents.models import (
-    LessonPlan, 
-    LessonContent, 
-    Quiz, 
-    QuizUserAnswers, 
+    LessonPlan,
+    LessonContent, # Simplified
+    Quiz,
+    QuizUserAnswers,
     QuizFeedback,
     LearningInsight,
     TeachingInsight,
@@ -95,7 +95,7 @@ def create_session_analyzer_agent(api_key: str = None):
 
 async def analyze_teaching_session(
     lesson_plan: LessonPlan, 
-    lesson_content: LessonContent, 
+    lesson_content: LessonContent, # Expects simplified version
     quiz: Quiz, 
     user_answers: QuizUserAnswers, 
     quiz_feedback: QuizFeedback,
@@ -105,30 +105,14 @@ async def analyze_teaching_session(
     document_analysis = None,
     context = None
 ) -> SessionAnalysis:
-    """Analyze a complete teaching session and generate insights.
-    
-    Args:
-        lesson_plan: The lesson plan created by the planner agent
-        lesson_content: The lesson content created by the teacher agent
-        quiz: The quiz created by the quiz creator agent
-        user_answers: The user's answers to the quiz
-        quiz_feedback: The feedback provided by the quiz teacher agent
-        session_duration_seconds: Total duration of the session in seconds
-        raw_agent_outputs: Dictionary containing the raw outputs from all agents in the workflow
-        api_key: The OpenAI API key to use
-        document_analysis: Optional document analysis to include
-        context: Optional context object with session_id for tracing
-        
-    Returns:
-        A SessionAnalysis object with insights about the teaching session
-    """
+    """Analyze a complete teaching session and generate insights."""
     # Create the session analyzer agent
     agent = create_session_analyzer_agent(api_key)
     
     # Generate a unique session ID
     session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
-    # Format all the data as a string for the session analyzer agent
+    # --- SIMPLIFIED PROMPT FORMATTING for Lesson Content ---
     prompt = f"""
     SESSION INFORMATION:
     
@@ -168,50 +152,13 @@ async def analyze_teaching_session(
     prompt += f"""
     
     LESSON CONTENT:
-    
+
     Title: {lesson_content.title}
-    Introduction: {lesson_content.introduction}
-    
-    """
-    
-    for i, section in enumerate(lesson_content.sections):
-        prompt += f"""
-        Section {i+1}: {section.title}
-        Introduction: {section.introduction}
-        
-        Key Explanations:
-        """
-        
-        for explanation in section.explanations:
-            prompt += f"""
-            Topic: {explanation.topic}
-            Explanation: {explanation.explanation}
-            Examples: {', '.join(explanation.examples)}
-            """
-        
-        prompt += f"\nExercises:\n"
-        for j, exercise in enumerate(section.exercises):
-            prompt += f"""
-            Exercise {j+1}: {exercise.question}
-            Difficulty: {exercise.difficulty_level}
-            Answer: {exercise.answer}
-            Explanation: {exercise.explanation}
-            """
-        
-        prompt += f"\nSummary: {section.summary}\n"
-    
-    prompt += f"""
-    
-    Conclusion: {lesson_content.conclusion}
-    
-    Next Steps:
-    """
-    
-    for step in lesson_content.next_steps:
-        prompt += f"- {step}\n"
-    
-    prompt += f"""
-    
+
+    Text:
+    {lesson_content.text}
+    --- End of Text ---
+
     QUIZ:
     
     Title: {quiz.title}
@@ -250,55 +197,43 @@ async def analyze_teaching_session(
     """
     
     for answer in user_answers.user_answers:
-        question_index = answer.question_index
-        selected_option_index = answer.selected_option_index
-        
-        # Ensure the question index is valid
-        if question_index < len(quiz.questions):
-            question = quiz.questions[question_index]
-            selected_option = question.options[selected_option_index] if selected_option_index < len(question.options) else "Invalid option"
-            correct_option = question.options[question.correct_answer_index] if question.correct_answer_index < len(question.options) else "Invalid option"
-            is_correct = selected_option_index == question.correct_answer_index
-            
-            prompt += f"""
-            Question {question_index + 1}: {question.question}
-            User Selected: Option {selected_option_index + 1} - {selected_option}
-            Correct Answer: Option {question.correct_answer_index + 1} - {correct_option}
-            Result: {"Correct" if is_correct else "Incorrect"}
-            Time Taken: {answer.time_taken_seconds} seconds
-            """
+        prompt += f"""
+        Question {answer.question_index + 1}:
+        Selected: Option {answer.selected_option_index + 1}
+        Time Taken: {answer.time_taken_seconds if answer.time_taken_seconds else 'N/A'} seconds
+        """
     
     prompt += f"""
     
     QUIZ FEEDBACK:
     
     Quiz Title: {quiz_feedback.quiz_title}
-    Score: {quiz_feedback.correct_answers}/{quiz_feedback.total_questions} ({quiz_feedback.score_percentage:.1f}%)
-    Pass/Fail: {"Passed" if quiz_feedback.passed else "Failed"}
+    Score: {quiz_feedback.correct_answers}/{quiz_feedback.total_questions} ({quiz_feedback.score_percentage}%)
+    Passed: {'Yes' if quiz_feedback.passed else 'No'}
+    Total Time: {quiz_feedback.total_time_taken_seconds} seconds
     
-    Feedback Items:
+    Overall Feedback: {quiz_feedback.overall_feedback}
+    
+    Question Feedback:
     """
     
     for item in quiz_feedback.feedback_items:
         prompt += f"""
-        Question: {item.question_text}
-        User Answer: {item.user_selected_option}
-        Correct: {"Yes" if item.is_correct else "No"}
-        Correct Answer: {item.correct_option if not item.is_correct else "Same as user answer"}
+        Question {item.question_index + 1}: {item.question_text}
+        Selected: {item.user_selected_option}
+        Correct: {item.correct_option}
+        Correct?: {'Yes' if item.is_correct else 'No'}
         Explanation: {item.explanation}
-        {"Improvement Suggestion: " + item.improvement_suggestion if not item.is_correct and item.improvement_suggestion else ""}
+        Improvement Suggestion: {item.improvement_suggestion}
         """
     
     prompt += f"""
-    
-    Overall Feedback: {quiz_feedback.overall_feedback}
     
     Suggested Study Topics:
     """
     
     for topic in quiz_feedback.suggested_study_topics:
-        if topic:  # Skip empty topics
-            prompt += f"- {topic}\n"
+        prompt += f"- {topic}\n"
     
     prompt += f"""
     
@@ -307,46 +242,37 @@ async def analyze_teaching_session(
     
     for step in quiz_feedback.next_steps:
         prompt += f"- {step}\n"
-
-    # Add document analysis if provided
+    
     if document_analysis:
         prompt += f"""
         
         DOCUMENT ANALYSIS:
-        =================
         {document_analysis}
         """
     
-    # Add raw agent outputs if provided
     if raw_agent_outputs:
         prompt += f"""
         
         RAW AGENT OUTPUTS:
-        ==================
         """
         
         for agent_name, output in raw_agent_outputs.items():
             prompt += f"""
-            
-            {agent_name.upper()} OUTPUT:
-            -------------------------
+            {agent_name}:
             {output}
-            -------------------------
             """
     
     prompt += f"""
     
     INSTRUCTIONS:
-    
     Based on all this information, create a comprehensive analysis of the teaching session.
-    
     Analyze:
-    1. The overall effectiveness of the teaching session
-    2. The quality of the lesson plan, teaching content, and quiz
-    3. The student's learning and performance
-    4. The teaching methodology's effectiveness
-    5. Recommendations for improvement
-    
+    1. Overall effectiveness.
+    2. Quality of the lesson plan, the **synthesized lesson text**, and the quiz.
+    3. Student's learning and performance (based on quiz).
+    4. Teaching methodology effectiveness (more general now, based on text quality and quiz alignment).
+    5. Recommendations for improvement.
+
     YOUR OUTPUT MUST BE ONLY A VALID SESSIONANALYSIS OBJECT.
     """
     
@@ -355,98 +281,30 @@ async def analyze_teaching_session(
     if context and hasattr(context, 'session_id'):
         run_config = RunConfig(
             workflow_name="AI Tutor - Session Analysis",
-            group_id=context.session_id # Link traces within the same session
-        )
-    elif api_key:
-        # If no context provided but we have API key, create a basic RunConfig
-        run_config = RunConfig(
-            workflow_name="AI Tutor - Session Analysis"
+            group_id=context.session_id
         )
     
     # Run the session analyzer agent
     result = await Runner.run(
-        agent, 
+        agent,
         prompt,
         run_config=run_config,
         context=context
     )
     
-    # Get the session analysis result
     try:
         session_analysis = result.final_output_as(SessionAnalysis)
-        
-        # Append the session analysis to the Knowledge Base file
-        try:
-            # Convert the session analysis to a formatted string
-            try:
-                session_analysis_text = f"""
-                
-                SESSION ANALYSIS: {session_id}
-                ==============================================
-                
-                Overall Effectiveness: {session_analysis.overall_effectiveness:.2f}/5.0
-                
-                Strengths:
-                {chr(10).join(f"- {s}" for s in session_analysis.strengths)}
-                
-                Improvement Areas:
-                {chr(10).join(f"- {a}" for a in session_analysis.improvement_areas)}
-                
-                Lesson Plan Quality: {session_analysis.lesson_plan_quality:.2f}/5.0
-                Content Quality: {session_analysis.content_quality:.2f}/5.0
-                Quiz Quality: {session_analysis.quiz_quality:.2f}/5.0
-                Student Performance: {session_analysis.student_performance:.2f}/5.0
-                Teaching Effectiveness: {session_analysis.teaching_effectiveness:.2f}/5.0
-                
-                Recommendations:
-                {chr(10).join(f"- {r}" for r in session_analysis.recommendations)}
-                
-                Suggested Resources:
-                {chr(10).join(f"- {r}" for r in session_analysis.suggested_resources)}
-                """
-            except Exception as formatting_error:
-                print(f"Warning: Error formatting session analysis: {formatting_error}")
-                session_analysis_text = f"\n\nSESSION ANALYSIS: {session_id}\n============================\n{str(session_analysis)}\n"
-            
-            # Check if the Knowledge Base file exists (using the same filename as the document analyzer)
-            kb_filename = "Knowledge Base"  # This is the filename used by the document analyzer
-            
-            if os.path.exists(kb_filename):
-                # Append to the existing file
-                with open(kb_filename, "a", encoding="utf-8") as f:
-                    f.write(session_analysis_text)
-                print(f"Session analysis appended to '{kb_filename}' file")
-            else:
-                # Create a new file if it doesn't exist
-                with open(kb_filename, "w", encoding="utf-8") as f:
-                    f.write("KNOWLEDGE BASE\n=============\n\nSession Analysis:\n")
-                    f.write(session_analysis_text)
-                print(f"Created new '{kb_filename}' file with session analysis")
-        except Exception as e:
-            print(f"Error appending session analysis to '{kb_filename}': {str(e)}")
-            # Try with fallback encoding
-            try:
-                if os.path.exists(kb_filename):
-                    with open(kb_filename, "a", encoding="ascii", errors="ignore") as f:
-                        f.write(session_analysis_text)
-                else:
-                    with open(kb_filename, "w", encoding="ascii", errors="ignore") as f:
-                        f.write("KNOWLEDGE BASE\n=============\n\nSession Analysis:\n")
-                        f.write(session_analysis_text)
-                print(f"Session analysis appended to '{kb_filename}' file (with encoding fallback)")
-            except Exception as e2:
-                print(f"Could not append session analysis to '{kb_filename}': {str(e2)}")
-        
+        print(f"Successfully generated session analysis for {session_id}")
         return session_analysis
     except Exception as e:
         print(f"Error parsing session analysis output: {e}")
-        # Return a minimal analysis object if parsing fails
+        # Return a minimal analysis if parsing fails
         return SessionAnalysis(
             session_id=session_id,
             session_duration_seconds=session_duration_seconds,
             overall_effectiveness=0.0,
             strengths=[],
-            improvement_areas=["Error generating session analysis. See logs for details."],
+            improvement_areas=["Error generating analysis"],
             lesson_plan_quality=0.0,
             lesson_plan_insights=[],
             content_quality=0.0,
@@ -457,7 +315,7 @@ async def analyze_teaching_session(
             learning_insights=[],
             teaching_effectiveness=0.0,
             teaching_insights=[],
-            recommendations=["Contact support for assistance with session analysis."],
+            recommendations=[],
             recommended_adjustments=[],
             suggested_resources=[]
         ) 

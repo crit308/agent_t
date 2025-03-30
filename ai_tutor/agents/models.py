@@ -67,52 +67,49 @@ class PrecisionControlEncoder(json.JSONEncoder):
         return result
 
 
-class ExplanationContent(BaseModel):
-    """Content explaining a concept or topic."""
-    topic: str = Field(description="The topic being explained")
-    explanation: str = Field(description="A clear, detailed explanation of the topic")
-    examples: List[str] = Field(description="Examples that illustrate the topic")
+# --- REMOVED/COMMENTED OUT COMPLEX MODELS ---
+# class ExplanationContent(BaseModel):
+#     """Content explaining a concept or topic."""
+#     topic: str = Field(description="The topic being explained")
+#     explanation: str = Field(description="A clear, detailed explanation of the topic")
+#     examples: List[str] = Field(description="Examples that illustrate the topic")
 
 
-class MiniQuizInfo(BaseModel):
-    """Information needed to display a mini-quiz in the practice phase."""
-    related_section_title: str = Field(description="The title of the section this quiz relates to.")
-    related_topic: str = Field(description="The specific topic within the section this quiz relates to.")
-    quiz_question: 'QuizQuestion' = Field(description="The actual quiz question.")
+# class MiniQuizInfo(BaseModel):
+#     """Information needed to display a mini-quiz in the practice phase."""
+#     related_section_title: str = Field(description="The title of the section this quiz relates to.")
+#     related_topic: str = Field(description="The specific topic within the section this quiz relates to.")
+#     quiz_question: 'QuizQuestion' = Field(description="The actual quiz question.")
 
 
-class UserSummaryPromptInfo(BaseModel):
-    """Information needed to prompt the user for a summary."""
-    section_title: str = Field(description="The title of the section the summary relates to.")
-    topic: str = Field(description="The specific topic the user should summarize.")
+# class UserSummaryPromptInfo(BaseModel):
+#     """Information needed to prompt the user for a summary."""
+#     section_title: str = Field(description="The title of the section the summary relates to.")
+#     topic: str = Field(description="The specific topic the user should summarize.")
 
 
-class Exercise(BaseModel):
-    """An exercise for the student to complete."""
-    question: str = Field(description="The exercise question or prompt")
-    difficulty_level: str = Field(description="Easy, Medium, or Hard")
-    answer: str = Field(description="The answer or solution to the exercise")
-    explanation: str = Field(description="Explanation of how to solve the exercise")
+# class Exercise(BaseModel):
+#     """An exercise for the student to complete."""
+#     question: str = Field(description="The exercise question or prompt")
+#     difficulty_level: str = Field(description="Easy, Medium, or Hard")
+#     answer: str = Field(description="The answer or solution to the exercise")
+#     explanation: str = Field(description="Explanation of how to solve the exercise")
 
 
-class SectionContent(BaseModel):
-    """The full content for a section of the lesson."""
-    title: str = Field(description="The title of the section")
-    introduction: str = Field(description="Introduction to the section")
-    explanations: List[ExplanationContent] = Field(description="Explanations of key concepts")
-    exercises: List[Exercise] = Field(description="Exercises for practice")
-    summary: str = Field(description="A summary of key points from the section")
+# class SectionContent(BaseModel):
+#     """The full content for a section of the lesson."""
+#     title: str = Field(description="The title of the section")
+#     introduction: str = Field(description="Introduction to the section")
+#     explanations: List[ExplanationContent] = Field(description="Explanations of key concepts")
+#     exercises: List[Exercise] = Field(description="Exercises for practice")
+#     summary: str = Field(description="A summary of key points from the section")
 
 
+# --- MODIFIED LessonContent ---
 class LessonContent(BaseModel):
-    """The complete lesson content created by the teacher agent."""
+    """The simplified lesson content created by the teacher agent."""
     title: str = Field(description="The title of the lesson")
-    introduction: str = Field(description="Introduction to the overall lesson")
-    sections: List[SectionContent] = Field(description="Content for each section of the lesson")
-    conclusion: str = Field(description="Conclusion summarizing the lesson")
-    mini_quizzes: List[MiniQuizInfo] = Field(default_factory=list, description="List of all mini-quizzes for the lesson, collected for the practice phase.")
-    user_summary_prompts: List[UserSummaryPromptInfo] = Field(default_factory=list, description="List of all summary prompts for the lesson, collected for the practice phase.")
-    next_steps: List[str] = Field(description="Suggested next steps for continued learning")
+    text: str = Field(description="The full text content of the lesson")
 
 
 class QuizQuestion(BaseModel):
@@ -254,5 +251,5 @@ class SessionAnalysis(BaseModel):
 
 # Forward reference resolution for ExplanationContent
 # And MiniQuizInfo which references QuizQuestion
-ExplanationContent.model_rebuild()
-MiniQuizInfo.model_rebuild() 
+# ExplanationContent.model_rebuild()
+# MiniQuizInfo.model_rebuild() 

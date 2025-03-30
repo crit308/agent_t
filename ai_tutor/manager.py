@@ -5,6 +5,8 @@ from pydantic import BaseModel  # Import BaseModel if not already imported
 import threading
 import uuid
 import time
+from collections import defaultdict # Added import
+import re # Added import
 
 from agents import Runner, trace, gen_trace_id, set_tracing_export_api_key, RunConfig
 
@@ -15,7 +17,8 @@ from ai_tutor.agents.analyzer_agent import analyze_documents
 from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent, generate_quiz, create_quiz_creator_agent_with_teacher_handoff
 from ai_tutor.agents.quiz_teacher_agent import create_quiz_teacher_agent, generate_quiz_feedback
 from ai_tutor.agents.session_analyzer_agent import create_session_analyzer_agent, analyze_teaching_session
-from ai_tutor.agents.models import LessonContent, Quiz, LessonPlan, LessonSection, LearningObjective, QuizUserAnswers, QuizFeedback, QuizUserAnswer, SectionContent, ExplanationContent, Exercise, SessionAnalysis
+# Ensure simplified LessonContent is imported along with other necessary models
+from ai_tutor.agents.models import LessonContent, Quiz, LessonPlan, LessonSection, LearningObjective, QuizUserAnswers, QuizFeedback, QuizUserAnswer, SessionAnalysis, QuizQuestion
 from ai_tutor.context import TutorContext  # Import the new context model
 
 
@@ -302,17 +305,17 @@ class AITutorManager:
                 total_estimated_duration_minutes=60,
                 sections=[
                     LessonSection(
-                        title=section.title,
-                        estimated_duration_minutes=30,
+                        title="Main Content", # Generic title
+                        estimated_duration_minutes=60,
                         objectives=[
                             LearningObjective(
-                                title=f"Learn {section.title}",
-                                description=f"Understand {section.title}",
+                                title=f"Understand {self.lesson_content.title}",
+                                description=f"Grasp the key concepts presented in the lesson.",
                                 priority=3
                             )
                         ],
-                        concepts_to_cover=["Content topics"]
-                    ) for section in self.lesson_content.sections
+                        concepts_to_cover=["Topics from the lesson text"] # Generic concepts
+                    )
                 ],
                 additional_resources=[]
             )
@@ -514,39 +517,11 @@ class AITutorManager:
                 raise ValueError("Failed to generate valid lesson content with sections")
         except Exception as e:
             print(f"Error generating lesson content: {e}")
-            # Create minimal lesson content
-            # IMPORTANT: Make sure to use the correct field names as defined in the models.py file
-            # For ExplanationContent model: use 'topic' (not 'title') and 'explanation' (not 'content')
-            # For Exercise model: include required 'difficulty_level' and 'explanation' fields
-            # Validation errors can occur if required fields are missing or field names don't match
-            from ai_tutor.agents.models import LessonContent, SectionContent, ExplanationContent, Exercise
+            # Use the simplified LessonContent model for fallback
+            from ai_tutor.agents.models import LessonContent
             self.lesson_content = LessonContent(
-                title=self.lesson_plan.title,
-                introduction="This is automatically generated test content.",
-                sections=[
-                    SectionContent(
-                        title="Test Section",
-                        introduction="Introduction to test section",
-                        explanations=[
-                            ExplanationContent(
-                                topic="Test Explanation",
-                                explanation="This is a test explanation.",
-                                examples=["Example 1"]
-                            )
-                        ],
-                        exercises=[
-                            Exercise(
-                                question="Test exercise question?",
-                                answer="Test exercise answer.",
-                                difficulty_level="Easy",
-                                explanation="This is a test exercise explanation."
-                            )
-                        ],
-                        summary="Summary of test section"
-                    )
-                ],
-                conclusion="This concludes the test content.",
-                next_steps=["Review the material"]
+                title=self.lesson_plan.title if self.lesson_plan else "Fallback Lesson",
+                text="This is automatically generated fallback lesson content. The original content generation failed."
             )
         
         # Only generate quiz if we don't already have one from the handoff chain
@@ -791,177 +766,144 @@ class AITutorManager:
             return f"Error uploading {file_path}: {str(e)}"
 
     async def analyze_session(self, session_duration_seconds: int = None) -> SessionAnalysis:
-        """Analyze the teaching session performance."""
-        # Validate prerequisites
-        if not self.lesson_plan:
-            raise ValueError("No lesson plan has been generated yet")
-        
-        if not self.quiz_feedback:
-            raise ValueError("No quiz feedback available - a completed quiz is required for analysis")
-        
-        # If session_duration_seconds is not provided, calculate it
+        """Analyzes the entire teaching session using the session analyzer agent."""
+
+        # Capture session end time
+        session_end_time = time.time()
         if session_duration_seconds is None:
-            # Get the current time
-            session_end_time = time.time()
-            
-            # If we have a start time, use it to calculate duration
-            if hasattr(self, '_session_start_time') and self._session_start_time:
-                session_duration_seconds = int(session_end_time - self._session_start_time)
-            
-        # No need for outer trace() if Runner.run uses RunConfig
-        # with trace("Session analysis"):
-        print(f"Analyzing teaching session...")
-    
+            session_duration_seconds = int(session_end_time - self._session_start_time)
+
+        print(f"Analyzing teaching session (Duration: {session_duration_seconds} seconds)...")
+
+        # 1. Prepare the input data for the analysis
+        #    - Lesson Plan (if available)
+        #    - Lesson Content (if available)
+        #    - Quiz (if available)
+        #    - Quiz User Answers (if available)
+        #    - Quiz Feedback (if available)
+        #    - Document Analysis (if available)
+
+        # For simplicity, we'll pass the objects directly. The agent's input model
+        # should handle serializing/deserializing or extracting relevant info.
+        # Alternatively, we could create a combined text summary here.
+
+        analysis_input = {
+            "lesson_plan": self.lesson_plan.dict() if self.lesson_plan else None,
+            "lesson_content": self.lesson_content.dict() if self.lesson_content else None,
+            "quiz": self.quiz.dict() if self.quiz else None,
+            "quiz_user_answers": self.create_user_answers_from_feedback().dict() if self.quiz_feedback else None, # Recreate from feedback
+            "quiz_feedback": self.quiz_feedback.dict() if self.quiz_feedback else None,
+            "document_analysis": self.document_analysis if self.document_analysis else None,
+            "session_duration_seconds": session_duration_seconds,
+            "vector_store_id": self.context.vector_store_id # Pass vector store ID
+        }
+
+        # Filter out None values to avoid sending them to the agent if not needed
+        analysis_input_filtered = {k: v for k, v in analysis_input.items() if v is not None}
+
+        if not analysis_input_filtered:
+            print("Warning: No data available to analyze the session.")
+            return SessionAnalysis(summary="No data available for analysis.", suggestions=[], sentiment="Neutral")
+
+        # 2. Run the Session Analyzer Agent
         try:
-            # Create a simple QuizUserAnswers object from the quiz feedback
-            user_answers = self.create_user_answers_from_feedback()
-            
-            # Get the raw agent outputs from the output logger if available
-            raw_agent_outputs = {}
-            if hasattr(self, 'output_logger') and self.output_logger:
-                # Get the raw outputs for all the important agents
-                try:
-                    raw_agent_outputs = self.output_logger.get_captured_outputs()
-                except (AttributeError, Exception) as e:
-                    print(f"Warning: Could not get captured outputs: {e}")
-                    # Continue with empty agent outputs
-                
-            # Create the session analyzer agent and analyze the session
-            # RunConfig will be passed inside analyze_teaching_session
-            self.session_analysis = await analyze_teaching_session(
-                document_analysis=self.document_analysis,
-                lesson_plan=self.lesson_plan,
-                lesson_content=self.lesson_content,
-                quiz=self.quiz,
-                user_answers=user_answers,  # Use the reconstructed user answers
-                quiz_feedback=self.quiz_feedback,
-                session_duration_seconds=session_duration_seconds,
-                raw_agent_outputs=raw_agent_outputs,  # Pass the raw outputs to the analyzer
-                context=self.context  # Pass context
+            # Configure Tracing via RunConfig
+            run_config = RunConfig(
+                workflow_name="AI Tutor - Session Analysis",
+                group_id=self.context.session_id # Link traces within the same session
             )
-            
-            # Store the session analysis in the context for future reference
-            if hasattr(self, 'context'):
-                try:
-                    self.context.session_analysis = self.session_analysis
-                except AttributeError as e:
-                    print(f"Warning: Could not set session_analysis in context: {e}")
-            
+            self.session_analysis = await analyze_teaching_session(
+                analysis_input_filtered,
+                run_config=run_config,
+                context=self.context # Pass context
+            )
+            print("Session analysis complete.")
+            # Log the full analysis if logger is available
+            if hasattr(self, 'output_logger') and self.output_logger:
+                self.output_logger.log_session_analysis(self.session_analysis)
             return self.session_analysis
         except Exception as e:
-            print(f"ERROR: Session analyzer agent failed: {e}")
+            print(f"ERROR: Session Analyzer agent failed: {e}")
             if hasattr(self, 'output_logger') and self.output_logger:
                 self.output_logger.log_error("Session Analyzer Agent", e)
-            print(f"Error analyzing session: {str(e)}")
-            return None
+            raise # Re-raise for now
 
     def create_user_answers_from_feedback(self) -> QuizUserAnswers:
-        """Create QuizUserAnswers object from quiz feedback.
-        
-        Returns:
-            A QuizUserAnswers object reconstructed from feedback data
-        """
-        if not self.quiz_feedback:
-            return None
-        
-        # Create a simple QuizUserAnswers object from the quiz feedback
-        user_answers = QuizUserAnswers(
-            quiz_title=self.quiz_feedback.quiz_title,
-            total_time_taken_seconds=self.quiz_feedback.total_time_taken_seconds or 0,
-            user_answers=[]
-        )
-        
-        # Process feedback items to create user answers
-        for item in self.quiz_feedback.feedback_items:
-            if not hasattr(item, 'question_index') or item.question_index is None:
-                # Skip items that don't have question index
-                continue
-                
-            # Ensure the question index is valid
-            if item.question_index < len(self.quiz.questions):
-                question = self.quiz.questions[item.question_index]
-                # Find the selected option index
-                selected_option_index = 0  # Default to first option if not found
-                
-                # Try to find the matching option
-                for i, option in enumerate(question.options):
-                    if option == item.user_selected_option:
-                        selected_option_index = i
-                        break
-                
-                user_answer = QuizUserAnswer(
-                    question_index=item.question_index,
-                    selected_option_index=selected_option_index,
-                    time_taken_seconds=0  # We don't have this information from the feedback
+        """Helper to reconstruct QuizUserAnswers if only feedback is stored."""
+        if not self.quiz_feedback or not self.quiz_feedback.feedback_per_question:
+            # Return an empty object if no feedback is available
+            return QuizUserAnswers(user_answers=[])
+
+        user_answers_list = []
+        for feedback in self.quiz_feedback.feedback_per_question:
+            # Attempt to find the original question text from the quiz if available
+            original_question = "Unknown Question"
+            if self.quiz and self.quiz.questions:
+                 q = next((q for q in self.quiz.questions if q.id == feedback.question_id), None)
+                 if q:
+                     original_question = q.question
+
+            user_answers_list.append(
+                QuizUserAnswer(
+                    question_id=feedback.question_id,
+                    question=original_question, # Add original question if found
+                    selected_answer=feedback.selected_answer,
+                    correct_answer=feedback.correct_answer, # Include correct answer
+                    is_correct=feedback.is_correct # Include correctness
                 )
-                user_answers.user_answers.append(user_answer)
-        
-        return user_answers
+            )
+        return QuizUserAnswers(user_answers=user_answers_list)
+
+    # -------------- Helper/Internal Methods --------------
 
     def _create_lesson_content_from_quiz(self, quiz: Quiz) -> LessonContent:
-        """Create a LessonContent object from a Quiz.
-        
-        This is used when we already have a quiz (e.g., from handoff chain)
-        and need to create a lesson content object for consistency.
-        
-        Args:
-            quiz: The quiz to create lesson content from
-            
-        Returns: 
-            A LessonContent object derived from the quiz
         """
-        from ai_tutor.agents.models import LessonContent, SectionContent, ExplanationContent, QuizQuestion
-        
-        # Group questions by section
-        sections = {}
-        for question in quiz.questions:
-            section_title = question.related_section
-            if section_title not in sections:
-                sections[section_title] = []
-            sections[section_title].append(question)
-        
-        # Create section content for each group
-        section_contents = []
-        for section_title, questions in sections.items():
-            explanations = []
-            
-            for question in questions:
-                # --- ADD Mini-Quiz Generation ---
-                mini_quiz_for_concept = None
-                if question.options and len(question.options) >= 2: # Ensure we have options to make a mini-quiz
-                    mini_quiz_for_concept = [
-                        QuizQuestion(
-                            question=f"Recall: {question.question}", # Simple recall prompt
-                            options=question.options, # Reuse options
-                            correct_answer_index=question.correct_answer_index, # Reuse correct answer
-                            explanation=f"Recall check: {question.explanation}", # Reuse explanation
-                            difficulty="Easy", # Mini-quizzes should be easy
-                            related_section=section_title # Link back
-                        )
-                    ]
-                # --- END Mini-Quiz Generation ---
+        Create a more readable, simplified LessonContent object by synthesizing
+        information from a Quiz.
+        """
+        from ai_tutor.agents.models import LessonContent # Ensure simplified model is used
 
-                explanations.append(ExplanationContent(
-                    topic=question.question.split('?')[0][:50] + "...",
-                    explanation=f"This explains the concept of {question.question.split('?')[0][:30]}...",
-                    examples=[f"Example related to correct answer: {question.options[question.correct_answer_index]}"],
-                    mini_quiz=mini_quiz_for_concept # Add the generated mini-quiz
-                ))
-            
-            # Create section content
-            section_contents.append(SectionContent(
-                title=section_title,
-                introduction=f"Introduction to {section_title}",
-                explanations=explanations,
-                exercises=[],  # No exercises in synthesized content
-                summary=f"Summary of {section_title}"
-            ))
-        
-        # Create the full lesson content
+        lesson_title = quiz.lesson_title or f"Lesson Summary: {quiz.title}"
+
+        # Start building the text content with a title and introduction
+        lesson_text = f"# {lesson_title}\\n\\n"
+        lesson_text += f"This lesson provides a summary of the key concepts assessed in the quiz: '{quiz.title}'. Understanding these points is crucial for mastering the topic.\\n\\n"
+
+        # Group questions by their related section
+        sections_data = defaultdict(list)
+        if quiz.questions:
+            for q in quiz.questions:
+                # Use a default section title if none is provided
+                section_title = q.related_section or "Key Concepts"
+                sections_data[section_title].append(q)
+        else:
+            # Handle case with no questions
+             lesson_text += "This quiz currently has no questions. The lesson content could not be generated from it.\\n"
+             return LessonContent(title=lesson_title, text=lesson_text)
+
+
+        # Iterate through sections and format content
+        for section_title, questions_in_section in sections_data.items():
+            lesson_text += f"## {section_title}\\n\\n" # Use Markdown H2 for sections
+
+            for i, q in enumerate(questions_in_section):
+                # Try to formulate a sub-heading or topic sentence from the question
+                # Remove common question phrases and strip whitespace/punctuation
+                topic_sentence = q.question.replace("What is", "")
+                topic_sentence = topic_sentence.replace("Which of the following", "")
+                topic_sentence = topic_sentence.replace("Which", "")
+                topic_sentence = topic_sentence.replace("?", "").strip()
+                # Capitalize first letter
+                topic_sentence = topic_sentence[0].upper() + topic_sentence[1:] if topic_sentence else "Key Concept"
+
+                lesson_text += f"### {topic_sentence}\\n" # Use Markdown H3 for concepts
+                lesson_text += f"{q.explanation}\\n\\n"   # Add the explanation as the body
+
+        # Add a concluding remark
+        lesson_text += f"---\\n\\nThis concludes the summary of topics covered in the '{quiz.title}'. Review these explanations to solidify your knowledge."
+
+        # Return the simplified LessonContent object
         return LessonContent(
-            title=quiz.title,
-            introduction=f"This lesson content was derived from the quiz '{quiz.title}'.",
-            sections=section_contents,
-            conclusion="See the quiz for assessment of learning objectives.",
-            next_steps=["Review the quiz feedback", "Practice with additional exercises"]
+            title=lesson_title,
+            text=lesson_text.strip() # Remove any trailing whitespace
         )

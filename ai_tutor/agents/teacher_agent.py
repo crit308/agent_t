@@ -7,7 +7,7 @@ from agents.models.openai_provider import OpenAIProvider
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 from agents.run_context import RunContextWrapper
 
-from ai_tutor.agents.models import LessonPlan, LessonSection, LessonContent, SectionContent, ExplanationContent, Exercise
+from ai_tutor.agents.models import LessonPlan, LessonSection, LessonContent
 from typing import List, Callable, Optional, Any, Dict
 from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent
 from ai_tutor.agents.utils import process_handoff_data, RoundingModelWrapper
@@ -28,15 +28,7 @@ def lesson_content_handoff_filter(handoff_data: HandoffInputData) -> HandoffInpu
 
 
 def create_teacher_agent(vector_store_id: str, api_key: str = None):
-    """Create a lesson content generation agent with handoff capability to Quiz Creator.
-    
-    Args:
-        vector_store_id: The vector store ID to use for file search
-        api_key: OpenAI API key
-        
-    Returns:
-        Teacher agent with handoff to Quiz Creator
-    """
+    """Create a simplified lesson content generation agent."""
     # If API key is provided, ensure it's set in environment
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
@@ -54,15 +46,12 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
     # Define an on_handoff function for when teacher hands off to quiz creator
     async def on_handoff_to_quiz_creator(ctx: RunContextWrapper[any], lesson_content: LessonContent) -> None:
         print(f"Handoff triggered from teacher to quiz creator with lesson: {lesson_content.title}")
-        print(f"Lesson has {len(lesson_content.sections)} sections")
-        
-        # Debug serialization
-        try:
-            # Test if lesson content can be serialized
-            json_str = json.dumps(lesson_content.model_dump())
-            print(f"Serialized lesson content: {len(json_str)} characters")
-        except Exception as e:
-            print(f"Warning: Serialization test failed: {e}")
+        # Debug serialization if needed
+        # try:
+        #     json_str = json.dumps(lesson_content.model_dump())
+        #     print(f"Serialized lesson content: {len(json_str)} characters")
+        # except Exception as e:
+        #     print(f"Warning: Serialization test failed: {e}")
     
     # Instantiate the base model provider and get the base model
     provider: ModelProvider = OpenAIProvider()
@@ -72,34 +61,26 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
     teacher_agent = Agent(
         name="Lesson Teacher",
         instructions=prompt_with_handoff_instructions("""
-        You are an expert educational content creator specializing in developing comprehensive lesson content.
-        Your task is to create detailed lesson content based on the lesson plan provided to you.
-        
-        Guidelines for creating effective lesson content:
-        1. Thoroughly research each section using the file_search tool before creating content
-        2. Create clear explanations with relevant examples for each concept
-        3. Include practical exercises that reinforce understanding
-        4. Ensure content flows logically from basic to more advanced concepts
-        5. Summarize key points at the end of each section
-        6. Provide a comprehensive conclusion and suggest next steps for further learning
-        
-        *** NEW REQUIREMENT ***
-        7. For each significant concept within an ExplanationContent, create 1-2 simple multiple-choice mini-quiz questions (using the QuizQuestion schema) focused on immediate recall of that specific concept. Embed these questions directly within the `mini_quiz` field of the corresponding `ExplanationContent` object. These mini-quizzes are for immediate reinforcement, not the final assessment.
-        
-        Use the file_search tool to search for relevant information in the uploaded documents.
-        
-        CRITICAL WORKFLOW INSTRUCTIONS:
-        1. FIRST create and output a complete LessonContent object
-        2. IMMEDIATELY AFTER THAT use the transfer_to_quiz_creator tool to hand off to the Quiz Creator agent
-        
-        Workflow:
-        1. Research content using file_search tool
-        2. Create and output a complete LessonContent object
-        3. Call transfer_to_quiz_creator(your_lesson_content) to hand off to the Quiz Creator
-        
-        YOUR OUTPUT MUST BE ONLY A VALID LESSON CONTENT OBJECT FOLLOWED BY THE HANDOFF.
-        
-        After outputting your LessonContent object, you MUST use the transfer_to_quiz_creator handoff tool.
+        You are an expert educational content creator. Your task is to create lesson content based on the lesson plan provided.
+
+        GUIDELINES:
+        1. Use the file_search tool to research the topics outlined in the lesson plan.
+        2. Synthesize the information into a single, coherent body of text for the lesson.
+        3. The text should cover the key concepts and objectives from the lesson plan.
+        4. Structure the text logically, perhaps using Markdown for headings or lists if appropriate within the single text block.
+        5. Ensure the content is clear, accurate, and engaging for the target audience.
+
+        CRITICAL OUTPUT FORMAT:
+        - Your output MUST be a JSON object with exactly two fields: "title" (string) and "text" (string).
+        - The "title" should be the overall lesson title.
+        - The "text" field should contain the complete, synthesized lesson content as a single string.
+
+        WORKFLOW:
+        1. Research content using file_search tool based on the lesson plan.
+        2. Create and output the complete LessonContent JSON object { "title": "...", "text": "..." }.
+        3. IMMEDIATELY AFTER outputting the JSON, use the transfer_to_quiz_creator tool to hand off the LessonContent object.
+
+        YOUR FINAL OUTPUT MUST BE ONLY THE VALID LessonContent JSON OBJECT, FOLLOWED BY THE HANDOFF TOOL CALL.
         """),
         tools=[file_search_tool],
         handoffs=[
@@ -108,7 +89,7 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
                 on_handoff=on_handoff_to_quiz_creator,
                 input_type=LessonContent,
                 input_filter=lesson_content_handoff_filter,
-                tool_description_override="Transfer to the Quiz Creator agent who will create a quiz based on your lesson content. Provide the complete LessonContent object as input."
+                tool_description_override="Transfer to the Quiz Creator agent who will create a quiz based on your lesson content. Provide the complete LessonContent object { \"title\": \"...\", \"text\": \"...\" } as input."
             )
         ],
         output_type=LessonContent,
@@ -119,18 +100,7 @@ def create_teacher_agent(vector_store_id: str, api_key: str = None):
 
 
 def create_teacher_agent_without_handoffs(vector_store_id: str, api_key: str = None):
-    """Create a lesson content generation agent WITHOUT handoff capability to Quiz Creator.
-    
-    This version should be used when a Quiz has already been created via handoff chain,
-    to avoid creating duplicate workflows.
-    
-    Args:
-        vector_store_id: The vector store ID to use for file search
-        api_key: OpenAI API key
-        
-    Returns:
-        Teacher agent without handoff capabilities
-    """
+    """Create a simplified lesson content generation agent WITHOUT handoff capability."""
     # If API key is provided, ensure it's set in environment
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
@@ -150,23 +120,22 @@ def create_teacher_agent_without_handoffs(vector_store_id: str, api_key: str = N
     teacher_agent = Agent(
         name="Lesson Teacher",
         instructions="""
-        You are an expert educational content creator specializing in developing comprehensive lesson content.
-        Your task is to create detailed lesson content based on the lesson plan provided to you.
-        
-        Guidelines for creating effective lesson content:
-        1. Thoroughly research each section using the file_search tool before creating content
-        2. Create clear explanations with relevant examples for each concept
-        3. Include practical exercises that reinforce understanding
-        4. Ensure content flows logically from basic to more advanced concepts
-        5. Summarize key points at the end of each section
-        6. Provide a comprehensive conclusion and suggest next steps for further learning
-        
-        *** NEW REQUIREMENT ***
-        7. For each significant concept within an ExplanationContent, create 1-2 simple multiple-choice mini-quiz questions (using the QuizQuestion schema) focused on immediate recall of that specific concept. Embed these questions directly within the `mini_quiz` field of the corresponding `ExplanationContent` object. These mini-quizzes are for immediate reinforcement, not the final assessment.
-        
-        Use the file_search tool to search for relevant information in the uploaded documents.
-        
-        YOUR OUTPUT MUST BE ONLY A VALID LESSON CONTENT OBJECT.
+        You are an expert educational content creator. Your task is to create lesson content based on the lesson plan provided.
+
+        GUIDELINES:
+        1. Use the file_search tool to research the topics outlined in the lesson plan.
+        2. Synthesize the information into a single, coherent body of text for the lesson.
+        3. The text should cover the key concepts and objectives from the lesson plan.
+        4. Structure the text logically, perhaps using Markdown for headings or lists if appropriate within the single text block.
+        5. Ensure the content is clear, accurate, and engaging for the target audience.
+
+        CRITICAL OUTPUT FORMAT:
+        - Your output MUST be a JSON object with exactly two fields: "title" (string) and "text" (string).
+        - The "title" should be the overall lesson title.
+        - The "text" field should contain the complete, synthesized lesson content as a single string.
+
+        YOUR OUTPUT MUST BE ONLY THE VALID LessonContent JSON OBJECT { "title": "...", "text": "..." }.
+        DO NOT USE ANY HANDOFF TOOLS.
         """,
         tools=[file_search_tool],
         # No handoffs in this version
@@ -178,77 +147,34 @@ def create_teacher_agent_without_handoffs(vector_store_id: str, api_key: str = N
 
 
 async def generate_lesson_content(teacher_agent: Agent, lesson_plan: LessonPlan, context=None) -> LessonContent:
-    """Generate the full lesson content based on the provided lesson plan."""
-    
+    """Generate the simplified lesson content based on the provided lesson plan."""
+
     # Format the lesson plan as a string for the teacher agent
     lesson_plan_str = f"""
     LESSON PLAN:
-    
+
     Title: {lesson_plan.title}
     Description: {lesson_plan.description}
     Target Audience: {lesson_plan.target_audience}
     Prerequisites: {', '.join(lesson_plan.prerequisites)}
     Total Estimated Duration: {lesson_plan.total_estimated_duration_minutes} minutes
-    
-    Sections:
+
+    Key Topics/Objectives from Sections:
     """
-    
     for i, section in enumerate(lesson_plan.sections):
-        lesson_plan_str += f"""
-        Section {i+1}: {section.title}
-        Estimated Duration: {section.estimated_duration_minutes} minutes
-        
-        Learning Objectives:
-        """
-        
-        for j, objective in enumerate(section.objectives):
-            lesson_plan_str += f"""
-            Objective {j+1}: {objective.description}
-            Priority: {objective.priority}
-            """
-        
+        lesson_plan_str += f"\nSection {i+1}: {section.title}\n"
+        lesson_plan_str += f"  Objectives: {', '.join([obj.description for obj in section.objectives])}\n"
         if hasattr(section, 'concepts_to_cover') and section.concepts_to_cover:
-            lesson_plan_str += f"""
-            Key Concepts: {', '.join(section.concepts_to_cover)}
-            """
-    
-    # Instruction to use FileSearchTool
+            lesson_plan_str += f"  Concepts: {', '.join(section.concepts_to_cover)}\n"
+
     lesson_plan_str += f"""
+
     IMPORTANT INSTRUCTIONS:
-    
-    1. For EACH section and concept, you MUST search the vector store using the file_search tool
-       to gather accurate information before creating content.
-       
-    2. Use search queries that are directly related to the key concepts. For example, if a key
-       concept is "Supervised Learning", search for "Supervised Learning" specifically.
-       
-    3. Create content ONLY after you have searched for and found information about each topic.
-       
-    4. If you cannot find information on a specific concept, note this in your explanation 
-       but still provide basic information about the concept.
-    
-    5. YOUR OUTPUT MUST BE A VALID LESSONCONTENT OBJECT with the following structure:
-       - title: String (lesson title)
-       - introduction: String (general introduction to the lesson)
-       - sections: Array of SectionContent objects, each with:
-         - title: String (section title)
-         - introduction: String (introduction to this section)
-         - explanations: Array of ExplanationContent objects
-         - exercises: Array of Exercise objects
-         - summary: String (summary of key points)
-       - conclusion: String (overall lesson conclusion)
-       - next_steps: Array of strings (suggested next steps)
-       
-    6. IMPORTANT: Make sure to include at least one section with explanations and exercises.
-       
-    7. DO NOT attempt to use any handoff tools or create a quiz. Since you're being called directly 
-       and not via a handoff from the planner agent, DO NOT try to hand off to the Quiz Creator.
-       Just return the LessonContent object directly.
-    
-    8. YOUR OUTPUT MUST BE ONLY THE COMPLETE LESSONCONTENT OBJECT.
-    
-    NOTE: This function is being called directly (not via handoff). You're receiving a formatted
-    lesson plan to use for content creation. DO NOT use any handoff tools even if they are available.
+    1. Use the file_search tool to research the topics above.
+    2. Synthesize this information into a single, coherent 'text' field.
+    3. Generate a suitable 'title' for the lesson.
+    4. YOUR OUTPUT MUST BE ONLY A VALID JSON OBJECT: {{ "title": "...", "text": "..." }}.
+    5. DO NOT attempt to use any handoff tools.
     """
     
     # Setup RunConfig for tracing
@@ -258,12 +184,12 @@ async def generate_lesson_content(teacher_agent: Agent, lesson_plan: LessonPlan,
     if context and hasattr(context, 'session_id'):
         run_config = RunConfig(
             workflow_name="AI Tutor - Content Creation",
-            group_id=context.session_id # Link traces within the same session
+            group_id=context.session_id
         )
     
     # Run the teacher agent with the lesson plan to get the LessonContent
     result = await Runner.run(
-        teacher_agent, 
+        teacher_agent,
         lesson_plan_str,
         run_config=run_config,
         context=context
@@ -272,41 +198,16 @@ async def generate_lesson_content(teacher_agent: Agent, lesson_plan: LessonPlan,
     # Get the lesson content
     try:
         lesson_content = result.final_output_as(LessonContent)
-        print("Successfully generated LessonContent")
-        
-        # Verify we have valid sections
-        if not lesson_content.sections or len(lesson_content.sections) == 0:
-            raise ValueError("Generated LessonContent has no sections")
-            
+        print("Successfully generated simplified LessonContent")
+        # Basic validation
+        if not lesson_content.title or not lesson_content.text:
+             raise ValueError("Generated LessonContent is missing title or text")
         return lesson_content
     except Exception as e:
-        print(f"Error extracting LessonContent: {e}")
-        # If we got a Quiz instead or another error, create a minimal LessonContent object
+        print(f"Error extracting simplified LessonContent: {e}")
+        # --- SIMPLIFIED FALLBACK ---
         return LessonContent(
             title=lesson_plan.title,
-            introduction=f"Content for {lesson_plan.title}.",
-            sections=[
-                SectionContent(
-                    title="Introduction to " + lesson_plan.title,
-                    introduction="This is an introduction to the topic.",
-                    explanations=[
-                        ExplanationContent(
-                            topic="Basic Concepts",
-                            explanation="This section covers the fundamental concepts of the topic.",
-                            examples=["Example 1", "Example 2"]
-                        )
-                    ],
-                    exercises=[
-                        Exercise(
-                            question="What is the main purpose of this lesson?",
-                            difficulty_level="Easy",
-                            answer="To understand the basic concepts.",
-                            explanation="This question tests your understanding of the lesson objectives."
-                        )
-                    ],
-                    summary="This section introduced the basic concepts of the topic."
-                )
-            ],
-            conclusion="Thank you for completing this lesson.",
-            next_steps=["Explore more advanced topics", "Practice with exercises"]
-        ) 
+            text=f"Error generating content for {lesson_plan.title}. Please check logs. Basic concepts should be covered here based on the plan description: {lesson_plan.description}."
+        )
+        # --- End SIMPLIFIED FALLBACK --- 
