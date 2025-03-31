@@ -6,8 +6,13 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+from ai_tutor.context import TutorContext, UserModelState, UserConceptMastery  # Import context models
 from ai_tutor.routers import sessions, tutor
 from agents import set_default_openai_key, set_default_openai_api
+
+# Import models needed for resolving forward references in TutorContext
+from ai_tutor.agents.models import LessonPlan, QuizQuestion
+from ai_tutor.agents.analyzer_agent import AnalysisResult
 
 # --- SDK Configuration ---
 api_key = os.environ.get("OPENAI_API_KEY")
@@ -19,6 +24,15 @@ else:
     set_default_openai_key(api_key)
     set_default_openai_api("responses") # Ensure using API needed for models like o3-mini
     print("OpenAI API key configured for agents SDK.")
+
+# --- Rebuild Pydantic models after all imports ---
+# Ensure all models potentially using forward refs are rebuilt
+UserConceptMastery.model_rebuild()
+UserModelState.model_rebuild()
+AnalysisResult.model_rebuild() # Rebuild if it uses forward refs
+LessonPlan.model_rebuild() # Rebuild if it uses forward refs
+QuizQuestion.model_rebuild() # Rebuild if it uses forward refs
+TutorContext.model_rebuild() # Now this should work
 
 app = FastAPI(
     title="AI Tutor API",

@@ -1,11 +1,12 @@
+from __future__ import annotations
 from pydantic import BaseModel
-from typing import Optional, List, Any, Dict, Literal
+from typing import Optional, List, Any, Dict, Literal, TYPE_CHECKING
 from pydantic import Field
 
-# Import necessary models from other modules if they are used here
-# Assuming these models exist and are defined correctly elsewhere
-from ai_tutor.agents.models import LessonPlan, QuizQuestion
-from ai_tutor.agents.analyzer_agent import AnalysisResult
+# Use TYPE_CHECKING to prevent runtime circular imports for type hints
+if TYPE_CHECKING:
+    from ai_tutor.agents.models import LessonPlan, QuizQuestion
+    from ai_tutor.agents.analyzer_agent import AnalysisResult
 
 class UserConceptMastery(BaseModel):
     """Tracks user's mastery of a specific concept."""
@@ -26,9 +27,9 @@ class TutorContext(BaseModel):
     session_id: str
     vector_store_id: Optional[str] = None
     uploaded_file_paths: List[str] = Field(default_factory=list)
-    analysis_result: Optional[AnalysisResult] = None # Store structured analysis result
-    lesson_plan: Optional[LessonPlan] = None
-    current_quiz_question: Optional[QuizQuestion] = None # Store the question being asked
+    analysis_result: Optional['AnalysisResult'] = None # Use forward reference
+    lesson_plan: Optional['LessonPlan'] = None # Use forward reference
+    current_quiz_question: Optional['QuizQuestion'] = None # Use forward reference
     user_model_state: UserModelState = Field(default_factory=UserModelState)
     last_interaction_summary: Optional[str] = None # What did the tutor just do? What did user respond?
     # Add other relevant session state as needed

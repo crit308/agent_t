@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import openai
 import json
@@ -8,9 +10,12 @@ from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 from agents.run_context import RunContextWrapper
 
 from ai_tutor.agents.models import LessonPlan, LessonSection, LessonContent
-from typing import List, Callable, Optional, Any, Dict
+from typing import List, Callable, Optional, Any, Dict, TYPE_CHECKING
 from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent
 from ai_tutor.agents.utils import process_handoff_data, RoundingModelWrapper
+
+if TYPE_CHECKING:
+    from ai_tutor.context import TutorContext
 
 
 def lesson_content_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
@@ -147,10 +152,10 @@ def create_teacher_agent_without_handoffs(vector_store_id: str, api_key: str = N
 
 
 async def generate_lesson_content(
-    teacher_agent: Agent[TutorContext], # Expect TutorContext
+    teacher_agent: Agent['TutorContext'],  # Use forward reference string
     lesson_plan: LessonPlan,
-    topic_to_explain: Optional[str] = None, # Added parameter
-    context: Optional[TutorContext] = None # Expect TutorContext
+    topic_to_explain: Optional[str] = None,  # Added parameter
+    context: Optional['TutorContext'] = None  # Use forward reference string
 ) -> LessonContent:
     """Generate simplified lesson content. If topic_to_explain is provided,
        focuses the content generation on that specific topic using the lesson plan

@@ -1,5 +1,6 @@
+from __future__ import annotations
+from typing import Optional, List, Dict, Any, Literal
 from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, BackgroundTasks, Form, Body
-from typing import List, Optional, Union, Dict, Any, Literal
 import os
 import shutil
 import time
@@ -38,11 +39,11 @@ async def get_session_state(session_id: str) -> Dict[str, Any]:
     return session
 
 # --- Dependency to get parsed TutorContext ---
-async def get_tutor_context(session: Dict[str, Any] = Depends(get_session_state)) -> TutorContext:
-    try:
-        return TutorContext(**session)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to parse session state into TutorContext: {e}")
+async def get_tutor_context(session_id: str) -> TutorContext:
+    session_data = session_manager.get_session(session_id)
+    if not session_data:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    return TutorContext(**session_data)
 
 # --- Helper to get logger ---
 def get_session_logger(session_id: str) -> TutorOutputLogger:
@@ -58,6 +59,15 @@ class MiniQuizLogData(BaseModel):
     correctOption: str # Match frontend naming
     isCorrect: bool    # Match frontend naming
     relatedSection: Optional[str] = None
+    topic: Optional[str] = None
+
+# --- Model for the /interact endpoint ---
+class UserInteractionInput(BaseModel):
+    text: str # User's text input, e.g., "next", "start lesson", answer choice "C", or a question
+
+# Response model for /interact - can be complex, start simple
+class TutorInteractionResponse(BaseModel):
+    response_type: Literal["explanation", "question", "feedback", "error", "message"]
     topic: Optional[str] = None
 
 # --- Endpoints ---
@@ -367,15 +377,15 @@ async def log_user_summary_event(session_id: str, summary_data: UserSummaryLogDa
 )
 async def interact_with_tutor(
     session_id: str,
-    user_input: UserInteractionInput, # Defined above
-    tutor_context: TutorContext = Depends(get_tutor_context) # Use parsed context
+    user_input: UserInteractionInput,
+    tutor_context: TutorContext = Depends(get_tutor_context)
 ):
     """
     Sends user input to the AI Tutor Orchestrator and receives the next piece of content,
     question, or feedback. Updates session state.
     """
     logger = get_session_logger(session_id)
-    logger.log_user_input(user_input.text) # Add a method to logger if needed
+    logger.log_user_input(user_input.text)
 
     # Check prerequisites (plan must exist)
     if not tutor_context.lesson_plan:
@@ -403,7 +413,7 @@ async def interact_with_tutor(
             # Decide if this should be a critical error
 
         # Log orchestrator output
-        logger.log_orchestrator_output(result.final_output) # Add method to logger
+        logger.log_orchestrator_output(result.final_output)
 
         # Return the final output (explanation, question, etc.)
         return result.final_output
@@ -419,10 +429,6 @@ async def interact_with_tutor(
 
 # TODO: Implement endpoint for session analysis if needed:
 # POST /sessions/{session_id}/analyze-session (Full Session Analysis)
-
-# --- Model for the /interact endpoint ---
-class UserInteractionInput(BaseModel):
-    text: str # User's text input, e.g., "next", "start lesson", answer choice "C", or a question
 
 # Response model for /interact - can be complex, start simple
 class TutorInteractionResponse(BaseModel):

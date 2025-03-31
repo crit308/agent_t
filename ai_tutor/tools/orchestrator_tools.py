@@ -1,16 +1,22 @@
+from __future__ import annotations
 from agents import function_tool, Runner, RunConfig
 from agents.run_context import RunContextWrapper
 from typing import Any, Optional, Literal
 
+# --- Import TutorContext directly ---
+# We need the actual class definition available for get_type_hints called by the decorator.
+# This relies on context.py being fully loaded *before* this file attempts to define the tools.
 from ai_tutor.context import TutorContext, UserConceptMastery # Import context components
-# Import agent creators and models needed for internal calls or return types
-from ai_tutor.agents import (
-    create_teacher_agent_without_handoffs, # Use non-handoff version
-    create_quiz_creator_agent, # Use non-handoff version
-    create_quiz_teacher_agent, # Use non-handoff version
-    create_planner_agent, # May need modification
-    LessonPlan, QuizQuestion, QuizFeedbackItem, LessonContent, Quiz, LessonSection, LearningObjective # Add Quiz, LessonSection, LearningObjective
-)
+
+# --- Import agent creation functions DIRECTLY from their modules ---
+from ai_tutor.agents.teacher_agent import create_teacher_agent_without_handoffs
+from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent
+from ai_tutor.agents.quiz_teacher_agent import create_quiz_teacher_agent
+from ai_tutor.agents.planner_agent import create_planner_agent # If needed
+
+# --- Import necessary models ---
+from ai_tutor.agents.models import LessonPlan, QuizQuestion, QuizFeedbackItem, LessonContent, Quiz, LessonSection, LearningObjective
+
 # Import the specific generate_lesson_content function
 from ai_tutor.agents.teacher_agent import generate_lesson_content # Import specific function if needed
 from ai_tutor.agents.quiz_teacher_agent import evaluate_single_answer # Import new function
@@ -171,6 +177,10 @@ def update_user_model(ctx: RunContextWrapper[TutorContext], topic: str, outcome:
         return "Error: Invalid topic provided for user model update."
 
     # Ensure the concept exists in the user model state
+    # We need the actual UserConceptMastery class here at runtime.
+    # If it's defined in context.py, this *should* work fine if context.py loaded correctly first.
+    # Let's import it directly here to be safe, assuming context.py can now load fully.
+    from ai_tutor.context import UserConceptMastery
     if topic not in ctx.context.user_model_state.concepts:
         ctx.context.user_model_state.concepts[topic] = UserConceptMastery()
 
@@ -201,6 +211,10 @@ def update_user_model(ctx: RunContextWrapper[TutorContext], topic: str, outcome:
 def get_user_model_status(ctx: RunContextWrapper[TutorContext], topic: Optional[str] = None) -> Any:
     """Retrieves the current state of the user model, optionally for a specific topic."""
     print(f"Orchestrator tool: Retrieving user model status for topic '{topic}'")
+
+    # Need UserConceptMastery at runtime here too.
+    from ai_tutor.context import UserConceptMastery
+
     if topic:
         # Return the specific concept's state or a default if not found
         concept_state = ctx.context.user_model_state.concepts.get(topic, UserConceptMastery())

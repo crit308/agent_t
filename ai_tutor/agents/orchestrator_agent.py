@@ -1,12 +1,16 @@
+from __future__ import annotations
+
 import os
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 
 from agents import Agent, Runner, RunConfig, ModelProvider
 from agents.models.openai_provider import OpenAIProvider
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 from agents.run_context import RunContextWrapper
 
-from ai_tutor.context import TutorContext # Use the enhanced context
+# Use TYPE_CHECKING for TutorContext import
+if TYPE_CHECKING:
+    from ai_tutor.context import TutorContext # Use the enhanced context
 # Import tool functions (assuming they will exist in a separate file)
 from ai_tutor.tools.orchestrator_tools import (
     call_teacher_explain,
@@ -21,7 +25,7 @@ from ai_tutor.tools.orchestrator_tools import (
 # Import models needed for type hints if tools return them
 from ai_tutor.agents.models import QuizQuestion, QuizFeedbackItem
 
-def create_orchestrator_agent(api_key: str = None) -> Agent[TutorContext]:
+def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']: # Forward reference
     """Creates the Orchestrator Agent for the AI Tutor."""
 
     if api_key:
@@ -40,7 +44,7 @@ def create_orchestrator_agent(api_key: str = None) -> Agent[TutorContext]:
         get_user_model_status,
     ]
 
-    orchestrator_agent = Agent[TutorContext]( # Specify context type
+    orchestrator_agent = Agent['TutorContext']( # Forward reference
         name="TutorOrchestrator",
         instructions=prompt_with_handoff_instructions("""
         You are the conductor of an AI tutoring session. Your primary goal is to help the user learn the material effectively by guiding them through a lesson plan.

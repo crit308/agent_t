@@ -1,12 +1,15 @@
-import uuid
+from __future__ import annotations
 from typing import Dict, Any, Optional
 import json
 import time
+import uuid
+from pathlib import Path
 
 from ai_tutor.context import TutorContext # Import the main context model
 
 # Models might still be needed if SessionManager directly interacts with them.
-from ai_tutor.agents.models import LessonPlan, LessonContent, Quiz, QuizFeedback, SessionAnalysis, AnalysisResult
+from ai_tutor.agents.models import LessonPlan, LessonContent, Quiz, QuizFeedback, SessionAnalysis
+from ai_tutor.agents.analyzer_agent import AnalysisResult # Import AnalysisResult from its correct location
 
 # In-memory storage for session data.
 # WARNING: This will lose state on server restart and doesn't scale horizontally.
