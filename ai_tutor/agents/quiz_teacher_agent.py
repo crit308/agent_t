@@ -2,12 +2,13 @@ import os
 import openai
 import json
 
-from agents import Agent, Runner, handoff, HandoffInputData, ModelProvider
+from agents import Agent, Runner, RunConfig, handoff, HandoffInputData, function_tool, ModelProvider
 from agents.models.openai_provider import OpenAIProvider
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 from agents.run_context import RunContextWrapper
+from typing import Optional
 
-from ai_tutor.agents.models import Quiz, QuizUserAnswers, QuizFeedback
+from ai_tutor.agents.models import Quiz, QuizUserAnswers, QuizFeedback, QuizQuestion, QuizFeedbackItem
 from ai_tutor.agents.utils import process_handoff_data, RoundingModelWrapper
 
 
@@ -170,8 +171,6 @@ async def generate_quiz_feedback(quiz: Quiz, user_answers: QuizUserAnswers, api_
     """
     
     # Setup RunConfig for tracing
-    from agents import RunConfig
-    
     run_config = None
     if context and hasattr(context, 'session_id'):
         run_config = RunConfig(
@@ -206,3 +205,80 @@ async def generate_quiz_feedback(quiz: Quiz, user_answers: QuizUserAnswers, api_
             suggested_study_topics=[],
             next_steps=["Contact support for assistance with quiz feedback."]
         ) 
+
+
+async def evaluate_single_answer(
+    question: QuizQuestion,
+    user_answer_index: int,
+    api_key: str = None,
+    context = None
+) -> Optional[QuizFeedbackItem]:
+    """
+    Evaluates a single user answer against a given question using the Quiz Teacher agent.
+
+    Args:
+        question: The QuizQuestion object.
+        user_answer_index: The 0-based index of the option selected by the user.
+        api_key: Optional OpenAI API key.
+        context: Optional context object (e.g., TutorContext).
+
+    Returns:
+        A QuizFeedbackItem object or None if evaluation fails.
+    """
+    # Input validation
+    if not question or user_answer_index < 0 or user_answer_index >= len(question.options):
+        print(f"Error: Invalid input for single answer evaluation. Question: {question}, Answer Index: {user_answer_index}")
+        return None
+
+    # Create a non-handoff quiz teacher agent instance
+    agent = create_quiz_teacher_agent(api_key)
+
+    # Construct a focused prompt for single answer evaluation
+    user_selected_option_text = question.options[user_answer_index]
+    correct_option_text = question.options[question.correct_answer_index]
+    is_correct = user_answer_index == question.correct_answer_index
+
+    prompt = f"""
+    You are evaluating a single quiz answer. Here is the question and the user's response:
+
+    Question: {question.question}
+    Options: {question.options}
+    Correct Answer Index: {question.correct_answer_index} (Text: '{correct_option_text}')
+    Provided Explanation: {question.explanation}
+    User Selected Index: {user_answer_index} (Text: '{user_selected_option_text}')
+    Was User Correct?: {'Yes' if is_correct else 'No'}
+
+    INSTRUCTIONS:
+    Based *only* on the information above, generate feedback for this single answer.
+    1. Confirm if the user was correct.
+    2. If incorrect, clearly state the correct answer.
+    3. Use the provided explanation to explain *why* the correct answer is right.
+    4. If incorrect, provide a concise improvement suggestion related *specifically* to this question/concept.
+    5. Format your output ONLY as a valid QuizFeedbackItem JSON object.
+
+    YOUR OUTPUT MUST BE ONLY A VALID QuizFeedbackItem OBJECT.
+    """
+
+    run_config = None
+    if context and hasattr(context, 'session_id'):
+        run_config = RunConfig(
+            workflow_name="AI Tutor - Single Answer Eval",
+            group_id=context.session_id
+        )
+
+    result = await Runner.run(agent, prompt, output_type=QuizFeedbackItem, run_config=run_config, context=context)
+
+    try:
+        feedback_item = result.final_output_as(QuizFeedbackItem)
+        # Ensure the feedback item indices match the input (agent might hallucinate)
+        feedback_item.question_index = 0 # Since we only evaluate one, index is 0 relative to this call
+        feedback_item.question_text = question.question
+        feedback_item.user_selected_option = user_selected_option_text
+        feedback_item.is_correct = is_correct
+        feedback_item.correct_option = correct_option_text
+        # Keep agent's explanation and suggestion
+        return feedback_item
+    except Exception as e:
+        print(f"Error parsing single answer feedback from agent: {e}")
+        print(f"Agent raw output: {result.final_output}")
+        return None 

@@ -146,28 +146,51 @@ def create_teacher_agent_without_handoffs(vector_store_id: str, api_key: str = N
     return teacher_agent
 
 
-async def generate_lesson_content(teacher_agent: Agent, lesson_plan: LessonPlan, context=None) -> LessonContent:
-    """Generate the simplified lesson content based on the provided lesson plan."""
+async def generate_lesson_content(
+    teacher_agent: Agent[TutorContext], # Expect TutorContext
+    lesson_plan: LessonPlan,
+    topic_to_explain: Optional[str] = None, # Added parameter
+    context: Optional[TutorContext] = None # Expect TutorContext
+) -> LessonContent:
+    """Generate simplified lesson content. If topic_to_explain is provided,
+       focuses the content generation on that specific topic using the lesson plan
+       and analysis from context for background. Otherwise, generates broader content."""
 
-    # Format the lesson plan as a string for the teacher agent
+    if not context:
+         raise ValueError("TutorContext is required for generating lesson content.")
+
+    # --- Build the prompt ---
     lesson_plan_str = f"""
-    LESSON PLAN:
+    LESSON PLAN CONTEXT:
 
     Title: {lesson_plan.title}
     Description: {lesson_plan.description}
     Target Audience: {lesson_plan.target_audience}
     Prerequisites: {', '.join(lesson_plan.prerequisites)}
     Total Estimated Duration: {lesson_plan.total_estimated_duration_minutes} minutes
-
-    Key Topics/Objectives from Sections:
     """
     for i, section in enumerate(lesson_plan.sections):
         lesson_plan_str += f"\nSection {i+1}: {section.title}\n"
         lesson_plan_str += f"  Objectives: {', '.join([obj.description for obj in section.objectives])}\n"
         if hasattr(section, 'concepts_to_cover') and section.concepts_to_cover:
             lesson_plan_str += f"  Concepts: {', '.join(section.concepts_to_cover)}\n"
+    lesson_plan_str += "\n---\n"
+
+    # Add analysis context if available
+    analysis_str = ""
+    if context.analysis_result:
+        analysis_str = f"""
+    DOCUMENT ANALYSIS CONTEXT:
+    Key Concepts: {', '.join(context.analysis_result.key_concepts)}
+    Key Terms: {', '.join(context.analysis_result.key_terms.keys())}
+    --- End of Analysis Context ---
+        """
 
     lesson_plan_str += f"""
+
+    {analysis_str}
+
+    ---
 
     IMPORTANT INSTRUCTIONS:
     1. Use the file_search tool to research the topics above.
@@ -176,12 +199,21 @@ async def generate_lesson_content(teacher_agent: Agent, lesson_plan: LessonPlan,
     4. YOUR OUTPUT MUST BE ONLY A VALID JSON OBJECT: {{ "title": "...", "text": "..." }}.
     5. DO NOT attempt to use any handoff tools.
     """
+
+    # Modify prompt based on whether a specific topic is requested
+    if topic_to_explain:
+        prompt_core = f"Focus entirely on explaining the specific topic: '{topic_to_explain}'. Use the Lesson Plan and Document Analysis context provided above for background information and accuracy. Synthesize a clear and concise explanation for this single topic into the 'text' field. Title should reflect the topic."
+    else:
+        # Original behavior (though less likely to be used by orchestrator)
+        prompt_core = "Based on the full Lesson Plan and Document Analysis context provided above, generate the complete lesson content, synthesizing all relevant information into the 'text' field. Use the Lesson Plan title for the 'title' field."
+
+    final_prompt = f"{lesson_plan_str}\n\nTASK:\n{prompt_core}"
     
     # Setup RunConfig for tracing
     from agents import RunConfig
     
     run_config = None
-    if context and hasattr(context, 'session_id'):
+    if context:
         run_config = RunConfig(
             workflow_name="AI Tutor - Content Creation",
             group_id=context.session_id
@@ -190,7 +222,7 @@ async def generate_lesson_content(teacher_agent: Agent, lesson_plan: LessonPlan,
     # Run the teacher agent with the lesson plan to get the LessonContent
     result = await Runner.run(
         teacher_agent,
-        lesson_plan_str,
+        final_prompt, # Use the constructed prompt
         run_config=run_config,
         context=context
     )
@@ -198,16 +230,7 @@ async def generate_lesson_content(teacher_agent: Agent, lesson_plan: LessonPlan,
     # Get the lesson content
     try:
         lesson_content = result.final_output_as(LessonContent)
-        print("Successfully generated simplified LessonContent")
-        # Basic validation
-        if not lesson_content.title or not lesson_content.text:
-             raise ValueError("Generated LessonContent is missing title or text")
         return lesson_content
     except Exception as e:
-        print(f"Error extracting simplified LessonContent: {e}")
-        # --- SIMPLIFIED FALLBACK ---
-        return LessonContent(
-            title=lesson_plan.title,
-            text=f"Error generating content for {lesson_plan.title}. Please check logs. Basic concepts should be covered here based on the plan description: {lesson_plan.description}."
-        )
-        # --- End SIMPLIFIED FALLBACK --- 
+        print(f"Error getting lesson content: {e}")
+        raise 

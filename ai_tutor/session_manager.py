@@ -1,14 +1,12 @@
 import uuid
 from typing import Dict, Any, Optional
-from pydantic import BaseModel, Field
-import os
 import json
 import time
 
-from ai_tutor.agents.models import (
-    LessonPlan, LessonContent, Quiz, QuizFeedback, SessionAnalysis
-)
-from ai_tutor.agents.analyzer_agent import DocumentAnalysis # Assuming DocumentAnalysis is the output type
+from ai_tutor.context import TutorContext # Import the main context model
+
+# Models might still be needed if SessionManager directly interacts with them.
+from ai_tutor.agents.models import LessonPlan, LessonContent, Quiz, QuizFeedback, SessionAnalysis, AnalysisResult
 
 # In-memory storage for session data.
 # WARNING: This will lose state on server restart and doesn't scale horizontally.
@@ -16,34 +14,35 @@ from ai_tutor.agents.analyzer_agent import DocumentAnalysis # Assuming DocumentA
 _sessions: Dict[str, Dict[str, Any]] = {}
 
 class SessionManager:
-    """Manages AI Tutor sessions (in-memory implementation)."""
+    """Manages session state for AI Tutor sessions."""
+
+    def __init__(self):
+        """Initialize the session manager."""
+        pass
 
     def create_session(self) -> str:
         """Creates a new session and returns its ID."""
         session_id = str(uuid.uuid4())
-        _sessions[session_id] = {
-            "session_id": session_id,
-            "start_time": time.time(),
-            "vector_store_id": None,
-            "uploaded_files": [],
-            "document_analysis": None, # Store the AnalysisResult object or its text
-            "knowledge_base_path": None, # Path to the generated Knowledge Base file for this session
-            "lesson_plan": None,
-            "lesson_content": None,
-            "quiz": None,
-            "quiz_feedback": None,
-            "session_analysis": None,
-            "raw_agent_outputs": {}, # To store raw outputs if needed for session analysis
-        }
+        # Initialize session with a TutorContext object's dict representation
+        # Agents SDK will receive the TutorContext object itself via the runner.
+        context = TutorContext(session_id=session_id)
+        _sessions[session_id] = context.model_dump(mode='json') # Store as JSON-compatible dict
+        # Add internal start time tracking if needed, separate from context sent to agents
+        _sessions[session_id]["_internal_start_time"] = time.time()
+        # Keep track of raw agent outputs if needed for later analysis separately
+        _sessions[session_id]["_raw_agent_outputs"] = {}
         print(f"Created session: {session_id}")
         return session_id
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Retrieves the state for a given session ID."""
+        # Returns the raw dict. The API layer will parse this back into TutorContext.
         return _sessions.get(session_id)
 
     def update_session(self, session_id: str, data: Dict[str, Any]) -> bool:
-        """Updates the state for a given session ID."""
+        """Updates the state for a given session ID.
+           Expects `data` to contain fields matching TutorContext or internal fields.
+        """
         if session_id in _sessions:
             _sessions[session_id].update(data)
             return True

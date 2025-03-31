@@ -22,6 +22,8 @@ class TutorOutputLogger:
             "timestamp": datetime.now().isoformat(),
             "planner_agent_output": "",
             "teacher_agent_output": "",
+            "orchestrator_agent_output": "",
+            "user_input": "",
             "quiz_creator_agent_output": "",
             "user_summaries": [],
             "mini_quiz_attempts": [],
@@ -30,13 +32,24 @@ class TutorOutputLogger:
             "quiz_teacher_agent_output": "",
             "session_analysis_output": "",
             "full_session": [],
-            "errors": []
+            "errors": [],
+            "session_log": []
         }
     
     def log_planner_output(self, output: Any) -> None:
         """Log output from the planner agent."""
         self.logs["planner_agent_output"] = self._format_output(output)
         self._append_to_session("Planner Agent", output)
+    
+    def log_orchestrator_output(self, output: Any) -> None:
+        """Log output from the orchestrator agent."""
+        self.logs["orchestrator_agent_output"] = self._format_output(output)
+        self._append_to_session("Orchestrator Agent", output)
+    
+    def log_user_input(self, user_input: str) -> None:
+        """Log the user's input."""
+        self.logs["user_input"] = user_input
+        self._append_to_session("User Input", user_input)
     
     def log_teacher_output(self, output: Any) -> None:
         """Log output from the teacher agent."""
@@ -109,15 +122,12 @@ class TutorOutputLogger:
         self.logs["user_summaries"].append(summary_log)
         self._append_to_session("User Summary Attempt", summary_log)
     
-    def get_captured_outputs(self) -> Dict[str, str]:
-        """Get all captured outputs from all agents.
-        
-        Returns:
-            A dictionary mapping agent names to their outputs
-        """
+    def get_agent_outputs(self) -> Dict[str, str]:
+        """Get all agent outputs as a dictionary."""
         return {
             "planner_agent": self.logs["planner_agent_output"],
             "teacher_agent": self.logs["teacher_agent_output"],
+            "orchestrator_agent": self.logs["orchestrator_agent_output"],
             "quiz_creator_agent": self.logs["quiz_creator_agent_output"],
             "quiz_teacher_agent": self.logs["quiz_teacher_agent_output"],
             "session_analysis_agent": self.logs["session_analysis_output"],
@@ -159,84 +169,42 @@ class TutorOutputLogger:
         }
         self.logs["full_session"].append(entry)
     
-    def save(self) -> str:
-        """Save the logs to the output file.
-        
-        Returns:
-            Path to the saved file.
-        """
+    def save_to_file(self) -> None:
+        """Save all logs to the output file if one was specified."""
+        if not self.output_file:
+            return
+
+        os.makedirs(os.path.dirname(self.output_file), exist_ok=True)
         with open(self.output_file, "w", encoding="utf-8") as f:
-            # Write a readable format with headers and sections
-            f.write("AI TUTOR SESSION LOG\n")
+            f.write("SESSION LOG\n")
             f.write("=" * 80 + "\n")
-            f.write(f"Timestamp: {self.logs['timestamp']}\n\n")
-            
-            # Write each section
-            f.write("PLANNER AGENT OUTPUT\n")
+            f.write(f"Started: {self.logs['timestamp']}\n\n")
+
+            f.write("CHRONOLOGICAL EVENT LOG\n")
+            f.write("-" * 80 + "\n")
+            for entry in self.logs["session_log"]:
+                f.write(f"{entry}\n")
+            f.write("\n")
+
+            f.write("PLANNER AGENT OUTPUT (LAST)\n")
             f.write("-" * 80 + "\n")
             f.write(self.logs["planner_agent_output"])
             f.write("\n\n")
             
-            f.write("TEACHER AGENT OUTPUT\n")
+            f.write("TEACHER AGENT OUTPUT (LAST)\n")
             f.write("-" * 80 + "\n")
             f.write(self.logs["teacher_agent_output"])
             f.write("\n\n")
             
+            f.write("ORCHESTRATOR AGENT OUTPUT (LAST)\n")
+            f.write("-" * 80 + "\n")
+            f.write(self.logs["orchestrator_agent_output"])
+            f.write("\n\n")
+
             f.write("QUIZ CREATOR AGENT OUTPUT\n")
             f.write("-" * 80 + "\n")
             f.write(self.logs["quiz_creator_agent_output"])
             f.write("\n\n")
-            
-            f.write("USER SUMMARY ATTEMPTS\n")
-            f.write("-" * 80 + "\n")
-            for summary in self.logs["user_summaries"]:
-                f.write(f"Section: {summary['section']} | Topic: {summary['topic']}\nSummary: {summary['summary']}\n\n")
-            f.write("\n\n")
-            
-            f.write("MINI-QUIZ ATTEMPTS\n")
-            f.write("-" * 80 + "\n")
-            for attempt in self.logs["mini_quiz_attempts"]:
-                f.write(f"Question: {attempt['question']}\nSelected: {attempt['selected_option']} | Correct: {attempt['correct_option']} | Result: {'✓ Correct' if attempt['is_correct'] else '✗ Incorrect'}\n\n")
-            f.write("\n\n")
-            
-            f.write("USER QUIZ ANSWERS\n")
-            f.write("-" * 80 + "\n")
-            
-            for i, answer in enumerate(self.logs["quiz_user_answers"]):
-                f.write(f"Question {i+1}: {answer['question']}\n")
-                f.write(f"Options: {', '.join(answer['options'])}\n")
-                f.write(f"Your Answer: {answer['options'][answer['selected_option_index']]}\n")
-                f.write(f"Correct Answer: {answer['options'][answer['correct_option_index']]}\n")
-                f.write(f"Result: {'✓ Correct' if answer['is_correct'] else '✗ Incorrect'}\n\n")
-            
-            f.write("QUIZ TEACHER AGENT OUTPUT\n")
-            f.write("-" * 80 + "\n")
-            f.write(self.logs["quiz_teacher_agent_output"])
-            f.write("\n\n")
-            
-            if self.logs["session_analysis_output"]:
-                f.write("SESSION ANALYSIS AGENT OUTPUT\n")
-                f.write("-" * 80 + "\n")
-                f.write(self.logs["session_analysis_output"])
-                f.write("\n\n")
-            
-            # Write errors if any occurred
-            if self.logs["errors"]:
-                f.write("ERRORS LOGGED\n")
-                f.write("-" * 80 + "\n")
-                f.write(json.dumps(self.logs["errors"], indent=2, default=str))
-                f.write("\n\n")
-            
-            f.write("FULL SESSION LOG (CHRONOLOGICAL)\n")
-            f.write("=" * 80 + "\n\n")
-            for entry in self.logs["full_session"]:
-                f.write(f"[{entry['timestamp']}] {entry['agent']}\n")
-                f.write("-" * 80 + "\n")
-                f.write(entry['output'])
-                f.write("\n\n")
-        
-        print(f"AI Tutor session log saved to: {self.output_file}")
-        return self.output_file
 
 # Global instance for easy access
 _logger = None
