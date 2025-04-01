@@ -1,7 +1,7 @@
 from __future__ import annotations
 from agents import function_tool, Runner, RunConfig
 from agents.run_context import RunContextWrapper
-from typing import Any, Optional, Literal
+from typing import Any, Optional, Literal, Union
 
 # --- Import TutorContext directly ---
 # We need the actual class definition available for get_type_hints called by the decorator.
@@ -21,10 +21,15 @@ from ai_tutor.agents.models import LessonPlan, QuizQuestion, QuizFeedbackItem, L
 from ai_tutor.agents.teacher_agent import generate_lesson_content # Import specific function if needed
 from ai_tutor.agents.quiz_teacher_agent import evaluate_single_answer # Import new function
 
+# Import API response models for potentially formatting tool output
+from ai_tutor.api_models import (
+    ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse
+)
+
 # --- Tool Implementations (Stubs for now) ---
 
 @function_tool
-async def call_teacher_explain(ctx: RunContextWrapper[TutorContext], topic: str) -> str:
+async def call_teacher_explain(ctx: RunContextWrapper[TutorContext], topic: str) -> Union[str, ErrorResponse]:
     """Generates an explanation for a specific topic using the Teacher Agent."""
     print(f"Orchestrator tool: Requesting explanation for topic '{topic}'")
 
@@ -64,13 +69,13 @@ async def call_teacher_explain(ctx: RunContextWrapper[TutorContext], topic: str)
 
 
 @function_tool
-async def call_quiz_creator_mini(ctx: RunContextWrapper[TutorContext], topic: str) -> QuizQuestion:
+async def call_quiz_creator_mini(ctx: RunContextWrapper[TutorContext], topic: str) -> Union[QuizQuestion, str]:
     """Generates a single multiple-choice question for the given topic using the Quiz Creator Agent."""
     print(f"Orchestrator tool: Requesting mini-quiz for topic '{topic}'")
     # Input validation
     if not topic or not isinstance(topic, str):
         # Return a dummy error question or raise? Let's return dummy.
-        return QuizQuestion(question="Error: Invalid topic provided for quiz.", options=["A","B","C","D"], correct_answer_index=0, explanation="Error", difficulty="Easy", related_section="Error")
+        return "Error: Invalid topic provided for quiz."
 
     try:
         quiz_creator_agent = create_quiz_creator_agent() # Non-handoff version
@@ -94,27 +99,29 @@ async def call_quiz_creator_mini(ctx: RunContextWrapper[TutorContext], topic: st
              ctx.context.current_quiz_question = current_q
              # ------------------------------------------
              # Return only the first (and hopefully only) question
-             return quiz_result.questions[0]
+             return current_q
         else:
-             print(f"Orchestrator tool: Failed to get mini-quiz for '{topic}'. Result: {result.final_output}")
-             return QuizQuestion(question=f"Error: Could not generate quiz question for {topic}.", options=["A","B","C","D"], correct_answer_index=0, explanation="Error", difficulty="Easy", related_section="Error")
+             error_msg = f"Error: Could not generate quiz question for {topic}."
+             print(f"Orchestrator tool: {error_msg} Result: {result.final_output}")
+             return error_msg
 
     except Exception as e:
-        print(f"ERROR in call_quiz_creator_mini for '{topic}': {e}")
-        return QuizQuestion(question=f"An error occurred while generating the quiz question for {topic}.", options=["A","B","C","D"], correct_answer_index=0, explanation="Error", difficulty="Easy", related_section="Error")
+        error_msg = f"An error occurred while generating the quiz question for {topic}."
+        print(f"ERROR in call_quiz_creator_mini: {error_msg} - {e}")
+        return error_msg
 
 
 @function_tool
-async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_answer_index: int) -> Optional[QuizFeedbackItem]:
+async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_answer_index: int) -> Union[QuizFeedbackItem, str]:
     """Calls the Quiz Teacher agent to evaluate the user's answer to the question currently stored in context."""
     print(f"Orchestrator tool: Evaluating user answer index '{user_answer_index}'")
 
     question_to_evaluate = ctx.context.current_quiz_question
 
     if not question_to_evaluate:
-        print("Orchestrator tool: Error - No current quiz question found in context to evaluate.")
-        # Return a generic error feedback item? Or None? Let's return None.
-        return None
+        error_msg = "Error: No current quiz question found in context to evaluate."
+        print(f"Orchestrator tool: {error_msg}")
+        return error_msg
 
     try:
         feedback_item = await evaluate_single_answer(
@@ -124,9 +131,14 @@ async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_
         )
         ctx.context.last_interaction_summary = f"Evaluated answer for question: {question_to_evaluate.question[:50]}..."
         return feedback_item
+    except ValueError:
+        error_msg = f"Error: Invalid answer index '{user_answer_index}' provided."
+        print(f"Orchestrator tool: {error_msg}")
+        return error_msg
     except Exception as e:
-        print(f"ERROR in call_quiz_teacher_evaluate: {e}")
-        return None
+        error_msg = f"An error occurred while evaluating the answer: {e}"
+        print(f"ERROR in call_quiz_teacher_evaluate: {error_msg}")
+        return error_msg
 
 @function_tool
 async def call_planner_get_next_topic(ctx: RunContextWrapper[TutorContext], current_topic: Optional[str] = None) -> Optional[str]:

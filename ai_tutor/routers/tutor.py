@@ -17,7 +17,10 @@ from ai_tutor.agents.analyzer_agent import AnalysisResult
 from ai_tutor.agents.models import (
     LessonPlan, LessonContent, Quiz, QuizUserAnswers, QuizFeedback, SessionAnalysis
 )
-from ai_tutor.api_models import DocumentUploadResponse, AnalysisResponse
+from ai_tutor.api_models import (
+    DocumentUploadResponse, AnalysisResponse, TutorInteractionResponse,
+    ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse
+)
 from ai_tutor.context import TutorContext
 from ai_tutor.output_logger import get_logger, TutorOutputLogger
 from agents import Runner, RunConfig, Agent
@@ -64,11 +67,6 @@ class MiniQuizLogData(BaseModel):
 # --- Model for the /interact endpoint ---
 class UserInteractionInput(BaseModel):
     text: str # User's text input, e.g., "next", "start lesson", answer choice "C", or a question
-
-# Response model for /interact - can be complex, start simple
-class TutorInteractionResponse(BaseModel):
-    response_type: Literal["explanation", "question", "feedback", "error", "message"]
-    topic: Optional[str] = None
 
 # --- Endpoints ---
 
@@ -371,7 +369,7 @@ async def log_user_summary_event(session_id: str, summary_data: UserSummaryLogDa
 # --- New Interaction Endpoint ---
 @router.post(
     "/sessions/{session_id}/interact",
-    response_model=Any, # Response type can vary (text, question, feedback) - use Any or create a Union/wrapper
+    response_model=TutorInteractionResponse,
     summary="Interact with the AI Tutor",
     tags=["Tutoring Workflow"]
 )
@@ -381,46 +379,74 @@ async def interact_with_tutor(
     tutor_context: TutorContext = Depends(get_tutor_context)
 ):
     """
-    Sends user input to the AI Tutor Orchestrator and receives the next piece of content,
-    question, or feedback. Updates session state.
+    Handles interactive communication with the AI Tutor.
+    The response type varies based on the interaction context and tutor's decision.
     """
     logger = get_session_logger(session_id)
-    logger.log_user_input(user_input.text)
-
-    # Check prerequisites (plan must exist)
-    if not tutor_context.lesson_plan:
-        raise HTTPException(status_code=400, detail="Lesson plan has not been generated for this session.")
-
+    
     try:
-        # Instantiate orchestrator agent
-        orchestrator_agent: Agent[TutorContext] = create_orchestrator_agent()
+        # Get the orchestrator agent
+        orchestrator = create_orchestrator_agent(tutor_context.vector_store_id)
+        
+        # Run the orchestrator with the user's input
         run_config = RunConfig(workflow_name="AI Tutor API - Interaction", group_id=session_id)
-
-        # Run the orchestrator with the current context and user input
-        # The TutorContext object (tutor_context) will be modified in place by tools like update_user_model
-        result = await Runner.run(
-            orchestrator_agent,
-            user_input.text,
-            context=tutor_context,
-            run_config=run_config
-        )
-
-        # After the run, save the *modified* context back to the session manager
-        updated_context_data = tutor_context.model_dump(mode='json')
-        success = session_manager.update_session(session_id, updated_context_data)
-        if not success:
-            logger.log_error("SessionUpdate", f"Failed to save updated context after interaction for session {session_id}.")
-            # Decide if this should be a critical error
-
-        # Log orchestrator output
-        logger.log_orchestrator_output(result.final_output)
-
-        # Return the final output (explanation, question, etc.)
-        return result.final_output
-
+        result = await Runner.run(orchestrator, user_input.text, run_config=run_config, context=tutor_context)
+        
+        # Process the result based on its type and content
+        if not result or not result.final_output:
+            return ErrorResponse(
+                response_type="error",
+                message="No response received from tutor",
+                error_code="NO_RESPONSE"
+            )
+            
+        output = result.final_output
+        
+        # Map the output to appropriate response type
+        if isinstance(output, dict):
+            response_type = output.get("type", "message")
+            
+            if response_type == "explanation":
+                return ExplanationResponse(
+                    text=output.get("text", ""),
+                    topic=output.get("topic", ""),
+                    references=output.get("references", [])
+                )
+                
+            elif response_type == "question":
+                return QuestionResponse(
+                    question=output.get("question"),
+                    topic=output.get("topic", ""),
+                    context=output.get("context")
+                )
+                
+            elif response_type == "feedback":
+                return FeedbackResponse(
+                    feedback=output.get("feedback"),
+                    topic=output.get("topic", ""),
+                    correct_answer=output.get("correct_answer"),
+                    explanation=output.get("explanation")
+                )
+                
+            else:  # Default to message response
+                return MessageResponse(
+                    text=str(output.get("text", output)),
+                    message_type=output.get("message_type", "info")
+                )
+        else:
+            # Handle non-dict outputs as simple messages
+            return MessageResponse(
+                text=str(output),
+                message_type="info"
+            )
+            
     except Exception as e:
-        logger.log_error("OrchestratorRun", e)
-        raise HTTPException(status_code=500, detail=f"Failed to process interaction: {e}")
+        logger.log_error("TutorInteraction", e)
+        return ErrorResponse(
+            message=f"Error during tutor interaction: {str(e)}",
+            error_code="INTERACTION_ERROR",
+            details={"error_type": type(e).__name__}
+        )
 
 # --- Remove POST /quiz/submit ---
 # Quiz answers are now handled via the /interact endpoint.

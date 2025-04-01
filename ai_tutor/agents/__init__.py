@@ -1,6 +1,6 @@
 """Agents for the AI Tutor system.""" 
 
-from ai_tutor.agents.planner_agent import create_planner_agent, lesson_plan_handoff_filter
+from ai_tutor.agents.planner_agent import create_planner_agent
 from ai_tutor.agents.teacher_agent import create_teacher_agent, lesson_content_handoff_filter
 from ai_tutor.agents.models import LearningObjective, LessonSection, LessonPlan, QuizQuestion
 from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent, quiz_to_teacher_handoff_filter
