@@ -8,11 +8,12 @@ load_dotenv()
 
 from ai_tutor.context import TutorContext, UserModelState, UserConceptMastery  # Import context models
 from ai_tutor.routers import sessions, tutor
-from agents import set_default_openai_key, set_default_openai_api
+from agents import set_default_openai_key, set_default_openai_api, Agent # Import Agent
 
 # Import models needed for resolving forward references in TutorContext
-from ai_tutor.agents.models import LessonPlan, QuizQuestion
+from ai_tutor.agents.models import LessonPlan, QuizQuestion, QuizFeedbackItem # Add QuizFeedbackItem
 from ai_tutor.agents.analyzer_agent import AnalysisResult
+from ai_tutor.api_models import TutorInteractionResponse, InteractionResponseData # Add InteractionResponseData
 
 # --- SDK Configuration ---
 api_key = os.environ.get("OPENAI_API_KEY")
@@ -32,6 +33,7 @@ UserModelState.model_rebuild()
 AnalysisResult.model_rebuild() # Rebuild if it uses forward refs
 LessonPlan.model_rebuild() # Rebuild if it uses forward refs
 QuizQuestion.model_rebuild() # Rebuild if it uses forward refs
+QuizFeedbackItem.model_rebuild() # Add if used in TutorInteractionResponse directly or indirectly
 TutorContext.model_rebuild() # Now this should work
 
 app = FastAPI(

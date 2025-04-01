@@ -28,15 +28,15 @@ from ai_tutor.api_models import (
     FeedbackResponse, MessageResponse, ErrorResponse
 )
 
-def create_orchestrator_agent(api_key: str = None) -> Agent[TutorContext]:
+def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
     """Creates the Orchestrator Agent for the AI Tutor."""
 
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
 
     provider: ModelProvider = OpenAIProvider()
-    # Use a capable model for orchestration logic
-    base_model = provider.get_model("gpt-4-turbo") # Using latest model
+    # Use the specified model version
+    base_model = provider.get_model("gpt-4o-2024-08-06")  # Using exact model version
 
     orchestrator_tools = [
         call_teacher_explain,
@@ -47,7 +47,7 @@ def create_orchestrator_agent(api_key: str = None) -> Agent[TutorContext]:
         get_user_model_status,
     ]
 
-    orchestrator_agent = Agent[TutorContext](
+    orchestrator_agent = Agent['TutorContext'](
         name="TutorOrchestrator",
         instructions="""
         You are the conductor of an AI tutoring session. Your primary goal is to help the user learn the material effectively by guiding them through a lesson plan.

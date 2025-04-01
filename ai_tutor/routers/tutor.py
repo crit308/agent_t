@@ -4,6 +4,9 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Backgro
 import os
 import shutil
 import time
+import json
+import traceback  # Add traceback import
+import logging  # Add logging import
 
 from ai_tutor.session_manager import SessionManager
 from ai_tutor.tools.file_upload import FileUploadManager
@@ -19,7 +22,8 @@ from ai_tutor.agents.models import (
 )
 from ai_tutor.api_models import (
     DocumentUploadResponse, AnalysisResponse, TutorInteractionResponse,
-    ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse
+    ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse,
+    InteractionRequestData, InteractionResponseData  # Add InteractionResponseData
 )
 from ai_tutor.context import TutorContext
 from ai_tutor.output_logger import get_logger, TutorOutputLogger
@@ -46,7 +50,10 @@ async def get_tutor_context(session_id: str) -> TutorContext:
     session_data = session_manager.get_session(session_id)
     if not session_data:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-    return TutorContext(**session_data)
+    try:
+        return TutorContext(**session_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse TutorContext: {e}")
 
 # --- Helper to get logger ---
 def get_session_logger(session_id: str) -> TutorOutputLogger:
@@ -63,10 +70,6 @@ class MiniQuizLogData(BaseModel):
     isCorrect: bool    # Match frontend naming
     relatedSection: Optional[str] = None
     topic: Optional[str] = None
-
-# --- Model for the /interact endpoint ---
-class UserInteractionInput(BaseModel):
-    text: str # User's text input, e.g., "next", "start lesson", answer choice "C", or a question
 
 # --- Endpoints ---
 
@@ -369,83 +372,100 @@ async def log_user_summary_event(session_id: str, summary_data: UserSummaryLogDa
 # --- New Interaction Endpoint ---
 @router.post(
     "/sessions/{session_id}/interact",
-    response_model=TutorInteractionResponse,
+    response_model=InteractionResponseData,  # Change response model
     summary="Interact with the AI Tutor",
     tags=["Tutoring Workflow"]
 )
 async def interact_with_tutor(
     session_id: str,
-    user_input: UserInteractionInput,
+    interaction_input: InteractionRequestData = Body(...),
     tutor_context: TutorContext = Depends(get_tutor_context)
 ):
     """
-    Handles interactive communication with the AI Tutor.
-    The response type varies based on the interaction context and tutor's decision.
+    Handles user interaction with the AI tutor - can be an explanation request,
+    question, or feedback. Updates session state and returns wrapped response.
     """
     logger = get_session_logger(session_id)
+    print(f"\n=== Starting /interact for session {session_id} ===")
+    print(f"Interaction Type: {interaction_input.type}")
+    print(f"Interaction Data: {json.dumps(interaction_input.data, indent=2)}")
     
+    logger.log_user_input(f"Type: {interaction_input.type}, Data: {interaction_input.data}")
+
+    # Check prerequisites (plan must exist)
+    if not tutor_context.lesson_plan:
+        logger.log_error("Prerequisites", "No lesson plan found")
+        raise HTTPException(status_code=400, detail="Lesson plan must be generated first")
+
+    # Prepare input for orchestrator
+    orchestrator_input_text = f"Type: {interaction_input.type}"
+    orchestrator_input_text += f" | Data: {json.dumps(interaction_input.data)}"
+    print(f"\nPreparing orchestrator input:\n{orchestrator_input_text}")
+
     try:
-        # Get the orchestrator agent
-        orchestrator = create_orchestrator_agent(tutor_context.vector_store_id)
-        
-        # Run the orchestrator with the user's input
+        print("\n--- Creating orchestrator agent ---")
+        orchestrator_agent: Agent[TutorContext] = create_orchestrator_agent()
         run_config = RunConfig(workflow_name="AI Tutor API - Interaction", group_id=session_id)
-        result = await Runner.run(orchestrator, user_input.text, run_config=run_config, context=tutor_context)
         
-        # Process the result based on its type and content
-        if not result or not result.final_output:
-            return ErrorResponse(
-                response_type="error",
-                message="No response received from tutor",
-                error_code="NO_RESPONSE"
-            )
-            
-        output = result.final_output
+        print("\n--- Starting orchestrator run ---")
+        result = await Runner.run(
+            orchestrator_agent,
+            orchestrator_input_text,
+            context=tutor_context,
+            run_config=run_config
+        )
+
+        print(f"\n--- Orchestrator run completed ---")
+        print(f"Result type: {type(result.final_output)}")
+        print(f"Raw result: {result.final_output}")
+
+        # After the run, save the *modified* context back to the session manager
+        print("\n--- Updating session context ---")
+        updated_context_data = tutor_context.model_dump(mode='json')
+        success = session_manager.update_session(session_id, updated_context_data)
         
-        # Map the output to appropriate response type
-        if isinstance(output, dict):
-            response_type = output.get("type", "message")
-            
-            if response_type == "explanation":
-                return ExplanationResponse(
-                    text=output.get("text", ""),
-                    topic=output.get("topic", ""),
-                    references=output.get("references", [])
-                )
-                
-            elif response_type == "question":
-                return QuestionResponse(
-                    question=output.get("question"),
-                    topic=output.get("topic", ""),
-                    context=output.get("context")
-                )
-                
-            elif response_type == "feedback":
-                return FeedbackResponse(
-                    feedback=output.get("feedback"),
-                    topic=output.get("topic", ""),
-                    correct_answer=output.get("correct_answer"),
-                    explanation=output.get("explanation")
-                )
-                
-            else:  # Default to message response
-                return MessageResponse(
-                    text=str(output.get("text", output)),
-                    message_type=output.get("message_type", "info")
-                )
+        if not success:
+            error_msg = f"Failed to save updated context after interaction for session {session_id}"
+            print(f"ERROR: {error_msg}")
+            logger.log_error("SessionUpdate", error_msg)
+            # Decide if this should be a critical error
         else:
-            # Handle non-dict outputs as simple messages
-            return MessageResponse(
-                text=str(output),
-                message_type="info"
-            )
-            
+            print("Successfully saved updated context") # Log after save
+        
+        # --- Wrap the Orchestrator's output ---
+        # Log orchestrator output
+        orchestrator_output = result.final_output
+        logger.log_orchestrator_output(orchestrator_output)
+
+        # Determine content_type and data based on orchestrator_output
+        # This assumes orchestrator_output is one of the specific response types (ExplanationResponse etc.)
+        content_type = getattr(orchestrator_output, 'response_type', 'message') # Default to message if type unknown
+
+        # Return the wrapped response expected by the frontend
+        return InteractionResponseData(
+            content_type=content_type,
+            data=orchestrator_output, # Send the whole object as data
+            user_model_state=tutor_context.user_model_state # Send the *updated* user model state
+        )
+
     except Exception as e:
-        logger.log_error("TutorInteraction", e)
-        return ErrorResponse(
-            message=f"Error during tutor interaction: {str(e)}",
-            error_code="INTERACTION_ERROR",
-            details={"error_type": type(e).__name__}
+        # --- Explicit Exception Catching and Logging ---
+        logger.log_error("OrchestratorRun", e)
+        print("\n!!! EXCEPTION IN /interact !!!")
+        print("Full traceback:")
+        print(traceback.format_exc())
+        
+        error_msg = f"Error during interaction processing: {str(e)}"
+        print(f"\nError details: {error_msg}")
+        
+        # Include error type in the response for better debugging
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Internal server error during interaction",
+                "type": type(e).__name__,
+                "message": str(e)
+            }
         )
 
 # --- Remove POST /quiz/submit ---
