@@ -266,19 +266,29 @@ async def evaluate_single_answer(
             group_id=context.session_id
         )
 
-    result = await Runner.run(agent, prompt, output_type=QuizFeedbackItem, run_config=run_config, context=context)
+    result = await Runner.run(agent, prompt, run_config=run_config, context=context)
 
     try:
-        feedback_item = result.final_output_as(QuizFeedbackItem)
-        # Ensure the feedback item indices match the input (agent might hallucinate)
-        feedback_item.question_index = 0 # Since we only evaluate one, index is 0 relative to this call
-        feedback_item.question_text = question.question
-        feedback_item.user_selected_option = user_selected_option_text
-        feedback_item.is_correct = is_correct
-        feedback_item.correct_option = correct_option_text
-        # Keep agent's explanation and suggestion
-        return feedback_item
+        # Parse the full feedback object first, as the agent is configured for it
+        full_feedback = result.final_output_as(QuizFeedback)
+        
+        # Extract the first (and presumably only) feedback item
+        if full_feedback and full_feedback.feedback_items:
+            feedback_item = full_feedback.feedback_items[0]
+            # Ensure the feedback item indices match the input (agent might hallucinate)
+            feedback_item.question_index = 0 # Since we only evaluate one, index is 0 relative to this call
+            feedback_item.question_text = question.question
+            feedback_item.user_selected_option = user_selected_option_text
+            feedback_item.is_correct = is_correct
+            feedback_item.correct_option = correct_option_text
+            # Keep agent's explanation and suggestion
+            return feedback_item
+        else:
+            print(f"Error: Agent returned valid QuizFeedback but without any feedback items.")
+            print(f"Agent raw output: {result.final_output}")
+            return None
+            
     except Exception as e:
-        print(f"Error parsing single answer feedback from agent: {e}")
+        print(f"Error parsing single answer feedback from agent (expected QuizFeedback): {e}")
         print(f"Agent raw output: {result.final_output}")
         return None 
