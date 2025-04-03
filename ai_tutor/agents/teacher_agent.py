@@ -140,14 +140,14 @@ async def generate_lesson_content(
     Description: {lesson_plan.description}
     Target Audience: {lesson_plan.target_audience}
     Prerequisites: {', '.join(lesson_plan.prerequisites)}
-    # Total Estimated Duration: {lesson_plan.total_estimated_duration_minutes} minutes # Comment out - less relevant for single topic
+    # Total Estimated Duration: {lesson_plan.total_estimated_duration_minutes} minutes # Commented out - less relevant for single topic
     Sections Overview:"""
     for i, section in enumerate(lesson_plan.sections):
-        lesson_plan_str += f"\nSection {i+1}: {section.title}\n"
-        lesson_plan_str += f"  Objectives: {', '.join(obj.title for obj in section.objectives)}\n"
-        lesson_plan_str += f"  Duration: {section.estimated_duration_minutes} minutes\n"
+        lesson_plan_context_str += f"\nSection {i+1}: {section.title}\n"
+        lesson_plan_context_str += f"  Objectives: {', '.join(obj.title for obj in section.objectives)}\n"
+        lesson_plan_context_str += f"  Duration: {section.estimated_duration_minutes} minutes\n"
         if section.concepts_to_cover:
-            lesson_plan_str += f"  Key Concepts: {', '.join(section.concepts_to_cover)}\n"
+            lesson_plan_context_str += f"  Key Concepts: {', '.join(section.concepts_to_cover)}\n"
     lesson_plan_context_str += "\n--- End of Lesson Plan Context ---\n"
 
     # Add document analysis context if available

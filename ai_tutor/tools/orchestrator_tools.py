@@ -45,9 +45,8 @@ async def call_teacher_explain(
          return "Error: Lesson plan not found in context. Cannot generate explanation without plan context."
 
     try:
-        # Get the teacher agent
-        from ai_tutor.agents.teacher_agent import create_teacher_agent
-        teacher_agent = create_teacher_agent()
+        # Get the teacher agent - using the working implementation
+        teacher_agent = create_teacher_agent_without_handoffs(vector_store_id=ctx.context.vector_store_id)
 
         # Setup run config for tracing
         run_config = RunConfig(workflow_name="Orchestrator_TeacherCall", group_id=ctx.context.session_id)
