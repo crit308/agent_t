@@ -1,7 +1,7 @@
 from __future__ import annotations
 from agents import function_tool, Runner, RunConfig
 from agents.run_context import RunContextWrapper
-from typing import Any, Optional, Literal, Union
+from typing import Any, Optional, Literal, Union, cast
 import os
 
 # --- Import TutorContext directly ---
@@ -28,7 +28,11 @@ from ai_tutor.api_models import (
 # --- Orchestrator Tool Implementations ---
 
 @function_tool
-async def call_teacher_explain(ctx: RunContextWrapper[TutorContext], topic: str) -> Union[str, ErrorResponse]:
+async def call_teacher_explain(
+    ctx: RunContextWrapper[TutorContext],
+    topic: str,
+    segment_index: int # Changed: Removed default value for segment_index
+) -> Union[LessonContent, str]: # Return LessonContent or error string
     """Generates an explanation for a specific topic using the Teacher Agent."""
     print(f"Orchestrator tool: Requesting explanation for topic '{topic}'")
 
@@ -41,128 +45,154 @@ async def call_teacher_explain(ctx: RunContextWrapper[TutorContext], topic: str)
          return "Error: Lesson plan not found in context. Cannot generate explanation without plan context."
 
     try:
-        # Use the non-handoff teacher agent to generate content JUST for this topic plan
-        teacher_agent = create_teacher_agent_without_handoffs(ctx.context.vector_store_id)
+        # Get the teacher agent
+        from ai_tutor.agents.teacher_agent import create_teacher_agent
+        teacher_agent = create_teacher_agent()
+
+        # Setup run config for tracing
         run_config = RunConfig(workflow_name="Orchestrator_TeacherCall", group_id=ctx.context.session_id)
 
-        # generate_lesson_content expects an Agent and LessonPlan
-        # It internally calls Runner.run
+        # We now construct the prompt *here* for the teacher agent
+        lesson_plan_context_str = f"Lesson Plan Context:\nTitle: {ctx.context.lesson_plan.title}\n..." # Simplified for brevity
+        analysis_context_str = f"Analysis Context:\nKey Concepts: {ctx.context.analysis_result.key_concepts[:5]}...\n..." if ctx.context.analysis_result else ""
+
+        teacher_prompt = f"""
+        {lesson_plan_context_str}
+        {analysis_context_str}
+
+        TASK:
+        Explain segment {segment_index} of the topic: '{topic}'.
+        Use the context above and `file_search` if needed for details.
+        Keep the explanation focused and concise (1-3 paragraphs ideally).
+        If segment_index is 0, provide an introduction.
+        Format your output as a valid LessonContent JSON object with fields 'title', 'topic', and 'text'.
+        'title' should be '{ctx.context.lesson_plan.title}'.
+        'topic' should be '{topic}'.
+        'text' should contain ONLY the explanation for segment {segment_index}.
+        """
+
         lesson_content_result : LessonContent = await generate_lesson_content(
             teacher_agent=teacher_agent,
             lesson_plan=ctx.context.lesson_plan, # Pass the *original* full plan for context
             topic_to_explain=topic, # Pass the specific topic
             context=ctx.context
         )
+        
+        result = await Runner.run(teacher_agent, teacher_prompt, context=ctx.context, run_config=run_config)
+        content_output = result.final_output_as(LessonContent)
 
-        if lesson_content_result and lesson_content_result.text:
-             print(f"Orchestrator tool: Got explanation for '{topic}'")
-             # Update context - mark topic as 'explained' or similar?
-             ctx.context.last_interaction_summary = f"Explained topic: {topic}"
-             return lesson_content_result.text
+        if content_output and content_output.text and content_output.topic == topic:
+             print(f"Orchestrator tool: Got explanation segment {segment_index} for '{topic}'")
+             return content_output # Return the full LessonContent object for this segment
         else:
              return f"Error: Teacher agent failed to generate explanation for {topic}."
 
     except Exception as e:
-        print(f"ERROR in call_teacher_explain for '{topic}': {e}")
-        return f"An error occurred while generating the explanation for {topic}."
+        error_msg = f"Error in call_teacher_explain: {str(e)}"
+        print(f"Orchestrator tool: {error_msg}")
+        return error_msg
 
 
 @function_tool
-async def call_quiz_creator_mini(ctx: RunContextWrapper[TutorContext], topic: str) -> Union[QuizQuestion, str]:
+async def call_quiz_creator_mini(ctx: RunContextWrapper[TutorContext], topic: str) -> Union[QuizQuestion, str]: # Return question or error string
     """Generates a single multiple-choice question for the given topic using the Quiz Creator Agent."""
     print(f"Orchestrator tool: Requesting mini-quiz for topic '{topic}'")
     # Input validation
     if not topic or not isinstance(topic, str):
-        # Return a dummy error question or raise? Let's return dummy.
-        return "Error: Invalid topic provided for quiz."
+        return "Error: Invalid topic provided."
 
     try:
-        quiz_creator_agent = create_quiz_creator_agent() # Non-handoff version
-        run_config = RunConfig(workflow_name="Orchestrator_QuizMiniCall", group_id=ctx.context.session_id)
+        # Get the quiz creator agent
+        from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent
+        quiz_creator = create_quiz_creator_agent()
 
-        # Construct a very specific quiz_prompt telling the QuizCreatorAgent to create exactly one question
-        quiz_prompt = (
-            f"Based on the topic '{topic}', create ONLY ONE simple multiple-choice question "
-            f"with 4 options. The question should test basic understanding of '{topic}'. "
-            "Your output MUST be a valid Quiz object containing EXACTLY ONE question in its 'questions' list. "
-            f"Set the 'related_section' for the question to '{topic}'."
+        # Setup run config for tracing
+        run_config = RunConfig(workflow_name="Orchestrator_QuizCreatorCall", group_id=ctx.context.session_id)
+
+        # Call the quiz creator agent to generate a mini-quiz
+        quiz_result = await Runner.run(
+            quiz_creator,
+            f"Create a single multiple-choice question to test understanding of: {topic}",
+            context=ctx.context,
+            run_config=run_config
         )
-        result = await Runner.run(quiz_creator_agent, quiz_prompt, context=ctx.context, run_config=run_config)
-        quiz_result = result.final_output_as(Quiz) # Expecting Quiz object
 
         if quiz_result and quiz_result.questions:
              print(f"Orchestrator tool: Got mini-quiz for '{topic}'")
-             ctx.context.last_interaction_summary = f"Asked mini-quiz for topic: {topic}"
-             # --- Store the asked question in context ---
+             # Need to handle this state update carefully. Let Orchestrator call another tool?
              current_q = quiz_result.questions[0]
              ctx.context.current_quiz_question = current_q
              # ------------------------------------------
-             # Return only the first (and hopefully only) question
              return current_q
         else:
-             error_msg = f"Error: Could not generate quiz question for {topic}."
-             print(f"Orchestrator tool: {error_msg} Result: {result.final_output}")
-             return error_msg
+            return f"Error: Quiz creator failed to generate question for {topic}."
 
     except Exception as e:
-        error_msg = f"An error occurred while generating the quiz question for {topic}."
-        print(f"ERROR in call_quiz_creator_mini: {error_msg} - {e}")
+        error_msg = f"Error in call_quiz_creator_mini: {str(e)}"
+        print(f"Orchestrator tool: {error_msg}")
         return error_msg
 
 
 @function_tool
-async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_answer_index: int) -> Union[QuizFeedbackItem, str]:
+async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_answer_index: int) -> Union[QuizFeedbackItem, str]: # Return feedback item or error string
     """Calls the Quiz Teacher agent to evaluate the user's answer to the question currently stored in context."""
     print(f"Orchestrator tool: Evaluating user answer index '{user_answer_index}'")
 
-    question_to_evaluate = ctx.context.current_quiz_question
-
-    if not question_to_evaluate:
-        error_msg = "Error: No current quiz question found in context to evaluate."
-        print(f"Orchestrator tool: {error_msg}")
-        return error_msg
-
     try:
-        feedback_item = await evaluate_single_answer(
+        # Get the current question from context
+        question_to_evaluate = ctx.context.current_quiz_question
+        if not question_to_evaluate:
+            return "Error: No current question found in context."
+
+        # Get the quiz teacher agent and evaluate
+        from ai_tutor.agents.quiz_teacher_agent import create_quiz_teacher_agent, evaluate_answer
+        quiz_teacher = create_quiz_teacher_agent()
+        feedback_item = await evaluate_answer(
+            quiz_teacher,
             question=question_to_evaluate,
             user_answer_index=user_answer_index,
             context=ctx.context # Pass context for tracing etc.
         )
-        ctx.context.last_interaction_summary = f"Evaluated answer for question: {question_to_evaluate.question[:50]}..."
-        return feedback_item
-    except ValueError:
-        error_msg = f"Error: Invalid answer index '{user_answer_index}' provided."
+
+        if feedback_item:
+            return feedback_item
+        else:
+            error_msg = f"Error: Evaluation failed for question on topic '{question_to_evaluate.related_section}'."
         print(f"Orchestrator tool: {error_msg}")
         return error_msg
     except Exception as e:
-        error_msg = f"An error occurred while evaluating the answer: {e}"
-        print(f"ERROR in call_quiz_teacher_evaluate: {error_msg}")
+        error_msg = f"Error in call_quiz_teacher_evaluate: {str(e)}"
+        print(f"Orchestrator tool: {error_msg}")
         return error_msg
 
 @function_tool
-async def call_planner_get_next_topic(ctx: RunContextWrapper[TutorContext], current_topic: Optional[str] = None) -> Optional[str]:
-    """Consults the LessonPlan in the context to determine the next topic to cover."""
-    print(f"Orchestrator tool: Getting next topic after '{current_topic}'")
+async def call_planner_get_next_topic(ctx: RunContextWrapper[TutorContext]) -> Optional[str]:
+    """Determines the next topic to cover based on the lesson plan and user model."""
+    print("Orchestrator tool: Getting next topic from lesson plan")
+
+    # Get the lesson plan from context
     lesson_plan = ctx.context.lesson_plan
-    if not lesson_plan or not lesson_plan.sections:
-        print("Orchestrator tool: No lesson plan or sections found.")
+    if not lesson_plan:
+        print("Orchestrator tool: No lesson plan found in context.")
         return None
 
     # Simple linear progression through concepts_to_cover for now
-    all_concepts = [concept for section in lesson_plan.sections for concept in section.concepts_to_cover]
+    all_concepts = [
+        concept for section in lesson_plan.sections for concept in (section.concepts_to_cover or [])
+    ]
 
     if not all_concepts:
         print("Orchestrator tool: No concepts found in lesson plan.")
         return None
 
-    if not current_topic:
+    if not ctx.context.user_model_state.current_topic:
         next_topic = all_concepts[0]
         print(f"Orchestrator tool: Returning first topic: '{next_topic}'")
         ctx.context.user_model_state.current_topic = next_topic # Update context
         return next_topic
 
     try:
-        current_idx = all_concepts.index(current_topic)
+        current_idx = all_concepts.index(ctx.context.user_model_state.current_topic)
         if current_idx + 1 < len(all_concepts):
             next_topic = all_concepts[current_idx + 1]
             print(f"Orchestrator tool: Returning next topic: '{next_topic}'")
@@ -174,7 +204,7 @@ async def call_planner_get_next_topic(ctx: RunContextWrapper[TutorContext], curr
             return None # End of plan
     except ValueError:
         # current_topic not found in the list, default to the first topic
-        print(f"Orchestrator tool: Current topic '{current_topic}' not in plan, returning first topic.")
+        print(f"Orchestrator tool: Current topic '{ctx.context.user_model_state.current_topic}' not in plan, returning first topic.")
         next_topic = all_concepts[0]
         ctx.context.user_model_state.current_topic = next_topic # Update context
         return next_topic
@@ -219,17 +249,27 @@ def update_user_model(ctx: RunContextWrapper[TutorContext], topic: str, outcome:
     return f"User model updated for {topic}."
 
 @function_tool
+def update_explanation_progress(ctx: RunContextWrapper[TutorContext], segment_index: int) -> str:
+    """Updates the current explanation segment index in the user model state."""
+    print(f"Orchestrator tool: Updating explanation segment index to {segment_index}")
+    if not isinstance(segment_index, int) or segment_index < 0:
+        return "Error: Invalid segment_index provided."
+    ctx.context.user_model_state.current_explanation_segment = segment_index
+    ctx.context.last_interaction_summary = f"Delivered explanation segment {segment_index}"
+    return f"Explanation progress updated to segment {segment_index}."
+
+@function_tool
 def get_user_model_status(ctx: RunContextWrapper[TutorContext], topic: Optional[str] = None) -> Any:
     """Retrieves the current state of the user model, optionally for a specific topic."""
     print(f"Orchestrator tool: Retrieving user model status for topic '{topic}'")
 
-    # Need UserConceptMastery at runtime here too.
-    from ai_tutor.context import UserConceptMastery
+    if not ctx.context.user_model_state:
+        return "Error: No user model state found in context."
 
     if topic:
         # Return the specific concept's state or a default if not found
         concept_state = ctx.context.user_model_state.concepts.get(topic, UserConceptMastery())
-        return concept_state.model_dump(mode='json')
+        return concept_state.model_dump(mode='json') # Return as dict
     else:
         # Return the entire user model state
-        return ctx.context.user_model_state.model_dump(mode='json') 
+        return ctx.context.user_model_state.model_dump(mode='json') # Return as dict 

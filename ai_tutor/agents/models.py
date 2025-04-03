@@ -109,6 +109,7 @@ class PrecisionControlEncoder(json.JSONEncoder):
 class LessonContent(BaseModel):
     """The simplified lesson content created by the teacher agent."""
     title: str = Field(description="The title of the lesson")
+    topic: Optional[str] = Field(None, description="Specific topic being explained in this chunk")
     text: str = Field(description="The full text content of the lesson")
 
 
@@ -251,5 +252,5 @@ class SessionAnalysis(BaseModel):
 
 # Forward reference resolution for ExplanationContent
 # And MiniQuizInfo which references QuizQuestion
-# ExplanationContent.model_rebuild()
+# LessonContent.model_rebuild()
 # MiniQuizInfo.model_rebuild() 

@@ -38,6 +38,8 @@ class ExplanationResponse(BaseModel):
     response_type: Literal["explanation"]
     text: str
     topic: str
+    segment_index: int # Make segment_index required
+    is_last_segment: bool # Indicate if more segments follow
     references: Optional[List[str]] = None
 
 class QuestionResponse(BaseModel):

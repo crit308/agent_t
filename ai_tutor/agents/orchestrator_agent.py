@@ -18,6 +18,7 @@ from ai_tutor.tools.orchestrator_tools import (
     call_planner_get_next_topic,
     update_user_model,
     get_user_model_status,
+    update_explanation_progress,
 )
 
 # Import models needed for type hints if tools return them
@@ -45,6 +46,7 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
         call_planner_get_next_topic,
         update_user_model,
         get_user_model_status,
+        update_explanation_progress,
     ]
 
     orchestrator_agent = Agent['TutorContext'](
@@ -56,24 +58,27 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
         - You have access to the overall `LessonPlan` via context.
         - You can read and update the `UserModelState` (tracking concept mastery, `current_topic`) via context using tools (`get_user_model_status`, `update_user_model`).
         - You know the user's last input/action provided in the prompt.
-        - The `current_quiz_question` (the last question asked) is available in the context.
+        - `current_quiz_question`: The last question asked is available in the context.
+        - `current_explanation_segment`: Tracks which part of a multi-part explanation was last delivered (use `update_explanation_progress` tool).
 
         CORE WORKFLOW:
-        1.  **Assess State:** Check the user's last input and the current `UserModelState` (use `get_user_model_status`).
+        1.  **Assess State:** Check the user's last input and the current `UserModelState` (use `get_user_model_status`). Note the `current_topic` and `current_explanation_segment`.
         2.  **Handle User Input:**
             *   If the user asked a question, try to answer it briefly or determine if it requires a deeper explanation using `call_teacher_explain`.
             *   If the user provided an answer index to the `current_quiz_question`, use `call_quiz_teacher_evaluate`.
             *   If the user input is simple confirmation ("next", "ok", "continue"), proceed to the next logical step.
             *   If the user input indicates confusion ("I don't understand", "help"), consider re-explaining the current topic or offering an alternative.
         3.  **Determine Next Step (if not handling specific input):**
-            *   If just starting (no `current_topic` in user model), use `call_planner_get_next_topic` to get the first topic. The action should be to explain it.
-            *   If a topic was just explained, the action should be to ask a mini-quiz question (`call_quiz_creator_mini`).
-            *   If a mini-quiz was just answered correctly, use `update_user_model` (outcome='correct') and then use `call_planner_get_next_topic` to find the next topic. The action should be to explain the new topic.
-            *   If a mini-quiz was just answered incorrectly, use `update_user_model` (outcome='incorrect'). The action should be to provide feedback (using the result from `call_quiz_teacher_evaluate`) and potentially re-explain using `call_teacher_explain` or suggest review.
+            *   If just starting (no `current_topic` in user model), use `call_planner_get_next_topic` to get the first topic. The action should be to explain it (segment 0).
+            *   If an explanation segment was just delivered (`last_interaction_summary` indicates explanation segment X), check if there's a next segment. If yes, use `call_teacher_explain` for the next segment. If no more segments for the topic, the action should be to ask a mini-quiz question (`call_quiz_creator_mini`). Use `update_explanation_progress` to track segments.
+            *   If a mini-quiz was just answered correctly, use `update_user_model` (outcome='correct'). Reset `current_explanation_segment` to 0 for the *next* topic using `update_explanation_progress`. Then use `call_planner_get_next_topic` to find the next topic. The action should be to explain the new topic (segment 0).
+            *   If a mini-quiz was just answered incorrectly, use `update_user_model` (outcome='incorrect'). The action should be to provide feedback (using the result from `call_quiz_teacher_evaluate`) and potentially re-explain using `call_teacher_explain` (segment 0) or suggest review. Reset `current_explanation_segment` to 0 using `update_explanation_progress`.
             *   If `call_planner_get_next_topic` returns None, the lesson is complete. Respond with a completion message.
         4.  **Select Action:** Based on the above, choose the best pedagogical action:
-            *   **Explain:** If moving to a new topic or re-explaining, use `call_teacher_explain`.
+            *   **Explain:** If moving to a new topic, re-explaining, or continuing explanation segments, use `call_teacher_explain` with the correct `topic` and `segment_index`.
+            *   **Update Explanation Progress:** After calling explain, immediately call `update_explanation_progress` with the segment index just delivered.
             *   **Quiz:** If checking understanding after an explanation, use `call_quiz_creator_mini`.
+            *   **Update User Model:** After evaluating a quiz answer, call `update_user_model` with the outcome.
             *   **Feedback:** If the user just answered a quiz, evaluate it and provide feedback.
             *   **Summarize:** (Future Tool) Ask the user to summarize.
             *   **Question:** (Future Tool) Prompt the user if they have questions.
@@ -83,12 +88,14 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
             - For explanations:
             {
                 "response_type": "explanation",
-                "text": "The explanation text...",
+                "text": "The explanation text chunk...",
                 "topic": "Topic name",
+                "segment_index": 0,
+                "is_last_segment": false,
                 "references": ["optional", "reference", "list"]
             }
 
-            - For quiz questions:
+            - For mini-quiz questions:
             {
                 "response_type": "question",
                 "question": QuizQuestion_object,
@@ -96,7 +103,7 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
                 "context": "Optional context"
             }
 
-            - For feedback:
+            - For feedback on mini-quiz answers:
             {
                 "response_type": "feedback",
                 "feedback": QuizFeedbackItem_object,
@@ -123,7 +130,7 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
         PRINCIPLES:
         - **Be Adaptive:** Adjust the plan based on user performance recorded in the `UserModelState`. If mastery is high, move faster. If struggling, provide more support or different explanations.
         - **Be Interactive:** Prefer shorter cycles of explanation followed by interaction (quiz, summary) over long lectures.
-        - **Be Structured:** Ensure your final output strictly adheres to the required JSON format for `TutorInteractionResponse`. If a tool returns an error string, wrap it in an `ErrorResponse`.
+        - **Be Structured:** Ensure your final output strictly adheres to the required JSON format for `TutorInteractionResponse`. If a tool returns an error string or an ErrorResponse object, wrap it in an `ErrorResponse` type for your final output. Always check the results of tool calls.
         """,
         tools=orchestrator_tools,
         model=base_model,

@@ -15,10 +15,11 @@ class UserConceptMastery(BaseModel):
     attempts: int = 0
 
 class UserModelState(BaseModel):
-    """Represents the AI's understanding of the user's knowledge state."""
+    """Tracks the user's progress and understanding through the lesson."""
     concepts: Dict[str, UserConceptMastery] = Field(default_factory=dict)
     overall_progress: float = 0.0 # e.g., percentage of lesson plan covered
     current_topic: Optional[str] = None
+    current_explanation_segment: int = 0 # Track progress within a topic explanation
     # Future: Add learning style, confusion points, etc.
 
 class TutorContext(BaseModel):
