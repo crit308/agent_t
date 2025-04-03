@@ -28,6 +28,7 @@ class TutorContext(BaseModel):
     vector_store_id: Optional[str] = None
     uploaded_file_paths: List[str] = Field(default_factory=list)
     analysis_result: Optional['AnalysisResult'] = None # Use forward reference
+    knowledge_base_path: Optional[str] = None # Add path to KB file
     lesson_plan: Optional['LessonPlan'] = None # Use forward reference
     current_quiz_question: Optional['QuizQuestion'] = None # Use forward reference
     user_model_state: UserModelState = Field(default_factory=UserModelState)

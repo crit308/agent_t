@@ -166,53 +166,49 @@ async def generate_lesson_content(
 
     # --- Build the prompt ---
     lesson_plan_str = f"""
-    LESSON PLAN CONTEXT:
+    LESSON PLAN CONTEXT (Use this for structure and objectives):
 
     Title: {lesson_plan.title}
     Description: {lesson_plan.description}
     Target Audience: {lesson_plan.target_audience}
     Prerequisites: {', '.join(lesson_plan.prerequisites)}
     Total Estimated Duration: {lesson_plan.total_estimated_duration_minutes} minutes
-    """
+    Sections Overview:"""
     for i, section in enumerate(lesson_plan.sections):
         lesson_plan_str += f"\nSection {i+1}: {section.title}\n"
         lesson_plan_str += f"  Objectives: {', '.join([obj.description for obj in section.objectives])}\n"
-        if hasattr(section, 'concepts_to_cover') and section.concepts_to_cover:
-            lesson_plan_str += f"  Concepts: {', '.join(section.concepts_to_cover)}\n"
-    lesson_plan_str += "\n---\n"
+        lesson_plan_str += f"  Duration: {section.estimated_duration_minutes} minutes\n"
+        if section.concepts_to_cover:
+            lesson_plan_str += f"  Key Concepts: {', '.join(section.concepts_to_cover)}\n"
+    lesson_plan_str += "\n--- End of Lesson Plan Context ---\n"
 
-    # Add analysis context if available
+    # Add document analysis context if available
     analysis_str = ""
     if context.analysis_result:
         analysis_str = f"""
-    DOCUMENT ANALYSIS CONTEXT:
+    DOCUMENT ANALYSIS CONTEXT (Use this for key concepts and terms):
     Key Concepts: {', '.join(context.analysis_result.key_concepts)}
     Key Terms: {', '.join(context.analysis_result.key_terms.keys())}
     --- End of Analysis Context ---
-        """
-
-    lesson_plan_str += f"""
-
-    {analysis_str}
-
-    ---
-
-    IMPORTANT INSTRUCTIONS:
-    1. Use the file_search tool to research the topics above.
-    2. Synthesize this information into a single, coherent 'text' field.
-    3. Generate a suitable 'title' for the lesson.
-    4. YOUR OUTPUT MUST BE ONLY A VALID JSON OBJECT: {{ "title": "...", "text": "..." }}.
-    5. DO NOT attempt to use any handoff tools.
     """
+
+    # Combine contexts
+    full_context = f"""
+    {lesson_plan_str}
+    {analysis_str}
+    """
+
+    # --- Build the core prompt ---
+    # This will be appended to the context
 
     # Modify prompt based on whether a specific topic is requested
     if topic_to_explain:
-        prompt_core = f"Focus entirely on explaining the specific topic: '{topic_to_explain}'. Use the Lesson Plan and Document Analysis context provided above for background information and accuracy. Synthesize a clear and concise explanation for this single topic into the 'text' field. Title should reflect the topic."
+        prompt_core = f"Focus entirely on explaining the specific topic: '{topic_to_explain}'. Use the Lesson Plan context for objectives and structure, and the Document Analysis context for key terms and concepts related to this topic. Synthesize a clear and concise explanation for this single topic into the 'text' field using file_search if necessary for details. Title should reflect the topic."
     else:
         # Original behavior (though less likely to be used by orchestrator)
         prompt_core = "Based on the full Lesson Plan and Document Analysis context provided above, generate the complete lesson content, synthesizing all relevant information into the 'text' field. Use the Lesson Plan title for the 'title' field."
 
-    final_prompt = f"{lesson_plan_str}\n\nTASK:\n{prompt_core}"
+    final_prompt = f"{full_context}\n\nTASK:\n{prompt_core}"
     
     # Setup RunConfig for tracing
     from agents import RunConfig

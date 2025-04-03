@@ -45,14 +45,19 @@ async def get_session_state(session_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="Session not found")
     return session
 
-# --- Dependency to get parsed TutorContext ---
+# --- Dependency to get parsed TutorContext (Removed pre-parsing) ---
 async def get_tutor_context(session_id: str) -> TutorContext:
     session_data = session_manager.get_session(session_id)
     if not session_data:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
     try:
+        # Pydantic will parse nested models like analysis_result automatically if keys match
+        print(f"[Debug] Raw session data for {session_id} before TutorContext init: {json.dumps(session_data, indent=2, default=str)}")
         return TutorContext(**session_data)
     except Exception as e:
+        # Log the raw data along with the error for easier debugging
+        print(f"[ERROR] Failed to parse session data into TutorContext. Data: {session_data}")
+        print(f"[ERROR] Failed to parse session data into TutorContext: {e}") # Log parsing error
         raise HTTPException(status_code=500, detail=f"Failed to parse TutorContext: {e}")
 
 # --- Helper to get logger ---
@@ -151,16 +156,28 @@ async def upload_session_documents(
 
         if analysis_result:
             analysis_status = "completed"
-            # Store the validated AnalysisResult object directly if SessionManager supports it,
-            # otherwise use model_dump()
+            # Store analysis result (as dict or object) - Keep storing the object
             analysis_data = analysis_result.model_dump(mode='json')
             session_manager.update_session(session_id, {"analysis_result": analysis_data})
             message += "Analysis completed."
 
-            # --- Remove Knowledge Base file creation ---
-            # The Orchestrator/Planner will access analysis via context or a tool
-            # Remove kb_path and related logic from session state if not needed elsewhere
-            print(f"Document analysis completed and stored in session state for {session_id}.")
+            # --- Reintroduce Knowledge Base file creation ---
+            # The planner agent will use a tool to read this.
+            kb_filename = f"knowledge_base_{session_id}.txt" # Session-specific KB file
+            kb_path = os.path.join(TEMP_UPLOAD_DIR, kb_filename)
+            try:
+                with open(kb_path, "w", encoding="utf-8") as f:
+                    f.write("KNOWLEDGE BASE\n=============\n\n")
+                    f.write("DOCUMENT ANALYSIS:\n=================\n\n")
+                    f.write(analysis_result.analysis_text) # Write the text part
+                session_manager.update_session(session_id, {"knowledge_base_path": kb_path}) # Store the path
+                message += f" Knowledge base file created at {kb_path}."
+                print(f"Knowledge Base file created for session {session_id} at {kb_path}")
+            except Exception as kb_error:
+                 logger.log_error("KnowledgeBaseCreation", kb_error)
+                 message += f" Warning: Could not create Knowledge Base file: {kb_error}"
+            # --- End KB File Creation ---
+
         else:
             message += "Analysis finished but produced no result."
             analysis_status = "completed_empty" # Or "failed" depending on expectation
@@ -189,22 +206,19 @@ async def get_session_analysis_results(
     tutor_context: TutorContext = Depends(get_tutor_context) # Use parsed context
 ):
     """Retrieves the results of the document analysis for the session."""
-    # Access directly from the parsed context object
-    analysis_obj = tutor_context.analysis_result
+    analysis_obj = tutor_context.analysis_result # Access directly from context
     if analysis_obj:
         try:
             return AnalysisResponse(status="completed", analysis=analysis_obj)
         except Exception as e:
              return AnalysisResponse(status="error", error=f"Failed to parse analysis data: {e}")
     else:
-        # Check if analysis failed or just hasn't run
-        # This logic depends on how status is tracked (not fully implemented here)
-        return AnalysisResponse(status="not_started", analysis=None)
+        return AnalysisResponse(status="not_found", analysis=None)
 
 
 @router.post(
     "/sessions/{session_id}/plan",
-    response_model=LessonPlan, # Planner should only return a LessonPlan now
+    response_model=LessonPlan,
     summary="Generate Lesson Plan",
     tags=["Tutoring Workflow"]
 )
@@ -221,48 +235,73 @@ async def generate_session_lesson_plan(
     # Get vector store ID and analysis result from context
     vector_store_id = tutor_context.vector_store_id
     analysis_result = tutor_context.analysis_result
+    kb_path = tutor_context.knowledge_base_path # Get KB path from context
 
-    if not vector_store_id or not analysis_result:
+    # Initial checks are good to keep, ensure data looks okay before agent creation
+    if not vector_store_id:
         raise HTTPException(status_code=400, detail="Documents must be uploaded and analysis completed first.")
+    if not kb_path or not os.path.exists(kb_path):
+        raise HTTPException(status_code=400, detail="Knowledge base file path not found or file missing.")
 
+    # --- Wrap the main logic in a try...except block ---
     try:
-        # Ensure the planner agent DOES NOT handoff implicitly
-        # Option 1: Modify create_planner_agent to optionally disable handoffs
-        # Option 2: Create a separate create_planner_agent_no_handoff
-        # Option 3: Assume the Runner call won't trigger handoffs if the agent is designed correctly
-        # Let's assume Option 3 for now, but this might need adjustment
+        print(f"[Debug /plan] Creating planner agent for vs_id: {vector_store_id}") # Add log
         planner_agent: Agent[TutorContext] = create_planner_agent(vector_store_id)
 
-        # The planner agent's instructions need modification to use context/tools for analysis info
         # Pass the full TutorContext to the Runner
         run_config = RunConfig(workflow_name="AI Tutor API - Planning", group_id=session_id)
 
-        # The prompt should guide the planner based on analysis available in context
-        # Example: "Create a lesson plan based on the document analysis provided in the context."
-        plan_prompt = "Create a lesson plan based on the analyzed documents."
+        print(f"[Debug /plan] Starting Runner.run for planner agent...") # Add log
 
-        result = await Runner.run(planner_agent, plan_prompt, run_config=run_config, context=tutor_context)
+        # Prompt tells planner to use its tools (read_knowledge_base and file_search)
+        plan_prompt = """
+        Create a lesson plan. First, use the `read_knowledge_base` tool to understand the document analysis. Then, use the `file_search` tool to clarify details as needed. Finally, generate the `LessonPlan` object based on both sources of information. Follow your detailed agent instructions.
+        """
+        print(f"[Debug /plan] Planner prompt:\n{plan_prompt[:500]}...") # Log start of prompt
 
-        lesson_plan_output = result.final_output
+        result = await Runner.run(
+            planner_agent,
+            plan_prompt,
+            run_config=run_config,
+            context=tutor_context # Pass the parsed TutorContext object
+        )
+        print(f"[Debug /plan] Runner.run completed. Result final_output type: {type(result.final_output)}") # Add log
 
-        if isinstance(lesson_plan_output, LessonPlan):
-            lesson_plan_obj = lesson_plan_output
+        # --- Check the result and update session ---
+        # Use final_output_as for potential validation
+        try:
+            lesson_plan_obj = result.final_output_as(LessonPlan, raise_if_incorrect_type=True)
+            lesson_plan_to_store = lesson_plan_obj
             logger.log_planner_output(lesson_plan_obj)
 
-            # --- Store generated plan in session state ---
-            update_data = {"lesson_plan": lesson_plan_obj.model_dump(mode='json')}
+            update_data = {"lesson_plan": lesson_plan_to_store.model_dump(mode='json')}
             success = session_manager.update_session(session_id, update_data)
             if not success:
                  logger.log_error("SessionUpdate", f"Failed to update session {session_id} with lesson plan.")
-
+            print(f"[Debug /plan] LessonPlan stored in session.") # Add log
             return lesson_plan_obj # Return the generated plan
-        else:
-            logger.log_error("PlannerAgentRun", f"Planner agent returned unexpected type: {type(lesson_plan_output)}")
+        except Exception as parse_error: # Catch if final_output isn't a LessonPlan
+            error_msg = f"Planner agent returned unexpected output or parsing failed: {parse_error}. Raw output: {result.final_output}"
+            logger.log_error("PlannerAgentOutputParse", error_msg)
+            print(f"[ERROR /plan] {error_msg}") # Add log
             raise HTTPException(status_code=500, detail="Planner agent failed to return a valid LessonPlan.")
 
     except Exception as e:
+        # --- Explicit Exception Catching and Logging ---
         logger.log_error("PlannerAgentRun", e)
-        raise HTTPException(status_code=500, detail=f"Failed to generate lesson plan: {e}")
+        error_type = type(e).__name__
+        error_details = str(e)
+        error_traceback = traceback.format_exc()
+
+        print("\n!!! EXCEPTION IN /plan Endpoint !!!") # Make log stand out
+        print(f"Error Type: {error_type}")
+        print(f"Error Details: {error_details}")
+        print("Full Traceback:")
+        print(error_traceback)
+        # -------------------------------------------------
+
+        # Raise a generic 500, but the logs now contain the details
+        raise HTTPException(status_code=500, detail=f"Failed to generate lesson plan due to internal error: {error_type}")
 
 @router.get(
     "/sessions/{session_id}/lesson",
@@ -468,15 +507,10 @@ async def interact_with_tutor(
             }
         )
 
-# --- Remove POST /quiz/submit ---
+# --- Remove POST /quiz/submit (Legacy) ---
 # Quiz answers are now handled via the /interact endpoint.
 # An end-of-session quiz submission could potentially be added back later
 # if needed, but the core loop uses /interact.
 
 # TODO: Implement endpoint for session analysis if needed:
-# POST /sessions/{session_id}/analyze-session (Full Session Analysis)
-
-# Response model for /interact - can be complex, start simple
-class TutorInteractionResponse(BaseModel):
-    response_type: Literal["explanation", "question", "feedback", "error", "message"]
-    topic: Optional[str] = None 
+# POST /sessions/{session_id}/analyze-session (Full Session Analysis) 
