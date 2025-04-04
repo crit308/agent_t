@@ -1,5 +1,6 @@
 from __future__ import annotations
 from pydantic import BaseModel
+from datetime import datetime # Keep datetime import for conversion if needed
 from typing import Optional, List, Any, Dict, Literal, TYPE_CHECKING
 from pydantic import Field
 
@@ -11,16 +12,24 @@ if TYPE_CHECKING:
 class UserConceptMastery(BaseModel):
     """Tracks user's mastery of a specific concept."""
     mastery_level: float = 0.0 # e.g., 0-1 scale, assessed by quizzes/summaries
+    # Add more detail on outcomes
     last_interaction_outcome: Optional[str] = None # e.g., 'correct', 'incorrect', 'asked_question'
     attempts: int = 0
+    # Add tracking for specific struggles
+    confusion_points: List[str] = Field(default_factory=list, description="Specific points user struggled with on this topic")
+    # Change datetime to string to avoid schema validation issues with optional format
+    last_accessed: Optional[str] = Field(None, description="ISO 8601 timestamp of when the concept was last accessed")
 
 class UserModelState(BaseModel):
-    """Tracks the user's progress and understanding through the lesson."""
+    """Represents the AI's understanding of the user's knowledge state and preferences."""
     concepts: Dict[str, UserConceptMastery] = Field(default_factory=dict)
     overall_progress: float = 0.0 # e.g., percentage of lesson plan covered
     current_topic: Optional[str] = None
     current_explanation_segment: int = 0 # Track progress within a topic explanation
-    # Future: Add learning style, confusion points, etc.
+    # Add fields for personalization
+    learning_pace_factor: float = 1.0 # Controls pacing adjustment (e.g., >1 faster, <1 slower)
+    preferred_interaction_style: Optional[Literal['explanatory', 'quiz_heavy', 'socratic']] = None # Can be set or inferred
+    session_summary_notes: List[str] = Field(default_factory=list) # High-level notes about session progress/user behavior
 
 class TutorContext(BaseModel):
     """Context object for an AI Tutor session."""
