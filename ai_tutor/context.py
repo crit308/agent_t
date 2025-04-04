@@ -25,11 +25,14 @@ class UserModelState(BaseModel):
     concepts: Dict[str, UserConceptMastery] = Field(default_factory=dict)
     overall_progress: float = 0.0 # e.g., percentage of lesson plan covered
     current_topic: Optional[str] = None
-    current_explanation_segment: int = 0 # Track progress within a topic explanation
+    current_topic_segment_index: int = 0 # Tracks progress within the *current topic's* explanation
     # Add fields for personalization
     learning_pace_factor: float = 1.0 # Controls pacing adjustment (e.g., >1 faster, <1 slower)
     preferred_interaction_style: Optional[Literal['explanatory', 'quiz_heavy', 'socratic']] = None # Can be set or inferred
     session_summary_notes: List[str] = Field(default_factory=list) # High-level notes about session progress/user behavior
+    # Add fields for tracking interaction state
+    pending_interaction_type: Optional[Literal['checking_question', 'summary_prompt']] = None
+    pending_interaction_details: Optional[Dict[str, Any]] = None # e.g., {'question_text': '...', 'interaction_id': 'xyz'}
 
 class TutorContext(BaseModel):
     """Context object for an AI Tutor session."""
@@ -43,5 +46,6 @@ class TutorContext(BaseModel):
     current_quiz_question: Optional['QuizQuestion'] = None # Use forward reference
     user_model_state: UserModelState = Field(default_factory=UserModelState)
     last_interaction_summary: Optional[str] = None # What did the tutor just do? What did user respond?
+    current_teaching_topic: Optional[str] = None # Which topic is the Teacher actively explaining?
     # Add other relevant session state as needed
     # e.g., current_lesson_progress: Optional[str] = None 

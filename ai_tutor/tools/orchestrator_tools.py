@@ -4,16 +4,12 @@ from agents.run_context import RunContextWrapper
 from typing import Any, Optional, Literal, Union, cast, Dict, List
 import os
 from datetime import datetime
+import traceback # Import traceback for error logging
 
 # --- Import TutorContext directly ---
 # We need the actual class definition available for get_type_hints called by the decorator.
 # This relies on context.py being fully loaded *before* this file attempts to define the tools.
 from ai_tutor.context import TutorContext, UserConceptMastery, UserModelState
-
-# --- Import agent creation functions DIRECTLY from their modules ---
-from ai_tutor.agents.teacher_agent import create_teacher_agent_without_handoffs
-from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent
-from ai_tutor.agents.quiz_teacher_agent import create_quiz_teacher_agent, evaluate_single_answer # Import evaluate_single_answer here
 
 # --- Import necessary models ---
 from ai_tutor.agents.models import LessonPlan, QuizQuestion, QuizFeedbackItem, LessonContent, Quiz, LessonSection, LearningObjective
@@ -26,103 +22,20 @@ from ai_tutor.api_models import (
 # --- Orchestrator Tool Implementations ---
 
 @function_tool
-async def call_teacher_explain(
-    ctx: RunContextWrapper[TutorContext],
-    topic: str,
-    segment_index: int
-) -> Union[LessonContent, str]:
-    """Generates an explanation for a specific topic and segment using the Teacher Agent."""
-    print(f"[Tool] Requesting explanation for topic '{topic}', segment {segment_index}")
-    
-    # Input validation
-    if not topic or not isinstance(topic, str):
-        return "Error: Invalid topic provided."
-    if not isinstance(segment_index, int) or segment_index < 0:
-        return "Error: Invalid segment index."
-    
-    if not ctx.context.lesson_plan:
-         return "Error: Lesson plan not found in context. Cannot generate explanation without plan context."
-
-    try:
-        teacher_agent = create_teacher_agent_without_handoffs(ctx.context.vector_store_id)
-        run_config = RunConfig(workflow_name="Orchestrator_TeacherCall", group_id=ctx.context.session_id)
-
-        # Get user's learning pace and style preferences
-        user_state = ctx.context.user_model_state
-        pace_factor = user_state.learning_pace_factor if user_state else 1.0
-        style = user_state.preferred_interaction_style if user_state else None
-        
-        # Get any existing confusion points for this topic
-        confusion_points = []
-        if topic in user_state.concepts:
-            confusion_points = user_state.concepts[topic].confusion_points
-
-        # Construct the prompt with user-specific adaptations
-        lesson_plan_title = ctx.context.lesson_plan.title
-        confusion_points_str = "\nFocus on these confusion points:\n- " + "\n- ".join(confusion_points) if confusion_points else ""
-        pace_guidance = "Provide more detailed explanations." if pace_factor < 1.0 else "Keep explanations concise." if pace_factor > 1.0 else ""
-        style_guidance = {
-            'explanatory': "Focus on thorough explanations with examples.",
-            'quiz_heavy': "Include practice problems or self-check questions.",
-            'socratic': "Present concepts through guiding questions."
-        }.get(style, "")
-
-        teacher_prompt = f"""
-        Lesson Plan Context:
-        Title: {lesson_plan_title}
-        Topic to Explain: {topic}
-        Segment Index: {segment_index}
-        {confusion_points_str}
-        
-        Teaching Adaptations:
-        {pace_guidance}
-        {style_guidance}
-        
-        TASK:
-        Generate an explanation for segment {segment_index} of topic '{topic}'.
-        If segment_index is 0, provide an introduction to the topic.
-        Keep the explanation focused and appropriate for the user's pace and style preferences.
-        
-        Format your response as a LessonContent object with:
-        - title: '{lesson_plan_title}'
-        - topic: '{topic}'
-        - segment_index: {segment_index}
-        - is_last_segment: true/false (based on if this concludes the topic)
-        - text: The explanation content
-        """
-
-        result = await Runner.run(
-            teacher_agent,
-            teacher_prompt,
-            context=ctx.context,
-            run_config=run_config
-        )
-
-        content_output = result.final_output_as(LessonContent)
-        
-        if content_output and content_output.text and content_output.topic == topic:
-            print(f"[Tool] Got explanation segment {segment_index} for '{topic}' (is_last={content_output.is_last_segment})")
-            return content_output
-        else:
-            return f"Error: Teacher agent failed to generate valid explanation for topic '{topic}', segment {segment_index}."
-    except Exception as e:
-        print(f"Error in call_teacher_explain: {str(e)}")
-        return f"Error: Failed to generate explanation - {str(e)}"
-
-
-@function_tool
 async def call_quiz_creator_mini(
     ctx: RunContextWrapper[TutorContext],
     topic: str
-) -> Union[QuizQuestion, str]:
-    """Generates a single multiple-choice question for the given topic using the Quiz Creator Agent."""
+) -> Union[QuizQuestion, str]: # Return Question object or error string
+    """Generates a single multiple-choice question for the given topic using the Quiz Creator agent."""
     print(f"[Tool] Requesting mini-quiz for topic '{topic}'")
     
     if not topic or not isinstance(topic, str):
         return "Error: Invalid topic provided for quiz."
 
     try:
-        quiz_creator = create_quiz_creator_agent()
+        # --- Import and Create Agent *Inside* ---
+        from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent # Import here
+        # ----------------------------------------
         run_config = RunConfig(workflow_name="Orchestrator_QuizCall", group_id=ctx.context.session_id)
 
         # Get user's mastery level for difficulty adjustment
@@ -177,36 +90,49 @@ async def call_quiz_creator_mini(
 
 
 @function_tool
-async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_answer_index: int) -> Union[QuizFeedbackItem, str]: # Return feedback item or error string
-    """Calls the Quiz Teacher agent to evaluate the user's answer to the question currently stored in context."""
-    print(f"[Tool] Evaluating user answer index '{user_answer_index}'")
-
+async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_answer_index: int) -> Union[QuizFeedbackItem, str]:
+    """Evaluates the user's answer to the current question using the Quiz Teacher logic (via helper function)."""
+    print(f"[Tool] Evaluating user answer index '{user_answer_index}' for current question.")
+    
     try:
-        # Get the current question from context
+        # --- Import evaluation function *Inside* ---
+        from ai_tutor.agents.quiz_teacher_agent import evaluate_single_answer # Import helper here
+        # -------------------------------------------
         question_to_evaluate = ctx.context.current_quiz_question
         if not question_to_evaluate:
-            return "Error: No current question found in context."
+            return "Error: No current question found in context to evaluate."
+        if not isinstance(question_to_evaluate, QuizQuestion):
+            # Add type check for safety
+            return f"Error: Expected QuizQuestion in context, found {type(question_to_evaluate).__name__}."
 
-        # Get the quiz teacher agent and evaluate
-        from ai_tutor.agents.quiz_teacher_agent import create_quiz_teacher_agent, evaluate_answer
-        quiz_teacher = create_quiz_teacher_agent()
-        feedback_item = await evaluate_answer(
-            quiz_teacher,
+        print(f"[Tool] Evaluating answer for question: {question_to_evaluate.question[:50]}...")
+        feedback_item = await evaluate_single_answer(
             question=question_to_evaluate,
             user_answer_index=user_answer_index,
-            context=ctx.context # Pass context for tracing etc.
+            context=ctx.context # Pass context
         )
 
         if feedback_item:
+            print(f"[Tool] Evaluation complete. Feedback: Correct={feedback_item.is_correct}, Explanation: {feedback_item.explanation[:50]}...")
+            # Clear pending interaction *after* successful evaluation & getting feedback
+            ctx.context.user_model_state.pending_interaction_type = None
+            ctx.context.user_model_state.pending_interaction_details = None
+            # Clear the question itself from context now that it's evaluated
+            ctx.context.current_quiz_question = None 
             return feedback_item
         else:
-            error_msg = f"Error: Evaluation failed for question on topic '{question_to_evaluate.related_section}'."
+            # The evaluate_single_answer helper should ideally return feedback or raise
+            error_msg = f"Error: Evaluation helper function returned None for question on topic '{getattr(question_to_evaluate, 'related_section', 'N/A')}'."
             print(f"[Tool] {error_msg}")
-            return error_msg
+            return error_msg # Return error string
+            
     except Exception as e:
         error_msg = f"Error in call_quiz_teacher_evaluate: {str(e)}"
         print(f"[Tool] {error_msg}")
-        return error_msg
+        # Optionally clear pending state even on error? Depends on desired flow.
+        # ctx.context.user_model_state.pending_interaction_type = None 
+        # ctx.context.user_model_state.pending_interaction_details = None
+        return error_msg # Return error string
 
 @function_tool
 async def call_planner_get_next_topic(ctx: RunContextWrapper[TutorContext], current_topic: Optional[str] = None) -> Optional[str]:
@@ -232,6 +158,7 @@ async def call_planner_get_next_topic(ctx: RunContextWrapper[TutorContext], curr
     if not current_topic: # If no current topic provided, return the first one
         next_topic = all_concepts[0]
         print(f"[Tool] Starting with first topic: '{next_topic}'")
+        ctx.context.current_teaching_topic = next_topic  # Update context
         return next_topic
 
     try:
@@ -239,14 +166,17 @@ async def call_planner_get_next_topic(ctx: RunContextWrapper[TutorContext], curr
         if current_idx + 1 < len(all_concepts):
             next_topic = all_concepts[current_idx + 1]
             print(f"[Tool] Moving to next topic: '{next_topic}'")
+            ctx.context.current_teaching_topic = next_topic  # Update context
             return next_topic
         else:
             print("[Tool] Reached end of lesson plan.")
+            ctx.context.current_teaching_topic = None # Clear topic if at end
             return None
     except ValueError:
         # current_topic not found in the list, default to the first topic
         print(f"[Tool] Current topic '{current_topic}' not found in plan, starting from beginning.")
         next_topic = all_concepts[0]
+        ctx.context.current_teaching_topic = next_topic  # Update context
         return next_topic
 
 @function_tool
@@ -353,3 +283,13 @@ async def get_user_model_status(ctx: RunContextWrapper[TutorContext], topic: Opt
             for topic, concept in state.concepts.items()
         }
     } 
+
+# Ensure all tools intended for the orchestrator are exported or available
+__all__ = [
+    'call_quiz_creator_mini',
+    'call_quiz_teacher_evaluate',
+    'call_planner_get_next_topic',
+    'update_user_model',
+    'get_user_model_status',
+    'update_explanation_progress',
+] 
