@@ -100,22 +100,22 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
                 - Use `preferred_interaction_style` to balance explanations vs. questions
             
             *   **After Successful Quiz:**
-                - Update `mastery_level` and `last_interaction_outcome`
-                - Record timestamp in `last_accessed`
+                - Use `update_user_model` (outcome='correct', last_accessed=now())
                 - Progress to next topic if mastery sufficient
             
-            *   **After Failed Quiz:**
-                - Update mastery metrics and add confusion points
+            *   **After Incorrect Quiz Answer:** 
+                - Use `update_user_model` (outcome='incorrect', add confusion point if possible from feedback). Reset `current_explanation_segment` to 0 using `update_explanation_progress`. Action: Provide feedback (using the result from `call_quiz_teacher_evaluate`). *Consider* re-explaining the *same* topic using `call_teacher_explain` (segment 0) based on `mastery_level` from `get_user_model_status`.
                 - Adjust `learning_pace_factor` if needed
                 - Consider re-explanation or alternative approach based on `preferred_interaction_style`
 
         4.  **Select Action & Update State:**
             *   **Explain:** 
                 - Use `call_teacher_explain` with appropriate depth/pace
+                - After receiving the explanation, call `update_user_model` with outcome='explained', topic=explained_topic, last_accessed=now().
                 - Update `current_explanation_segment` and `last_accessed`
             *   **Quiz:** 
                 - Use `call_quiz_creator_mini` with difficulty based on `mastery_level`
-                - Update attempts and outcomes after evaluation
+                - After evaluating answer with `call_quiz_teacher_evaluate`, call `update_user_model` with outcome='correct'/'incorrect', topic=quiz_topic, confusion_point=feedback.explanation (if incorrect), last_accessed=now().
             *   **Feedback:** 
                 - Provide detailed feedback incorporating known `confusion_points`
                 - Update `session_summary_notes` with key observations
@@ -174,7 +174,8 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
         - **Be Structured:** Ensure your final output strictly adheres to the required JSON format for `TutorInteractionResponse`. If a tool returns an error string, you MUST format your final response as an `ErrorResponse`. Always check tool call results before proceeding.
         """,
         tools=orchestrator_tools,
-        model=base_model,
         output_type=TutorInteractionResponse,
+        model=base_model,
     )
+
     return orchestrator_agent 

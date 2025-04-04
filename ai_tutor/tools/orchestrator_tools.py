@@ -102,15 +102,6 @@ async def call_teacher_explain(
         
         if content_output and content_output.text and content_output.topic == topic:
             print(f"[Tool] Got explanation segment {segment_index} for '{topic}' (is_last={content_output.is_last_segment})")
-            
-            # Update user model with explanation interaction
-            await update_user_model(
-                ctx=ctx,
-                topic=topic,
-                outcome='explained',
-                last_accessed=datetime.now().isoformat()
-            )
-            
             return content_output
         else:
             return f"Error: Teacher agent failed to generate valid explanation for topic '{topic}', segment {segment_index}."
@@ -207,24 +198,11 @@ async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_
         )
 
         if feedback_item:
-            # Update user model with quiz outcome
-            topic = question_to_evaluate.related_section
-            outcome = 'correct' if feedback_item.is_correct else 'incorrect'
-            confusion_point = None if feedback_item.is_correct else feedback_item.explanation
-            
-            await update_user_model(
-                ctx=ctx,
-                topic=topic,
-                outcome=outcome,
-                confusion_point=confusion_point,
-                last_accessed=datetime.now().isoformat()
-            )
-            
             return feedback_item
         else:
             error_msg = f"Error: Evaluation failed for question on topic '{question_to_evaluate.related_section}'."
-        print(f"[Tool] {error_msg}")
-        return error_msg
+            print(f"[Tool] {error_msg}")
+            return error_msg
     except Exception as e:
         error_msg = f"Error in call_quiz_teacher_evaluate: {str(e)}"
         print(f"[Tool] {error_msg}")
