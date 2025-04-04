@@ -17,9 +17,6 @@ from ai_tutor.agents.quiz_teacher_agent import create_quiz_teacher_agent, evalua
 # --- Import necessary models ---
 from ai_tutor.agents.models import LessonPlan, QuizQuestion, QuizFeedbackItem, LessonContent, Quiz, LessonSection, LearningObjective
 
-# Import the specific generate_lesson_content function
-from ai_tutor.agents.teacher_agent import generate_lesson_content # Import specific function if needed
-
 # Import API response models for potentially formatting tool output
 from ai_tutor.api_models import (
     ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse
@@ -31,65 +28,59 @@ from ai_tutor.api_models import (
 async def call_teacher_explain(
     ctx: RunContextWrapper[TutorContext],
     topic: str,
-    segment_index: int # Changed: Removed default value for segment_index
+    segment_index: int
 ) -> Union[LessonContent, str]: # Return LessonContent or error string
-    """Generates an explanation for a specific topic using the Teacher Agent."""
-    print(f"Orchestrator tool: Requesting explanation for topic '{topic}'")
-
+    """Generates an explanation for a specific topic and segment using the Teacher Agent."""
+    print(f"Orchestrator tool: Requesting explanation for topic '{topic}', segment {segment_index}")
+    
     # Input validation
     if not topic or not isinstance(topic, str):
         return "Error: Invalid topic provided."
-    if not ctx.context.vector_store_id:
-         return "Error: Vector store ID not found in context. Cannot research topic."
+    if not isinstance(segment_index, int) or segment_index < 0:
+        return "Error: Invalid segment index provided."
+    
     if not ctx.context.lesson_plan:
          return "Error: Lesson plan not found in context. Cannot generate explanation without plan context."
 
     try:
-        # Get the teacher agent - using the working implementation
-        teacher_agent = create_teacher_agent_without_handoffs(vector_store_id=ctx.context.vector_store_id)
-
-        # Setup run config for tracing
+        # Get the teacher agent instance using the corrected import
+        teacher_agent = create_teacher_agent_without_handoffs(ctx.context.vector_store_id)
         run_config = RunConfig(workflow_name="Orchestrator_TeacherCall", group_id=ctx.context.session_id)
 
         # We now construct the prompt *here* for the teacher agent
-        lesson_plan_context_str = f"Lesson Plan Context:\nTitle: {ctx.context.lesson_plan.title}\n..." # Simplified for brevity
+        lesson_plan_title = ctx.context.lesson_plan.title
+        lesson_plan_context_str = f"Lesson Plan Context:\nTitle: {lesson_plan_title}\n..." # Simplified for brevity
         analysis_context_str = f"Analysis Context:\nKey Concepts: {ctx.context.analysis_result.key_concepts[:5]}...\n..." if ctx.context.analysis_result else ""
 
         teacher_prompt = f"""
         {lesson_plan_context_str}
         {analysis_context_str}
-
         TASK:
         Explain segment {segment_index} of the topic: '{topic}'.
         Use the context above and `file_search` if needed for details.
         Keep the explanation focused and concise (1-3 paragraphs ideally).
         If segment_index is 0, provide an introduction.
-        Format your output as a valid LessonContent JSON object with fields 'title', 'topic', and 'text'.
-        'title' should be '{ctx.context.lesson_plan.title}'.
+        Format your output as a valid LessonContent JSON object including fields 'title', 'topic', 'segment_index', 'is_last_segment', and 'text'.
+        'title' should be '{lesson_plan_title}'.
         'topic' should be '{topic}'.
+        'segment_index' must be {segment_index}.
+        Estimate 'is_last_segment' based on whether this explanation likely concludes the topic.
         'text' should contain ONLY the explanation for segment {segment_index}.
         """
-
-        lesson_content_result : LessonContent = await generate_lesson_content(
-            teacher_agent=teacher_agent,
-            lesson_plan=ctx.context.lesson_plan, # Pass the *original* full plan for context
-            topic_to_explain=topic, # Pass the specific topic
-            context=ctx.context
-        )
         
         result = await Runner.run(teacher_agent, teacher_prompt, context=ctx.context, run_config=run_config)
         content_output = result.final_output_as(LessonContent)
-
+        
         if content_output and content_output.text and content_output.topic == topic:
              print(f"Orchestrator tool: Got explanation segment {segment_index} for '{topic}'")
+             # Add validation for segment index if needed
+             # content_output.segment_index = segment_index # Force it if agent fails
              return content_output # Return the full LessonContent object for this segment
         else:
              return f"Error: Teacher agent failed to generate explanation for {topic}."
-
     except Exception as e:
-        error_msg = f"Error in call_teacher_explain: {str(e)}"
-        print(f"Orchestrator tool: {error_msg}")
-        return error_msg
+        print(f"Error in call_teacher_explain: {str(e)}")
+        return f"Error: Failed to generate explanation - {str(e)}"
 
 
 @function_tool

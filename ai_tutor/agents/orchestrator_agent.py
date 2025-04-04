@@ -95,7 +95,7 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
                 "references": ["optional", "reference", "list"]
             }
 
-            - For mini-quiz questions:
+            - For mini-quiz questions (after explanation is complete):
             {
                 "response_type": "question",
                 "question": QuizQuestion_object,
@@ -103,7 +103,7 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
                 "context": "Optional context"
             }
 
-            - For feedback on mini-quiz answers:
+            - For feedback (after evaluating a mini-quiz answer):
             {
                 "response_type": "feedback",
                 "feedback": QuizFeedbackItem_object,
@@ -130,7 +130,7 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
         PRINCIPLES:
         - **Be Adaptive:** Adjust the plan based on user performance recorded in the `UserModelState`. If mastery is high, move faster. If struggling, provide more support or different explanations.
         - **Be Interactive:** Prefer shorter cycles of explanation followed by interaction (quiz, summary) over long lectures.
-        - **Be Structured:** Ensure your final output strictly adheres to the required JSON format for `TutorInteractionResponse`. If a tool returns an error string or an ErrorResponse object, wrap it in an `ErrorResponse` type for your final output. Always check the results of tool calls.
+        - **Be Structured:** Ensure your final output strictly adheres to the required JSON format for `TutorInteractionResponse`. If a tool returns an error string, you MUST format your final response as an `ErrorResponse`. Always check tool call results before proceeding.
         """,
         tools=orchestrator_tools,
         model=base_model,

@@ -71,7 +71,7 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
         STEP 4: OUTPUT
         - Output the lesson plan as a complete structured LessonPlan object.
 
-        CRITICAL:
+        CRITICAL REMINDERS:
         - **You MUST call `read_knowledge_base` first.**
         - DO NOT call any handoff tools. Your only output should be the LessonPlan object.
         """,

@@ -109,6 +109,8 @@ class PrecisionControlEncoder(json.JSONEncoder):
 class LessonContent(BaseModel):
     """The simplified lesson content created by the teacher agent."""
     title: str = Field(description="The title of the lesson")
+    segment_index: int = Field(description="The 0-based index of this explanation segment within the topic.")
+    is_last_segment: bool = Field(description="Indicates if this is the last segment for the current topic.")
     topic: Optional[str] = Field(None, description="Specific topic being explained in this chunk")
     text: str = Field(description="The full text content of the lesson")
 
