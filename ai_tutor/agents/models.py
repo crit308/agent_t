@@ -149,6 +149,8 @@ class LessonSection(BaseModel):
     objectives: List[LearningObjective] = Field(description="The learning objectives for this section")
     estimated_duration_minutes: int = Field(description="Estimated time in minutes to complete this section")
     concepts_to_cover: List[str] = Field(description="Key concepts that should be covered in this section")
+    prerequisites: List[str] = Field(default_factory=list, description="List of concept or section titles that should be understood before starting this section.")
+    is_optional: bool = Field(description="Indicates if this section is optional or supplementary content.")
 
 
 class LessonPlan(BaseModel):

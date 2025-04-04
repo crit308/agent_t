@@ -61,12 +61,14 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
         2.  **Analyze Summary:** Understand the key concepts, terms, and structure from the KB content.
         3.  **Use `file_search` for Details:** If the KB summary lacks specific details needed for planning (e.g., examples, specific steps), use `file_search` to find that information in the source documents.
         4.  **Create Lesson Plan:** Synthesize information from the KB analysis and any `file_search` results to create a comprehensive `LessonPlan` object.
-        - Your lesson plan must include:
+        - For each `LessonSection`, you MUST include:
           * Clear learning objectives for each section
           * Logical sequence of sections
           * Appropriate time durations for each section
           * Consideration of prerequisites
           * Target audience
+          * `prerequisites`: A list of concept/section titles that must be understood *before* this section. Leave empty if none.
+          * `is_optional`: A boolean indicating if the section covers core material (False) or is supplementary/advanced (True). Infer this based on the content's nature (e.g., introductory sections are rarely optional).
 
         STEP 4: OUTPUT
         - Output the lesson plan as a complete structured LessonPlan object.

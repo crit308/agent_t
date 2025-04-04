@@ -1,7 +1,7 @@
 from __future__ import annotations
 from agents import function_tool, Runner, RunConfig
 from agents.run_context import RunContextWrapper
-from typing import Any, Optional, Literal, Union, cast, Dict
+from typing import Any, Optional, Literal, Union, cast, Dict, List
 import os
 from datetime import datetime
 
@@ -209,9 +209,9 @@ async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_
         return error_msg
 
 @function_tool
-async def call_planner_get_next_topic(ctx: RunContextWrapper[TutorContext]) -> Optional[str]:
-    """Determines the next topic to cover based on the lesson plan and user model."""
-    print(f"[Tool] Getting next topic (current is '{ctx.context.user_model_state.current_topic}')")
+async def call_planner_get_next_topic(ctx: RunContextWrapper[TutorContext], current_topic: Optional[str] = None) -> Optional[str]:
+    """Determines the next linearly planned topic based on the current topic."""
+    print(f"[Tool] Getting next topic linearly (current is '{current_topic}')")
 
     # Get the lesson plan from context
     lesson_plan = ctx.context.lesson_plan
@@ -220,7 +220,7 @@ async def call_planner_get_next_topic(ctx: RunContextWrapper[TutorContext]) -> O
         return None
 
     # Extract all concepts from the lesson plan
-    all_concepts = [
+    all_concepts: List[str] = [
         section.title for section in lesson_plan.sections
         if section.title  # Ensure the title exists
     ]
@@ -229,30 +229,24 @@ async def call_planner_get_next_topic(ctx: RunContextWrapper[TutorContext]) -> O
         print("[Tool] No concepts found in lesson plan.")
         return None
 
-    # Get current topic (passed parameter or from state)
-    effective_current = ctx.context.user_model_state.current_topic or all_concepts[0]
-
-    if not effective_current:
+    if not current_topic: # If no current topic provided, return the first one
         next_topic = all_concepts[0]
         print(f"[Tool] Starting with first topic: '{next_topic}'")
-        ctx.context.user_model_state.current_topic = next_topic
         return next_topic
 
     try:
-        current_idx = all_concepts.index(effective_current)
+        current_idx = all_concepts.index(current_topic)
         if current_idx + 1 < len(all_concepts):
             next_topic = all_concepts[current_idx + 1]
             print(f"[Tool] Moving to next topic: '{next_topic}'")
-            ctx.context.user_model_state.current_topic = next_topic
             return next_topic
         else:
             print("[Tool] Reached end of lesson plan.")
-            ctx.context.user_model_state.current_topic = None
             return None
     except ValueError:
-        print(f"[Tool] Topic '{effective_current}' not found in plan, starting from beginning.")
+        # current_topic not found in the list, default to the first topic
+        print(f"[Tool] Current topic '{current_topic}' not found in plan, starting from beginning.")
         next_topic = all_concepts[0]
-        ctx.context.user_model_state.current_topic = next_topic
         return next_topic
 
 @function_tool
@@ -265,6 +259,10 @@ async def update_user_model(
 ) -> str:
     """Updates the user model state with interaction outcomes and temporal data."""
     print(f"[Tool] Updating user model for topic '{topic}' with outcome '{outcome}'")
+
+    # Ensure context and user model state exist
+    if not ctx.context or not ctx.context.user_model_state:
+        return "Error: TutorContext or UserModelState not found."
 
     if not topic or not isinstance(topic, str):
         return "Error: Invalid topic provided for user model update."
