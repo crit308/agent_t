@@ -45,7 +45,7 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
 
     # Instantiate the base model provider and get the base model
     provider: ModelProvider = OpenAIProvider()
-    base_model = provider.get_model("gpt-4o-2024-08-06")
+    base_model = provider.get_model("o3-mini")
 
     # Create the planner agent with access to the file search tool
     planner_agent = Agent[TutorContext](
