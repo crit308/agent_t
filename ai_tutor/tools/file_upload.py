@@ -4,6 +4,7 @@ from typing import List, Optional, TYPE_CHECKING
 import openai
 from pydantic import BaseModel
 from supabase import Client
+from uuid import UUID
 
 from agents import function_tool
 
@@ -31,10 +32,10 @@ class FileUploadManager:
         self.supabase = supabase
         self.bucket_name = "document_uploads"
     
-    async def upload_and_process_file(self, file_path: str, user_id: str) -> UploadedFile:
+    async def upload_and_process_file(self, file_path: str, user_id: UUID, folder_id: UUID) -> UploadedFile:
         """Upload a file to Supabase Storage, then to OpenAI, and add to Vector Store."""
         filename = os.path.basename(file_path)
-        supabase_path = f"{user_id}/{filename}"
+        supabase_path = f"{user_id}/{folder_id}/{filename}"
 
         # 1. Upload to Supabase Storage
         try:

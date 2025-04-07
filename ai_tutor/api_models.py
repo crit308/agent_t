@@ -1,5 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Union, Literal, Dict, Any
+from uuid import UUID # For folder ID typing
 
 from ai_tutor.agents.models import (
     LessonPlan, LessonContent, Quiz, QuizUserAnswers, QuizFeedback, SessionAnalysis, QuizQuestion, QuizFeedbackItem
@@ -10,6 +11,16 @@ from ai_tutor.context import UserModelState # Import UserModelState
 # --- Request Models ---
 # (QuizUserAnswers is already defined and can be reused)
 
+# --- Folder Models ---
+class FolderCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100, description="Name of the new folder.")
+
+class FolderResponse(BaseModel):
+    id: UUID
+    name: str
+    created_at: str # ISO 8601 timestamp
+
+# --- Interaction Models ---
 class InteractionRequestData(BaseModel):
     """Model for data sent TO the /interact endpoint."""
     type: Literal['start', 'next', 'answer', 'question', 'summary', 'previous']
@@ -17,8 +28,12 @@ class InteractionRequestData(BaseModel):
 
 # --- Response Models ---
 
+# --- Folder List Response ---
+class FolderListResponse(BaseModel):
+    folders: List[FolderResponse]
+
 class SessionResponse(BaseModel):
-    session_id: str
+    session_id: UUID # Use UUID type
 
 class DocumentUploadResponse(BaseModel):
     vector_store_id: Optional[str]

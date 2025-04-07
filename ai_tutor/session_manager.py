@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from supabase import Client, PostgrestAPIResponse
 from fastapi import HTTPException # For raising errors
+from uuid import UUID # Import UUID
 
 from ai_tutor.context import TutorContext # Import the main context model
 
@@ -28,15 +29,16 @@ class SessionManager:
         """Initialize the session manager."""
         pass
 
-    async def create_session(self, supabase: Client, user_id: str) -> str:
+    async def create_session(self, supabase: Client, user_id: UUID, folder_id: UUID) -> UUID:
         """Creates a new session in Supabase DB and returns its ID."""
-        session_id = str(uuid.uuid4())
-        context = TutorContext(session_id=session_id, user_id=user_id) # Include user_id
+        session_id = uuid.uuid4()
+        context = TutorContext(session_id=session_id, user_id=user_id, folder_id=folder_id) # Include user_id and folder_id
         context_dict = context.model_dump(mode='json')
 
         try:
             response: PostgrestAPIResponse = supabase.table("sessions").insert({
-                "id": session_id,
+                "id": str(session_id),
+                "folder_id": str(folder_id),
                 "user_id": user_id,
                 "context_data": context_dict,
                 # created_at and updated_at likely handled by DB defaults
@@ -52,10 +54,10 @@ class SessionManager:
             print(f"Exception creating session {session_id}: {e}")
             raise HTTPException(status_code=500, detail=f"Database error during session creation: {e}")
 
-    async def get_session_context(self, supabase: Client, session_id: str, user_id: str) -> Optional[TutorContext]:
+    async def get_session_context(self, supabase: Client, session_id: UUID, user_id: UUID) -> Optional[TutorContext]:
         """Retrieves the TutorContext for a given session ID and user ID from Supabase."""
         try:
-            response: PostgrestAPIResponse = supabase.table("sessions").select("context_data").eq("id", session_id).eq("user_id", user_id).maybe_single().execute()
+            response: PostgrestAPIResponse = supabase.table("sessions").select("context_data").eq("id", str(session_id)).eq("user_id", user_id).maybe_single().execute()
 
             if response.data and response.data.get("context_data"):
                 # Parse the JSONB data back into TutorContext
@@ -69,11 +71,11 @@ class SessionManager:
             print(f"Error fetching session {session_id} context from Supabase: {e}")
             raise HTTPException(status_code=500, detail=f"Database error fetching session context: {e}")
 
-    async def update_session_context(self, supabase: Client, session_id: str, user_id: str, context: TutorContext) -> bool:
+    async def update_session_context(self, supabase: Client, session_id: UUID, user_id: UUID, context: TutorContext) -> bool:
         """Updates the TutorContext for a given session ID in Supabase."""
         context_dict = context.model_dump(mode='json')
         try:
-            response: PostgrestAPIResponse = supabase.table("sessions").update({"context_data": context_dict}).eq("id", session_id).eq("user_id", user_id).execute()
+            response: PostgrestAPIResponse = supabase.table("sessions").update({"context_data": context_dict}).eq("id", str(session_id)).eq("user_id", user_id).execute()
             # For simplicity, just checking for errors.
             # We removed the check for response.error as it caused an AttributeError
             # Now relying on the execute() call to raise an exception on failure.

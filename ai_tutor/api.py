@@ -9,7 +9,7 @@ from supabase import create_client, Client
 load_dotenv()
 
 from ai_tutor.context import TutorContext, UserModelState, UserConceptMastery  # Import context models
-from ai_tutor.routers import sessions, tutor
+from ai_tutor.routers import sessions, tutor, folders # Import folders router
 from ai_tutor.dependencies import get_supabase_client # Import dependency from new location
 from agents import set_default_openai_key, set_default_openai_api, Agent # Import Agent
 from ai_tutor.auth import verify_token # Assume auth.py exists for JWT verification
@@ -63,6 +63,7 @@ app.add_middleware(
 # Add dependency for authentication to all routers needing it
 app.include_router(sessions.router, prefix="/api/v1", dependencies=[Depends(verify_token)])
 app.include_router(tutor.router, prefix="/api/v1", dependencies=[Depends(verify_token)])
+app.include_router(folders.router, prefix="/api/v1", dependencies=[Depends(verify_token)]) # Include folder routes
 
 @app.get("/", tags=["Root"])
 async def read_root():

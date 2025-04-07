@@ -1,5 +1,7 @@
 from __future__ import annotations
 from typing import Optional, List, Dict, Any
+from uuid import UUID
+from supabase import Client
 from agents import Agent, FileSearchTool, ModelProvider, function_tool
 from agents.models.openai_provider import OpenAIProvider
 from agents.run_context import RunContextWrapper
@@ -9,21 +11,32 @@ from ai_tutor.agents.utils import RoundingModelWrapper
 from ai_tutor.context import TutorContext
 import os
 
+# --- Get Supabase client dependency (needed for the tool) ---
+from ai_tutor.dependencies import get_supabase_client
+
 # --- Define read_knowledge_base tool locally ---
 @function_tool
-def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
-    """Reads the Knowledge Base file path stored in context and returns its content."""
-    kb_path = ctx.context.knowledge_base_path
-    print(f"Tool: read_knowledge_base called. Path from context: {kb_path}")
-    if not kb_path or not os.path.exists(kb_path):
-        return "Error: Knowledge Base file path not found in context or file does not exist."
+async def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
+    """Reads the Knowledge Base content stored in the Supabase 'folders' table associated with the current session's folder_id."""
+    folder_id = ctx.context.folder_id
+    user_id = ctx.context.user_id
+    print(f"Tool: read_knowledge_base called. Folder ID from context: {folder_id}")
+
+    if not folder_id:
+        return "Error: Folder ID not found in context."
+
     try:
-        with open(kb_path, "r", encoding="utf-8") as f:
-            content = f.read()
-            print(f"Tool: read_knowledge_base successful. Content length: {len(content)}")
-            return content
+        supabase = await get_supabase_client()
+        response = supabase.table("folders").select("knowledge_base").eq("id", str(folder_id)).eq("user_id", user_id).maybe_single().execute()
+
+        if response.data and response.data.get("knowledge_base"):
+            kb_content = response.data["knowledge_base"]
+            print(f"Tool: read_knowledge_base successful from Supabase. Content length: {len(kb_content)}")
+            return kb_content
+        else:
+            return f"Error: Knowledge Base not found for folder {folder_id} or query failed: {response.error}"
     except Exception as e:
-        error_msg = f"Error reading Knowledge Base file at {kb_path}: {e}"
+        error_msg = f"Error reading Knowledge Base from Supabase for folder {folder_id}: {e}"
         print(f"Tool: {error_msg}")
         return error_msg
 # -----------------------------------------------
@@ -44,7 +57,7 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
     planner_tools = [file_search_tool, read_knowledge_base]
 
     # Instantiate the base model provider and get the base model
-    provider: ModelProvider = OpenAIProvider()
+    provider: OpenAIProvider = OpenAIProvider()
     base_model = provider.get_model("o3-mini")
 
     # Create the planner agent with access to the file search tool
@@ -53,8 +66,8 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
         instructions="""You are an expert curriculum designer. Your task is to create a well-structured lesson plan based on analyzed documents.
 
         AVAILABLE INFORMATION:
-        - You have a `read_knowledge_base` tool to get the document analysis summary.
-        - You have a `file_search` tool to look up specific details within the source documents.
+        - You have a `read_knowledge_base` tool to get the document analysis summary stored in the database.
+        - You have a `file_search` tool to look up specific details within the source documents (vector store).
 
         YOUR WORKFLOW **MUST** BE:
         1.  **Read Knowledge Base:** Call the `read_knowledge_base` tool first to get the document analysis summary.

@@ -9,6 +9,7 @@ import traceback  # Add traceback import
 import logging  # Add logging import
 from supabase import Client
 from gotrue.types import User # To type hint the user object
+from uuid import UUID
 
 from ai_tutor.session_manager import SessionManager
 from ai_tutor.tools.file_upload import FileUploadManager
@@ -43,7 +44,7 @@ os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
 
 # --- Dependency to get TutorContext from DB ---
 async def get_tutor_context(
-    session_id: str,
+    session_id: UUID, # Expect UUID
     request: Request, # Access user from request state
     supabase: Client = Depends(get_supabase_client)
 ) -> TutorContext:
@@ -54,7 +55,7 @@ async def get_tutor_context(
     return context
 
 # --- Helper to get logger ---
-def get_session_logger(session_id: str) -> TutorOutputLogger:
+def get_session_logger(session_id: UUID) -> TutorOutputLogger:
     # Customize logger per session if needed, e.g., different file path
     log_file = os.path.join("logs", f"session_{session_id}.log") # Example path
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
@@ -78,7 +79,7 @@ class MiniQuizLogData(BaseModel):
     tags=["Tutoring Workflow"]
 )
 async def upload_session_documents(
-    session_id: str,
+    session_id: UUID, # Expect UUID
     request: Request, # Get request object directly
     files: List[UploadFile] = File(...),
     supabase: Client = Depends(get_supabase_client),
@@ -91,6 +92,9 @@ async def upload_session_documents(
     """
     user: User = request.state.user # Get user from request state populated by verify_token dependency
     logger = get_session_logger(session_id)
+    folder_id = tutor_context.folder_id
+    if not folder_id:
+        raise HTTPException(status_code=400, detail="Session context is missing folder information.")
     file_upload_manager = FileUploadManager(supabase) # Pass Supabase client
     uploaded_filenames = []
     temp_file_paths = []
@@ -118,8 +122,8 @@ async def upload_session_documents(
     message = ""
     try:
         for i, temp_path in enumerate(temp_file_paths):
-            # Pass user_id to file upload manager
-            uploaded_file = await file_upload_manager.upload_and_process_file(temp_path, user.id)
+            # Pass user_id and folder_id to file upload manager
+            uploaded_file = await file_upload_manager.upload_and_process_file(temp_path, user.id, folder_id)
             if not vector_store_id:
                 vector_store_id = uploaded_file.vector_store_id
             message += f"Uploaded {uploaded_filenames[i]} (Supabase: {uploaded_file.supabase_path}, OpenAI ID: {uploaded_file.file_id}). "
@@ -149,7 +153,11 @@ async def upload_session_documents(
         # context already fetched via Depends
         user: User = request.state.user
 
-        analysis_result: Optional[AnalysisResult] = await analyze_documents(vector_store_id, context=tutor_context)
+        analysis_result: Optional[AnalysisResult] = await analyze_documents(
+            vector_store_id,
+            context=tutor_context,
+            supabase=supabase # Pass supabase client to save KB
+        )
 
         if analysis_result:
             analysis_status = "completed"
@@ -157,24 +165,6 @@ async def upload_session_documents(
             tutor_context.analysis_result = analysis_result # Store the Pydantic object
             await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
             message += "Analysis completed."
-
-            # --- Reintroduce Knowledge Base file creation ---
-            # The planner agent will use a tool to read this.
-            kb_filename = f"knowledge_base_{session_id}.txt" # Session-specific KB file
-            kb_path = os.path.join(TEMP_UPLOAD_DIR, kb_filename)
-            try:
-                with open(kb_path, "w", encoding="utf-8") as f:
-                    f.write("KNOWLEDGE BASE\n=============\n\n")
-                    f.write("DOCUMENT ANALYSIS:\n=================\n\n")
-                    f.write(analysis_result.analysis_text) # Write the text part
-                tutor_context.knowledge_base_path = kb_path
-                await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
-                message += f" Knowledge base file created at {kb_path}."
-                print(f"Knowledge Base file created for session {session_id} at {kb_path}")
-            except Exception as kb_error:
-                 logger.log_error("KnowledgeBaseCreation", kb_error)
-                 message += f" Warning: Could not create Knowledge Base file: {kb_error}"
-            # --- End KB File Creation ---
 
         else:
             message += "Analysis finished but produced no result."
@@ -200,7 +190,7 @@ async def upload_session_documents(
     tags=["Tutoring Workflow"]
 )
 async def get_session_analysis_results(
-    session_id: str,
+    session_id: UUID, # Expect UUID
     tutor_context: TutorContext = Depends(get_tutor_context) # Use parsed context
 ):
     """Retrieves the results of the document analysis for the session."""
@@ -222,7 +212,7 @@ async def get_session_analysis_results(
     tags=["Tutoring Workflow"]
 )
 async def generate_session_lesson_plan(
-    session_id: str,
+    session_id: UUID, # Expect UUID
     request: Request, # Add request parameter
     tutor_context: TutorContext = Depends(get_tutor_context) # Use parsed context
 ):
@@ -232,17 +222,17 @@ async def generate_session_lesson_plan(
     """
     logger = get_session_logger(session_id)
     # Get user from request state
-    user: User = tutor_context.user_id # Assuming context has user_id populated
+    user: User = request.state.user # Get user from request state populated by verify_token dependency
 
     # Get vector store ID and analysis result from context
     vector_store_id = tutor_context.vector_store_id
     analysis_result = tutor_context.analysis_result
-    kb_path = tutor_context.knowledge_base_path # Get KB path from context
+    folder_id = tutor_context.folder_id # Get folder_id from context
 
     # Initial checks are good to keep, ensure data looks okay before agent creation
     if not vector_store_id:
-        raise HTTPException(status_code=400, detail="Documents must be uploaded and analysis completed first.")
-    if not kb_path or not os.path.exists(kb_path):
+        raise HTTPException(status_code=400, detail="Documents must be uploaded first.")
+    if not folder_id:
         raise HTTPException(status_code=400, detail="Knowledge base file path not found or file missing.")
 
     # --- Wrap the main logic in a try...except block ---
@@ -279,9 +269,9 @@ async def generate_session_lesson_plan(
             # Update context object and save it
             tutor_context.lesson_plan = lesson_plan_to_store
             # Need supabase client - get it via Depends implicitly or pass it
-            # Easiest is often to add Depends(get_supabase_client) to the signature
+            # Easiest is often to add Depends(get_supabase_client) to the signature or get it again
             supabase: Client = await get_supabase_client() # Or add to Depends
-            success = await session_manager.update_session_context(supabase, session_id, user, tutor_context)
+            success = await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
             if not success:
                  logger.log_error("SessionUpdate", f"Failed to update session {session_id} with lesson plan.")
             print(f"[Debug /plan] LessonPlan stored in session.") # Add log
@@ -316,7 +306,7 @@ async def generate_session_lesson_plan(
     summary="Retrieve Generated Lesson Content",
     tags=["Tutoring Workflow"]
 )
-async def get_session_lesson_content(session_id: str, tutor_context: TutorContext = Depends(get_tutor_context)):
+async def get_session_lesson_content(session_id: UUID, tutor_context: TutorContext = Depends(get_tutor_context)):
     """Retrieves the generated lesson content for the session."""
     logger = get_session_logger(session_id)
     # Fetch lesson content directly from the parsed context
@@ -343,7 +333,7 @@ async def get_session_lesson_content(session_id: str, tutor_context: TutorContex
     summary="Retrieve Generated Quiz",
     tags=["Tutoring Workflow"]
 )
-async def get_session_quiz(session_id: str, tutor_context: TutorContext = Depends(get_tutor_context)):
+async def get_session_quiz(session_id: UUID, tutor_context: TutorContext = Depends(get_tutor_context)):
     """Retrieves the generated quiz for the session."""
     logger = get_session_logger(session_id)
     quiz_data = tutor_context.quiz # Get 'quiz' from context object if stored there
@@ -369,12 +359,12 @@ async def get_session_quiz(session_id: str, tutor_context: TutorContext = Depend
     tags=["Logging"]
 )
 async def log_mini_quiz_event(
-    session_id: str,
+    session_id: UUID, # Expect UUID
     attempt_data: MiniQuizLogData = Body(...), # Removed request: Request, not needed if just logging
     tutor_context: TutorContext = Depends(get_tutor_context) # Use context to ensure session exists for user
 ):
     """Logs a user's attempt on an in-lesson mini-quiz question."""
-    logger = get_session_logger(tutor_context.session_id)
+    logger = get_session_logger(session_id)
 
     # You can expand this: store in session state, DB, etc.
     # For now, just log it using the TutorOutputLogger
@@ -410,12 +400,12 @@ class UserSummaryLogData(BaseModel):
     tags=["Logging"]
 )
 async def log_user_summary_event(
-    session_id: str, # Removed request: Request
+    session_id: UUID, # Expect UUID
     summary_data: UserSummaryLogData = Body(...),
     tutor_context: TutorContext = Depends(get_tutor_context) # Use context to ensure session exists
 ):
     """Logs a user's summary attempt during the lesson."""
-    logger = get_session_logger(tutor_context.session_id)
+    logger = get_session_logger(session_id)
     try:
         logger.log_user_summary(
             section_title=summary_data.section,
@@ -436,7 +426,7 @@ async def log_user_summary_event(
     tags=["Tutoring Workflow"]
 )
 async def interact_with_tutor(
-    session_id: str,
+    session_id: UUID, # Expect UUID
     request: Request, # Get request directly
     interaction_input: InteractionRequestData = Body(...),
     supabase: Client = Depends(get_supabase_client), # To save context

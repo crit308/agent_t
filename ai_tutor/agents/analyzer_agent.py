@@ -1,6 +1,8 @@
 import os
 from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field, model_validator
+from uuid import UUID
+from supabase import Client
 
 from agents import Agent, FileSearchTool, Runner, trace, gen_trace_id, set_tracing_export_api_key, RunConfig, ModelProvider
 from agents.models.openai_provider import OpenAIProvider
@@ -145,13 +147,14 @@ def create_analyzer_agent(vector_store_id: str, api_key: str = None):
     return analyzer_agent
 
 
-async def analyze_documents(vector_store_id: str, api_key: str = None, context=None) -> Optional[AnalysisResult]:
+async def analyze_documents(vector_store_id: str, api_key: str = None, context=None, supabase: Client = None) -> Optional[AnalysisResult]:
     """Analyze documents in the provided vector store.
     
     Args:
         vector_store_id: ID of the vector store containing documents to analyze
         api_key: Optional OpenAI API key
         context: Optional context object with session_id for tracing
+        supabase: Optional Supabase client instance for saving KB.
         
     Returns:
         An AnalysisResult object containing the text and extracted metadata, or None on failure.
@@ -204,24 +207,20 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
 
     print("Successfully completed document analysis")
     
-    # Save the analysis to a file named "Knowledge Base"
-    try:
-        with open("Knowledge Base", "w", encoding="utf-8") as f:
-            f.write("KNOWLEDGE BASE\n=============\n\n")
-            f.write("DOCUMENT ANALYSIS:\n=================\n\n")
-            f.write(analysis_text)
-        print("Analysis saved to 'Knowledge Base' file")
-    except Exception as e:
-        print(f"Error saving analysis to 'Knowledge Base': {str(e)}")
-        # Try with fallback encoding
+    # --- Save analysis text (Knowledge Base) to Supabase folders table ---
+    if supabase and context and context.folder_id:
         try:
-            with open("Knowledge Base", "w", encoding="ascii", errors="ignore") as f:
-                f.write("KNOWLEDGE BASE\n=============\n\n")
-                f.write("DOCUMENT ANALYSIS:\n=================\n\n")
-                f.write(analysis_text)
-            print("Analysis saved to 'Knowledge Base' file (with encoding fallback)")
-        except Exception as e2:
-            print(f"Could not save analysis to 'Knowledge Base': {str(e2)}")
+            update_response = supabase.table("folders").update(
+                {"knowledge_base": analysis_text}
+            ).eq("id", str(context.folder_id)).eq("user_id", context.user_id).execute()
+
+            if update_response.data:
+                print(f"Knowledge Base saved to Supabase for folder {context.folder_id}")
+            else:
+                print(f"Error saving Knowledge Base to Supabase folder {context.folder_id}: {update_response.error}")
+        except Exception as e:
+            print(f"Exception saving Knowledge Base to Supabase: {e}")
+    # --- End Supabase KB saving ---
     
     # Extract key concepts for use in other parts of the application
     key_concepts = []
