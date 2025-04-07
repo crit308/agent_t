@@ -1,14 +1,19 @@
 import os
 import base64
-from typing import List
+from typing import List, Optional, TYPE_CHECKING
 import openai
 from pydantic import BaseModel
+from supabase import Client
 
 from agents import function_tool
+
+if TYPE_CHECKING:
+    from ai_tutor.api import get_supabase_client
 
 
 class UploadedFile(BaseModel):
     """Represents an uploaded file that has been processed."""
+    supabase_path: str
     file_id: str
     filename: str
     vector_store_id: str
@@ -17,16 +22,33 @@ class UploadedFile(BaseModel):
 class FileUploadManager:
     """Manages the upload and processing of files for the AI tutor."""
     
-    def __init__(self):
+    def __init__(self, supabase: Client):
         """Initialize the FileUploadManager."""
         # API key is handled globally by the SDK setup
         self.client = openai.Client() # Relies on globally configured key/client
         self.uploaded_files = []
         self.vector_store_id = None
+        self.supabase = supabase
+        self.bucket_name = "document_uploads"
     
-    def upload_and_process_file(self, file_path: str) -> UploadedFile:
-        """Upload a file to OpenAI and create a vector store for it."""
-        # Upload the file to OpenAI for assistants
+    async def upload_and_process_file(self, file_path: str, user_id: str) -> UploadedFile:
+        """Upload a file to Supabase Storage, then to OpenAI, and add to Vector Store."""
+        filename = os.path.basename(file_path)
+        supabase_path = f"{user_id}/{filename}"
+
+        # 1. Upload to Supabase Storage
+        try:
+            with open(file_path, "rb") as file:
+                upload_response = self.supabase.storage.from_(self.bucket_name).upload(
+                    path=supabase_path,
+                    file=file,
+                    file_options={"content-type": "application/octet-stream"}
+                )
+            print(f"Successfully uploaded {filename} to Supabase Storage at {supabase_path}")
+        except Exception as e:
+            raise Exception(f"Failed to upload {filename} to Supabase Storage: {e}")
+
+        # 2. Upload the file content to OpenAI for assistants
         with open(file_path, "rb") as file:
             response = self.client.files.create(
                 file=file,
@@ -34,9 +56,8 @@ class FileUploadManager:
             )
             
             file_id = response.id
-            filename = os.path.basename(file_path)
             
-            print(f"Successfully uploaded file: {filename}, ID: {file_id}")
+            print(f"Successfully uploaded file content: {filename}, OpenAI File ID: {file_id}")
             
             # Create a vector store if one doesn't exist yet
             if not self.vector_store_id:
@@ -63,6 +84,7 @@ class FileUploadManager:
             
             # Create and return an uploaded file
             uploaded_file = UploadedFile(
+                supabase_path=supabase_path,
                 file_id=file_id,
                 filename=filename,
                 vector_store_id=self.vector_store_id
@@ -81,22 +103,15 @@ class FileUploadManager:
 
 
 @function_tool
-def upload_document(file_path: str) -> str:
+async def upload_document(file_path: str, user_id: str) -> str:
     """
-    Upload a document to be used by the AI tutor.
+    DEPRECATED: Uploads happen via API. Uploads document to Supabase and OpenAI.
     
     Args:
         file_path: The path to the file to upload.
+        user_id: The ID of the user uploading the file.
         
     Returns:
-        A confirmation message with the file ID and vector store ID.
+        A confirmation message with Supabase path, file ID, and vector store ID.
     """
-    # Create a file upload manager
-    manager = FileUploadManager() # API key handled globally
-    
-    # Upload and process the file
-    try:
-        uploaded_file = manager.upload_and_process_file(file_path)
-        return f"Successfully uploaded {uploaded_file.filename}. File ID: {uploaded_file.file_id}. Vector Store ID: {uploaded_file.vector_store_id}"
-    except Exception as e:
-        return f"Error uploading file: {str(e)}" 
+    return "Error: Document upload should be handled via the API endpoint, not this tool."

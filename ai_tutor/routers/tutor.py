@@ -1,12 +1,14 @@
 from __future__ import annotations
 from typing import Optional, List, Dict, Any, Literal
-from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, BackgroundTasks, Form, Body
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, BackgroundTasks, Form, Body, Request
 import os
 import shutil
 import time
 import json
 import traceback  # Add traceback import
 import logging  # Add logging import
+from supabase import Client
+from gotrue.types import User # To type hint the user object
 
 from ai_tutor.session_manager import SessionManager
 from ai_tutor.tools.file_upload import FileUploadManager
@@ -29,6 +31,8 @@ from ai_tutor.output_logger import get_logger, TutorOutputLogger
 from agents import Runner, RunConfig, Agent
 from ai_tutor.manager import AITutorManager
 from pydantic import BaseModel
+from ai_tutor.dependencies import get_supabase_client # Get supabase client dependency
+from ai_tutor.auth import verify_token # Get auth dependency
 
 router = APIRouter()
 session_manager = SessionManager()
@@ -37,27 +41,17 @@ session_manager = SessionManager()
 TEMP_UPLOAD_DIR = "temp_uploads"
 os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
 
-# --- Dependency to get session state ---
-async def get_session_state(session_id: str) -> Dict[str, Any]:
-    session = session_manager.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return session
-
-# --- Dependency to get parsed TutorContext (Removed pre-parsing) ---
-async def get_tutor_context(session_id: str) -> TutorContext:
-    session_data = session_manager.get_session(session_id)
-    if not session_data:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-    try:
-        # Pydantic will parse nested models like analysis_result automatically if keys match
-        print(f"[Debug] Raw session data for {session_id} before TutorContext init: {json.dumps(session_data, indent=2, default=str)}")
-        return TutorContext(**session_data)
-    except Exception as e:
-        # Log the raw data along with the error for easier debugging
-        print(f"[ERROR] Failed to parse session data into TutorContext. Data: {session_data}")
-        print(f"[ERROR] Failed to parse session data into TutorContext: {e}") # Log parsing error
-        raise HTTPException(status_code=500, detail=f"Failed to parse TutorContext: {e}")
+# --- Dependency to get TutorContext from DB ---
+async def get_tutor_context(
+    session_id: str,
+    request: Request, # Access user from request state
+    supabase: Client = Depends(get_supabase_client)
+) -> TutorContext:
+    user: User = request.state.user # Get authenticated user
+    context = await session_manager.get_session_context(supabase, session_id, user.id)
+    if not context:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found or not authorized for user.")
+    return context
 
 # --- Helper to get logger ---
 def get_session_logger(session_id: str) -> TutorOutputLogger:
@@ -85,20 +79,23 @@ class MiniQuizLogData(BaseModel):
 )
 async def upload_session_documents(
     session_id: str,
+    request: Request, # Get request object directly
     files: List[UploadFile] = File(...),
-    session: Dict[str, Any] = Depends(get_session_state) # Keep getting dict here
+    supabase: Client = Depends(get_supabase_client),
+    tutor_context: TutorContext = Depends(get_tutor_context) # Fetch current context
 ):
     """
     Uploads one or more documents to the specified session.
-    Stores files temporarily, uploads them to OpenAI, adds them to a vector store,
+    Stores files temporarily, uploads them to Supabase Storage & OpenAI, adds to vector store,
     and synchronously triggers document analysis.
     """
+    user: User = request.state.user # Get user from request state populated by verify_token dependency
     logger = get_session_logger(session_id)
-    file_upload_manager = FileUploadManager() # Instantiates its own OpenAI client
+    file_upload_manager = FileUploadManager(supabase) # Pass Supabase client
     uploaded_filenames = []
     temp_file_paths = []
-    vector_store_id = session.get("vector_store_id")
-    existing_files = session.get("uploaded_files", [])
+    vector_store_id = tutor_context.vector_store_id
+    existing_files = tutor_context.uploaded_file_paths
 
     for file in files:
         filename = file.filename
@@ -121,16 +118,17 @@ async def upload_session_documents(
     message = ""
     try:
         for i, temp_path in enumerate(temp_file_paths):
-            uploaded_file = file_upload_manager.upload_and_process_file(temp_path)
+            # Pass user_id to file upload manager
+            uploaded_file = await file_upload_manager.upload_and_process_file(temp_path, user.id)
             if not vector_store_id:
                 vector_store_id = uploaded_file.vector_store_id
-            message += f"Uploaded {uploaded_filenames[i]} (ID: {uploaded_file.file_id}). "
+            message += f"Uploaded {uploaded_filenames[i]} (Supabase: {uploaded_file.supabase_path}, OpenAI ID: {uploaded_file.file_id}). "
 
         if vector_store_id:
-            session_manager.update_session(session_id, {
-                "vector_store_id": vector_store_id,
-                "uploaded_files": existing_files + uploaded_filenames
-            })
+            # Update context object and save it
+            tutor_context.vector_store_id = vector_store_id
+            tutor_context.uploaded_file_paths.extend(uploaded_filenames) # Append new files
+            await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
             message += f"Vector Store ID: {vector_store_id}. "
         else:
             raise HTTPException(status_code=500, detail="Failed to create or retrieve vector store ID.")
@@ -148,16 +146,16 @@ async def upload_session_documents(
     try:
         print(f"Starting synchronous analysis for session {session_id}, vs_id {vector_store_id}")
         # Create context for analysis call (might be simpler than full TutorContext)
-        tutor_context = TutorContext(session_id=session_id, vector_store_id=vector_store_id)
-        tutor_context.uploaded_file_paths = existing_files + uploaded_filenames
+        # context already fetched via Depends
+        user: User = request.state.user
 
         analysis_result: Optional[AnalysisResult] = await analyze_documents(vector_store_id, context=tutor_context)
 
         if analysis_result:
             analysis_status = "completed"
             # Store analysis result (as dict or object) - Keep storing the object
-            analysis_data = analysis_result.model_dump(mode='json')
-            session_manager.update_session(session_id, {"analysis_result": analysis_data})
+            tutor_context.analysis_result = analysis_result # Store the Pydantic object
+            await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
             message += "Analysis completed."
 
             # --- Reintroduce Knowledge Base file creation ---
@@ -169,7 +167,8 @@ async def upload_session_documents(
                     f.write("KNOWLEDGE BASE\n=============\n\n")
                     f.write("DOCUMENT ANALYSIS:\n=================\n\n")
                     f.write(analysis_result.analysis_text) # Write the text part
-                session_manager.update_session(session_id, {"knowledge_base_path": kb_path}) # Store the path
+                tutor_context.knowledge_base_path = kb_path
+                await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
                 message += f" Knowledge base file created at {kb_path}."
                 print(f"Knowledge Base file created for session {session_id} at {kb_path}")
             except Exception as kb_error:
@@ -219,10 +218,12 @@ async def get_session_analysis_results(
     "/sessions/{session_id}/plan",
     response_model=LessonPlan,
     summary="Generate Lesson Plan",
+    dependencies=[Depends(verify_token)], # Add auth dependency
     tags=["Tutoring Workflow"]
 )
 async def generate_session_lesson_plan(
     session_id: str,
+    request: Request, # Add request parameter
     tutor_context: TutorContext = Depends(get_tutor_context) # Use parsed context
 ):
     """
@@ -230,6 +231,8 @@ async def generate_session_lesson_plan(
     Stores the plan back into the session context.
     """
     logger = get_session_logger(session_id)
+    # Get user from request state
+    user: User = tutor_context.user_id # Assuming context has user_id populated
 
     # Get vector store ID and analysis result from context
     vector_store_id = tutor_context.vector_store_id
@@ -273,8 +276,12 @@ async def generate_session_lesson_plan(
             lesson_plan_to_store = lesson_plan_obj
             logger.log_planner_output(lesson_plan_obj)
 
-            update_data = {"lesson_plan": lesson_plan_to_store.model_dump(mode='json')}
-            success = session_manager.update_session(session_id, update_data)
+            # Update context object and save it
+            tutor_context.lesson_plan = lesson_plan_to_store
+            # Need supabase client - get it via Depends implicitly or pass it
+            # Easiest is often to add Depends(get_supabase_client) to the signature
+            supabase: Client = await get_supabase_client() # Or add to Depends
+            success = await session_manager.update_session_context(supabase, session_id, user, tutor_context)
             if not success:
                  logger.log_error("SessionUpdate", f"Failed to update session {session_id} with lesson plan.")
             print(f"[Debug /plan] LessonPlan stored in session.") # Add log
@@ -305,13 +312,15 @@ async def generate_session_lesson_plan(
 @router.get(
     "/sessions/{session_id}/lesson",
     response_model=Optional[LessonContent], # Allow null if not generated yet
+    dependencies=[Depends(verify_token)], # Add auth dependency
     summary="Retrieve Generated Lesson Content",
     tags=["Tutoring Workflow"]
 )
-async def get_session_lesson_content(session_id: str, session: dict = Depends(get_session_state)):
+async def get_session_lesson_content(session_id: str, tutor_context: TutorContext = Depends(get_tutor_context)):
     """Retrieves the generated lesson content for the session."""
     logger = get_session_logger(session_id)
-    content_data = session.get("lesson_content") # Get from session state
+    # Fetch lesson content directly from the parsed context
+    content_data = tutor_context.lesson_content # Example assuming it's stored directly
 
     if not content_data:
         logger.log_error("GetLessonContent", f"Lesson content not found in session state for {session_id}")
@@ -321,7 +330,7 @@ async def get_session_lesson_content(session_id: str, session: dict = Depends(ge
 
     try:
         # Assuming content_data is stored as a dict (from model_dump())
-        lesson_content = LessonContent(**content_data)
+        lesson_content = content_data # If it's already parsed by TutorContext
         return lesson_content
     except Exception as e:
          logger.log_error("GetLessonContentParse", f"Failed to parse stored lesson content: {e}")
@@ -330,13 +339,14 @@ async def get_session_lesson_content(session_id: str, session: dict = Depends(ge
 @router.get(
     "/sessions/{session_id}/quiz",
     response_model=Optional[Quiz], # Return Quiz or null
+    dependencies=[Depends(verify_token)], # Add auth dependency
     summary="Retrieve Generated Quiz",
     tags=["Tutoring Workflow"]
 )
-async def get_session_quiz(session_id: str, session: dict = Depends(get_session_state)):
+async def get_session_quiz(session_id: str, tutor_context: TutorContext = Depends(get_tutor_context)):
     """Retrieves the generated quiz for the session."""
     logger = get_session_logger(session_id)
-    quiz_data = session.get("quiz") # Get 'quiz' from session state
+    quiz_data = tutor_context.quiz # Get 'quiz' from context object if stored there
 
     if not quiz_data:
         logger.log_error("GetQuiz", f"Quiz not found in session state for {session_id}")
@@ -345,7 +355,7 @@ async def get_session_quiz(session_id: str, session: dict = Depends(get_session_
 
     try:
         # Assuming quiz_data is stored as a dict (from model_dump())
-        quiz = Quiz(**quiz_data)
+        quiz = quiz_data # If already parsed by TutorContext
         return quiz
     except Exception as e:
          logger.log_error("GetQuizParse", f"Failed to parse stored quiz: {e}")
@@ -354,12 +364,17 @@ async def get_session_quiz(session_id: str, session: dict = Depends(get_session_
 @router.post(
     "/sessions/{session_id}/log/mini-quiz",
     status_code=204, # No content to return
+    dependencies=[Depends(verify_token)], # Add auth dependency
     summary="Log Mini-Quiz Attempt",
     tags=["Logging"]
 )
-async def log_mini_quiz_event(session_id: str, attempt_data: MiniQuizLogData = Body(...), session: dict = Depends(get_session_state)):
+async def log_mini_quiz_event(
+    session_id: str,
+    attempt_data: MiniQuizLogData = Body(...), # Removed request: Request, not needed if just logging
+    tutor_context: TutorContext = Depends(get_tutor_context) # Use context to ensure session exists for user
+):
     """Logs a user's attempt on an in-lesson mini-quiz question."""
-    logger = get_session_logger(session_id)
+    logger = get_session_logger(tutor_context.session_id)
 
     # You can expand this: store in session state, DB, etc.
     # For now, just log it using the TutorOutputLogger
@@ -390,12 +405,17 @@ class UserSummaryLogData(BaseModel):
 @router.post(
     "/sessions/{session_id}/log/summary",
     status_code=204, # No content to return
+    dependencies=[Depends(verify_token)], # Add auth dependency
     summary="Log User Summary Attempt",
     tags=["Logging"]
 )
-async def log_user_summary_event(session_id: str, summary_data: UserSummaryLogData = Body(...), session: dict = Depends(get_session_state)):
+async def log_user_summary_event(
+    session_id: str, # Removed request: Request
+    summary_data: UserSummaryLogData = Body(...),
+    tutor_context: TutorContext = Depends(get_tutor_context) # Use context to ensure session exists
+):
     """Logs a user's summary attempt during the lesson."""
-    logger = get_session_logger(session_id)
+    logger = get_session_logger(tutor_context.session_id)
     try:
         logger.log_user_summary(
             section_title=summary_data.section,
@@ -411,12 +431,15 @@ async def log_user_summary_event(session_id: str, summary_data: UserSummaryLogDa
 @router.post(
     "/sessions/{session_id}/interact",
     response_model=InteractionResponseData,  # Change response model
+    dependencies=[Depends(verify_token)], # Add auth dependency
     summary="Interact with the AI Tutor",
     tags=["Tutoring Workflow"]
 )
 async def interact_with_tutor(
     session_id: str,
+    request: Request, # Get request directly
     interaction_input: InteractionRequestData = Body(...),
+    supabase: Client = Depends(get_supabase_client), # To save context
     tutor_context: TutorContext = Depends(get_tutor_context)
 ):
     logger = get_session_logger(session_id)
@@ -424,6 +447,7 @@ async def interact_with_tutor(
     print(f"[Interact] Input Type: {interaction_input.type}, Data: {interaction_input.data}")
     print(f"[Interact] Context before run: pending_interaction={tutor_context.user_model_state.pending_interaction_type}, current_topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
 
+    user: User = request.state.user
     # --- Agent Execution Logic --- 
     final_response_data: TutorInteractionResponse
 
@@ -482,7 +506,8 @@ async def interact_with_tutor(
 
                 # Update context based on teacher's action (Runner updates context in-place)
                 # Example: Teacher might set pending_interaction_type in the context
-                session_manager.update_session(session_id, tutor_context.model_dump(mode='json'))
+                # Persist the updated context back to Supabase
+                await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
                 print(f"[Interact] Context after Teacher: pending_interaction={tutor_context.user_model_state.pending_interaction_type}, current_topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
 
                 # Return the Teacher's output, not the Orchestrator's message
@@ -502,14 +527,14 @@ async def interact_with_tutor(
         elif isinstance(orchestrator_output, (ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse)):
             # If orchestrator returns a direct response, use it
             response_data = orchestrator_output
-            # Update context if orchestrator modified it (Runner does this)
-            session_manager.update_session(session_id, tutor_context.model_dump(mode='json'))
+            # Update context if orchestrator modified it (Runner does this), then save to DB
+            await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
             print(f"[Interact] Context after Orchestrator (direct response): {tutor_context.model_dump(mode='json')}") # Log context state
         else:
             # Fallback for unexpected orchestrator output
             print(f"[Interact] Unexpected Orchestrator output type: {type(orchestrator_output)}")
             response_data = ErrorResponse(error=f"Unexpected orchestrator output type: {type(orchestrator_output)}")
-            session_manager.update_session(session_id, tutor_context.model_dump(mode='json')) # Save context anyway
+            await session_manager.update_session_context(supabase, session_id, user.id, tutor_context) # Save context anyway
 
         # --- Construct and Return Response ---
         print(f"[Interact] Final Response Data Type: {type(response_data)}")

@@ -36,7 +36,8 @@ class UserModelState(BaseModel):
 
 class TutorContext(BaseModel):
     """Context object for an AI Tutor session."""
-    user_id: Optional[str] = None
+    # user_id: Optional[str] = None
+    user_id: str # User ID from Supabase Auth, now mandatory
     session_id: str
     vector_store_id: Optional[str] = None
     uploaded_file_paths: List[str] = Field(default_factory=list)

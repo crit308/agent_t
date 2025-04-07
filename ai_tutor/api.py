@@ -1,14 +1,18 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Depends, HTTPException, status
 import os
 from dotenv import load_dotenv
+from supabase import create_client, Client
 
 # Load environment variables from .env file
 load_dotenv()
 
 from ai_tutor.context import TutorContext, UserModelState, UserConceptMastery  # Import context models
 from ai_tutor.routers import sessions, tutor
+from ai_tutor.dependencies import get_supabase_client # Import dependency from new location
 from agents import set_default_openai_key, set_default_openai_api, Agent # Import Agent
+from ai_tutor.auth import verify_token # Assume auth.py exists for JWT verification
 
 # Import models needed for resolving forward references in TutorContext
 from ai_tutor.agents.models import LessonPlan, QuizQuestion, QuizFeedbackItem # Add QuizFeedbackItem
@@ -25,6 +29,9 @@ else:
     set_default_openai_key(api_key)
     set_default_openai_api("responses") # Ensure using API needed for models like o3-mini
     print("OpenAI API key configured for agents SDK.")
+
+# --- Supabase Client Initialization is now handled in dependencies.py ---
+# You might still want a check here to ensure it *was* initialized successfully if critical
 
 # --- Rebuild Pydantic models after all imports ---
 # Ensure all models potentially using forward refs are rebuilt
@@ -53,8 +60,9 @@ app.add_middleware(
 )
 
 # --- Mount Routers ---
-app.include_router(sessions.router, prefix="/api/v1")
-app.include_router(tutor.router, prefix="/api/v1")
+# Add dependency for authentication to all routers needing it
+app.include_router(sessions.router, prefix="/api/v1", dependencies=[Depends(verify_token)])
+app.include_router(tutor.router, prefix="/api/v1", dependencies=[Depends(verify_token)])
 
 @app.get("/", tags=["Root"])
 async def read_root():
