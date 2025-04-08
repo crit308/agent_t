@@ -175,7 +175,7 @@ async def generate_quiz_feedback(quiz: Quiz, user_answers: QuizUserAnswers, api_
     if context and hasattr(context, 'session_id'):
         run_config = RunConfig(
             workflow_name="AI Tutor - Quiz Feedback",
-            group_id=context.session_id # Link traces within the same session
+            group_id=str(context.session_id) # Convert UUID to string
         )
     
     # Run the quiz teacher agent
@@ -263,7 +263,7 @@ async def evaluate_single_answer(
     if context and hasattr(context, 'session_id'):
         run_config = RunConfig(
             workflow_name="AI Tutor - Single Answer Eval",
-            group_id=context.session_id
+            group_id=str(context.session_id) # Convert UUID to string
         )
 
     result = await Runner.run(agent, prompt, run_config=run_config, context=context)

@@ -241,7 +241,10 @@ async def generate_session_lesson_plan(
         planner_agent: Agent[TutorContext] = create_planner_agent(vector_store_id)
 
         # Pass the full TutorContext to the Runner
-        run_config = RunConfig(workflow_name="AI Tutor API - Planning", group_id=session_id)
+        run_config = RunConfig(
+            workflow_name="AI Tutor API - Planning",
+            group_id=str(session_id) # Convert UUID to string
+        )
 
         print(f"[Debug /plan] Starting Runner.run for planner agent...") # Add log
 
@@ -442,7 +445,10 @@ async def interact_with_tutor(
     final_response_data: TutorInteractionResponse
 
     try:
-        run_config = RunConfig(workflow_name="AI Tutor API - Interaction", group_id=session_id)
+        run_config = RunConfig(
+            workflow_name="AI Tutor Interaction",
+            group_id=str(tutor_context.session_id) # Convert UUID to string
+        )
 
         # Always run the Orchestrator first to decide the next step or handle pending interactions.
         orchestrator_agent = create_orchestrator_agent(tutor_context.vector_store_id)

@@ -167,7 +167,7 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
     if context and hasattr(context, 'session_id'):
         run_config = RunConfig(
             workflow_name="AI Tutor - Document Analysis",
-            group_id=context.session_id # Link traces within the same session
+            group_id=str(context.session_id) # Convert UUID to string
         )
     elif api_key:
         # If no context provided but we have API key, create a basic RunConfig

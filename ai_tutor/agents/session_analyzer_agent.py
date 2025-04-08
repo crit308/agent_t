@@ -281,7 +281,7 @@ async def analyze_teaching_session(
     if context and hasattr(context, 'session_id'):
         run_config = RunConfig(
             workflow_name="AI Tutor - Session Analysis",
-            group_id=context.session_id
+            group_id=str(context.session_id)
         )
     
     # Run the session analyzer agent

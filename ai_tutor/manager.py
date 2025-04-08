@@ -220,7 +220,7 @@ class AITutorManager:
         # Configure Tracing via RunConfig
         run_config = RunConfig(
             workflow_name="AI Tutor - Lesson Planning",
-            group_id=self.context.session_id # Link traces within the same session
+            group_id=str(self.context.session_id) # Convert UUID to string
         )
         try:
             result = await Runner.run(
@@ -731,7 +731,7 @@ class AITutorManager:
             # Configure Tracing via RunConfig
             run_config = RunConfig(
                 workflow_name="AI Tutor - Session Analysis",
-                group_id=self.context.session_id # Link traces within the same session
+                group_id=str(self.context.session_id) # Convert UUID to string
             )
             self.session_analysis = await analyze_teaching_session(
                 analysis_input_filtered,
