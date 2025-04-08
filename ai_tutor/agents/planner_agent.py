@@ -25,6 +25,12 @@ async def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
     if not folder_id:
         return "Error: Folder ID not found in context."
 
+    # --- ADD CHECK HERE ---
+    # Check if analysis result with text is already in context from SessionManager loading
+    if ctx.context.analysis_result and ctx.context.analysis_result.analysis_text:
+        print(f"Tool: read_knowledge_base - Found analysis text in context. Returning cached text.")
+        return ctx.context.analysis_result.analysis_text
+
     try:
         supabase = await get_supabase_client()
         response = supabase.table("folders").select("knowledge_base").eq("id", str(folder_id)).eq("user_id", user_id).maybe_single().execute()
@@ -32,6 +38,13 @@ async def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
         if response.data and response.data.get("knowledge_base"):
             kb_content = response.data["knowledge_base"]
             print(f"Tool: read_knowledge_base successful from Supabase. Content length: {len(kb_content)}")
+            # Store it back into context in case it wasn't there (though SessionManager should handle this on load)
+            if not ctx.context.analysis_result:
+                 # Assuming AnalysisResult model exists and can be instantiated like this
+                 from ai_tutor.agents.analyzer_agent import AnalysisResult
+                 ctx.context.analysis_result = AnalysisResult(analysis_text=kb_content, vector_store_id=ctx.context.vector_store_id or "", key_concepts=[], key_terms={}, file_names=[])
+            elif not ctx.context.analysis_result.analysis_text:
+                 ctx.context.analysis_result.analysis_text = kb_content
             return kb_content
         else:
             return f"Error: Knowledge Base not found for folder {folder_id} or query failed: {response.error}"
@@ -70,10 +83,10 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
         - You have a `file_search` tool to look up specific details within the source documents (vector store).
 
         YOUR WORKFLOW **MUST** BE:
-        1.  **Read Knowledge Base:** Call the `read_knowledge_base` tool first to get the document analysis summary.
-        2.  **Analyze Summary:** Understand the key concepts, terms, and structure from the KB content.
-        3.  **Use `file_search` for Details:** If the KB summary lacks specific details needed for planning (e.g., examples, specific steps), use `file_search` to find that information in the source documents.
-        4.  **Create Lesson Plan:** Synthesize information from the KB analysis and any `file_search` results to create a comprehensive `LessonPlan` object.
+        1.  **Read Knowledge Base ONCE:** Call the `read_knowledge_base` tool *exactly one time* at the beginning to get the document analysis summary.
+        2.  **Analyze Summary:** Use the *entire* summary provided by the tool to understand key concepts, terms, and structure.
+        3.  **Use `file_search` ONLY if Necessary:** If, *after analyzing the full KB summary*, you lack specific details (like examples or steps) needed for a section, use `file_search` sparingly to find that information in the source documents. Do NOT use `file_search` for information already present in the KB summary.
+        4.  **Create Lesson Plan:** Synthesize information from the KB analysis and any necessary `file_search` results to create a complete `LessonPlan` object.
         - For each `LessonSection`, you MUST include:
           * Clear learning objectives for each section
           * Logical sequence of sections
@@ -82,12 +95,13 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
           * Target audience
           * `prerequisites`: A list of concept/section titles that must be understood *before* this section. Leave empty if none.
           * `is_optional`: A boolean indicating if the section covers core material (False) or is supplementary/advanced (True). Infer this based on the content's nature (e.g., introductory sections are rarely optional).
+          * Ensure `concepts_to_cover` clearly relates to the `objectives` for that section.
 
         STEP 4: OUTPUT
         - Output the lesson plan as a complete structured LessonPlan object.
 
         CRITICAL REMINDERS:
-        - **You MUST call `read_knowledge_base` first.**
+        - **You MUST call `read_knowledge_base` only ONCE at the very start.**
         - DO NOT call any handoff tools. Your only output should be the LessonPlan object.
         """,
         tools=planner_tools,

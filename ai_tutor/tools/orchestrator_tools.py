@@ -135,49 +135,83 @@ async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_
         return error_msg # Return error string
 
 @function_tool
-async def call_planner_get_next_topic(ctx: RunContextWrapper[TutorContext], current_topic: Optional[str] = None) -> Optional[str]:
-    """Determines the next linearly planned topic based on the current topic."""
-    print(f"[Tool] Getting next topic linearly (current is '{current_topic}')")
-
-    # Get the lesson plan from context
+async def determine_next_learning_step(ctx: RunContextWrapper[TutorContext]) -> Dict[str, Any]:
+    """
+    Determines the next learning step (topic/section and objectives) based on the lesson plan and user's current progress/mastery.
+    Updates the context with the next topic and its objectives.
+    Returns the title of the next section/topic to begin, or None if the lesson is complete.
+    """
     lesson_plan = ctx.context.lesson_plan
+    user_state = ctx.context.user_model_state
+    current_topic = ctx.context.current_teaching_topic
+
+    print(f"[Tool determine_next_learning_step] Called. Current topic: '{current_topic}'")
+
+    if not lesson_plan or not lesson_plan.sections:
+        print("[Tool determine_next_learning_step] Lesson plan not found or empty.")
+        return {"error": "Lesson plan not found or empty.", "next_topic": None}
+
+    current_section_index = -1
+    # Get the lesson plan from context
     if not lesson_plan:
-        print("[Tool] No lesson plan found in context.")
-        return None
+        print("[Tool determine_next_learning_step] No lesson plan found in context.")
+        return {"error": "Lesson plan not found.", "next_topic": None}
 
-    # Extract all concepts from the lesson plan
-    all_concepts: List[str] = [
-        section.title for section in lesson_plan.sections
-        if section.title  # Ensure the title exists
-    ]
+    if current_topic:
+        try:
+            current_section_index = next(i for i, sec in enumerate(lesson_plan.sections) if sec.title == current_topic)
+        except StopIteration:
+            print(f"[Tool determine_next_learning_step] Warning: Current topic '{current_topic}' not found in plan. Resetting.")
+            current_topic = None # Reset if current topic is invalid
 
-    if not all_concepts:
-        print("[Tool] No concepts found in lesson plan.")
-        return None
+    next_section_index = -1
+    next_section = None
 
-    if not current_topic: # If no current topic provided, return the first one
-        next_topic = all_concepts[0]
-        print(f"[Tool] Starting with first topic: '{next_topic}'")
-        ctx.context.current_teaching_topic = next_topic  # Update context
-        return next_topic
+    # If there's a current topic, check if objectives are met before moving on
+    if current_section_index != -1:
+         current_section = lesson_plan.sections[current_section_index]
+         # Basic check: Have all objectives for this section been 'mastered'?
+         # TODO: Enhance this check - map concept mastery to objectives if possible.
+         all_objectives_mastered = len(user_state.mastered_objectives_current_section) >= len(current_section.objectives)
 
-    try:
-        current_idx = all_concepts.index(current_topic)
-        if current_idx + 1 < len(all_concepts):
-            next_topic = all_concepts[current_idx + 1]
-            print(f"[Tool] Moving to next topic: '{next_topic}'")
-            ctx.context.current_teaching_topic = next_topic  # Update context
-            return next_topic
-        else:
-            print("[Tool] Reached end of lesson plan.")
-            ctx.context.current_teaching_topic = None # Clear topic if at end
-            return None
-    except ValueError:
-        # current_topic not found in the list, default to the first topic
-        print(f"[Tool] Current topic '{current_topic}' not found in plan, starting from beginning.")
-        next_topic = all_concepts[0]
-        ctx.context.current_teaching_topic = next_topic  # Update context
-        return next_topic
+         if all_objectives_mastered:
+             print(f"[Tool determine_next_learning_step] Objectives for '{current_topic}' seem complete. Moving to next section.")
+             if current_section_index + 1 < len(lesson_plan.sections):
+                 next_section_index = current_section_index + 1
+             else:
+                 next_section_index = -2 # Signal end of lesson
+         else:
+             print(f"[Tool determine_next_learning_step] Objectives for '{current_topic}' not yet met. Staying on this topic.")
+             # Stay on the current topic, return its details again
+             next_section_index = current_section_index
+    else:
+         # No current topic, start from the beginning
+         print("[Tool determine_next_learning_step] No current topic. Starting from the first section.")
+         next_section_index = 0
+
+    # Determine the next section based on the index
+    if 0 <= next_section_index < len(lesson_plan.sections):
+         next_section = lesson_plan.sections[next_section_index]
+         next_topic_title = next_section.title
+
+         # --- Update Context ---
+         ctx.context.current_teaching_topic = next_topic_title
+         ctx.context.user_model_state.current_topic_segment_index = 0 # Reset segment index for new/repeated topic
+         ctx.context.user_model_state.current_section_objectives = next_section.objectives
+         # Reset mastered objectives if it's a *new* topic
+         if current_topic != next_topic_title:
+             ctx.context.user_model_state.mastered_objectives_current_section = []
+         # --- End Update Context ---
+
+         print(f"[Tool determine_next_learning_step] Next step: Topic='{next_topic_title}', Objectives: {[o.title for o in next_section.objectives]}")
+         return {"next_topic": next_topic_title, "objectives": [o.model_dump() for o in next_section.objectives]}
+    else:
+         # End of lesson plan (index was -2 or out of bounds)
+         print("[Tool determine_next_learning_step] Reached end of lesson plan.")
+         ctx.context.current_teaching_topic = None
+         ctx.context.user_model_state.current_section_objectives = []
+         return {"next_topic": None, "message": "Lesson complete!"}
+
 
 @function_tool
 async def update_user_model(
@@ -185,7 +219,8 @@ async def update_user_model(
     topic: str,
     outcome: Literal['correct', 'incorrect', 'mastered', 'struggled', 'explained'],
     confusion_point: Optional[str] = None,
-    last_accessed: Optional[str] = None
+    last_accessed: Optional[str] = None,
+    mastered_objective_title: Optional[str] = None, # Optional: Mark an objective as mastered
 ) -> str:
     """Updates the user model state with interaction outcomes and temporal data."""
     print(f"[Tool] Updating user model for topic '{topic}' with outcome '{outcome}'")
@@ -226,6 +261,11 @@ async def update_user_model(
                 ctx.context.user_model_state.learning_pace_factor = max(0.5, 
                     ctx.context.user_model_state.learning_pace_factor - 0.1)
 
+    # Update mastered objectives if provided
+    if mastered_objective_title and mastered_objective_title not in ctx.context.user_model_state.mastered_objectives_current_section:
+         ctx.context.user_model_state.mastered_objectives_current_section.append(mastered_objective_title)
+         print(f"[Tool] Marked objective '{mastered_objective_title}' as mastered for current section.")
+
     print(f"[Tool] Updated '{topic}' - Mastery: {concept_state.mastery_level:.2f}, "
           f"Pace: {ctx.context.user_model_state.learning_pace_factor:.2f}")
     return f"User model updated for {topic}."
@@ -236,7 +276,10 @@ async def update_explanation_progress(ctx: RunContextWrapper[TutorContext], segm
     print(f"[Tool] Updating explanation segment index to {segment_index}")
     if not isinstance(segment_index, int) or segment_index < 0:
         return "Error: Invalid segment_index provided."
-    ctx.context.user_model_state.current_explanation_segment = segment_index
+    try:
+        ctx.context.user_model_state.current_topic_segment_index = segment_index # CORRECT
+    except AttributeError:
+        return "Error: There was an issue updating the explanation progress. The user model doesn't have the expected fields." # Return error message
     ctx.context.last_interaction_summary = f"Delivered explanation segment {segment_index}"
     return f"Explanation progress updated to segment {segment_index}."
 
@@ -288,7 +331,7 @@ async def get_user_model_status(ctx: RunContextWrapper[TutorContext], topic: Opt
 __all__ = [
     'call_quiz_creator_mini',
     'call_quiz_teacher_evaluate',
-    'call_planner_get_next_topic',
+    'determine_next_learning_step',
     'update_user_model',
     'get_user_model_status',
     'update_explanation_progress',

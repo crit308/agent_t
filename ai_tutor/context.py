@@ -7,7 +7,7 @@ from uuid import UUID # Import UUID
 
 # Use TYPE_CHECKING to prevent runtime circular imports for type hints
 if TYPE_CHECKING:
-    from ai_tutor.agents.models import LessonPlan, QuizQuestion
+    from ai_tutor.agents.models import LessonPlan, QuizQuestion, LearningObjective
     from ai_tutor.agents.analyzer_agent import AnalysisResult
 
 class UserConceptMastery(BaseModel):
@@ -32,6 +32,8 @@ class UserModelState(BaseModel):
     preferred_interaction_style: Optional[Literal['explanatory', 'quiz_heavy', 'socratic']] = None # Can be set or inferred
     session_summary_notes: List[str] = Field(default_factory=list) # High-level notes about session progress/user behavior
     # Add fields for tracking interaction state
+    current_section_objectives: List['LearningObjective'] = Field(default_factory=list, description="Learning objectives for the currently active section.") # Use forward reference
+    mastered_objectives_current_section: List[str] = Field(default_factory=list, description="Titles of objectives mastered in the current section.")
     pending_interaction_type: Optional[Literal['checking_question', 'summary_prompt']] = None
     pending_interaction_details: Optional[Dict[str, Any]] = None # e.g., {'question_text': '...', 'interaction_id': 'xyz'}
 

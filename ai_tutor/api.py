@@ -15,7 +15,7 @@ from agents import set_default_openai_key, set_default_openai_api, Agent # Impor
 from ai_tutor.auth import verify_token # Assume auth.py exists for JWT verification
 
 # Import models needed for resolving forward references in TutorContext
-from ai_tutor.agents.models import LessonPlan, QuizQuestion, QuizFeedbackItem # Add QuizFeedbackItem
+from ai_tutor.agents.models import LessonPlan, LessonSection, LearningObjective, QuizQuestion, QuizFeedbackItem # Add LessonSection, LearningObjective
 from ai_tutor.agents.analyzer_agent import AnalysisResult
 from ai_tutor.api_models import TutorInteractionResponse, InteractionResponseData # Add InteractionResponseData
 
@@ -37,6 +37,8 @@ else:
 # Ensure all models potentially using forward refs are rebuilt
 UserConceptMastery.model_rebuild()
 UserModelState.model_rebuild()
+# LessonPlan and LessonSection might depend on LearningObjective, rebuild them first if so.
+LearningObjective.model_rebuild() # Rebuild LearningObjective if it uses forward refs (unlikely but safe)
 AnalysisResult.model_rebuild() # Rebuild if it uses forward refs
 LessonPlan.model_rebuild() # Rebuild if it uses forward refs
 QuizQuestion.model_rebuild() # Rebuild if it uses forward refs
