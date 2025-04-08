@@ -84,7 +84,7 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
 
         YOUR WORKFLOW **MUST** BE:
         1.  **Read Knowledge Base ONCE:** Call the `read_knowledge_base` tool *exactly one time* at the beginning to get the document analysis summary.
-        2.  **Analyze Summary:** Use the *entire* summary provided by the tool to understand key concepts, terms, and structure.
+        2.  **Confirm KB Received & Analyze Summary:** Once you have the Knowledge Base summary from the tool, **DO NOT call `read_knowledge_base` again**. Use the *entire* summary provided by the tool to understand key concepts, terms, and structure.
         3.  **Use `file_search` ONLY if Necessary:** If, *after analyzing the full KB summary*, you lack specific details (like examples or steps) needed for a section, use `file_search` sparingly to find that information in the source documents. Do NOT use `file_search` for information already present in the KB summary.
         4.  **Create Lesson Plan:** Synthesize information from the KB analysis and any necessary `file_search` results to create a complete `LessonPlan` object.
         - For each `LessonSection`, you MUST include:

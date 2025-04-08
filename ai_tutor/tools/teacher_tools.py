@@ -52,6 +52,8 @@ async def ask_checking_question(
         "interaction_id": interaction_id,
         "question": question.model_dump() # Store the question details
     }
+    # Also store the question where the evaluator expects it
+    ctx.context.current_quiz_question = question
     ctx.context.last_interaction_summary = f"Asked checking question on {topic}."
 
     # Add interaction_id to the question object sent back if needed

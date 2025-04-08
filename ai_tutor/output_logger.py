@@ -23,6 +23,7 @@ class TutorOutputLogger:
             "planner_agent_output": "",
             "teacher_agent_output": "",
             "orchestrator_agent_output": "",
+            "orchestrator_reasoning": [],
             "user_input": "",
             "quiz_creator_agent_output": "",
             "user_summaries": [],
@@ -46,9 +47,20 @@ class TutorOutputLogger:
         self.logs["orchestrator_agent_output"] = self._format_output(output)
         self._append_to_session("Orchestrator Agent", output)
     
+    def log_orchestrator_decision(self, decision: str, reasoning: Optional[str] = None, data: Optional[Dict] = None) -> None:
+        """Log a specific decision or reasoning step from the orchestrator."""
+        log_entry = {
+            "decision": decision,
+            "reasoning": reasoning,
+            "data": data,
+            "timestamp": datetime.now().isoformat()
+        }
+        self.logs["orchestrator_reasoning"].append(log_entry)
+        self._append_to_session("Orchestrator Decision", log_entry)
+    
     def log_user_input(self, user_input: str) -> None:
         """Log the user's input."""
-        self.logs["user_input"] = user_input
+        self.logs["user_input"] = self._format_output(user_input)
         self._append_to_session("User Input", user_input)
     
     def log_teacher_output(self, output: Any) -> None:
@@ -199,6 +211,12 @@ class TutorOutputLogger:
             f.write("ORCHESTRATOR AGENT OUTPUT (LAST)\n")
             f.write("-" * 80 + "\n")
             f.write(self.logs["orchestrator_agent_output"])
+            f.write("\n\n")
+
+            f.write("ORCHESTRATOR DECISIONS/REASONING\n")
+            f.write("-" * 80 + "\n")
+            for reasoning_entry in self.logs["orchestrator_reasoning"]:
+                f.write(f"{self._format_output(reasoning_entry)}\n")
             f.write("\n\n")
 
             f.write("QUIZ CREATOR AGENT OUTPUT\n")

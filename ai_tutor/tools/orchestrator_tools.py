@@ -118,7 +118,7 @@ async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_
             ctx.context.user_model_state.pending_interaction_type = None
             ctx.context.user_model_state.pending_interaction_details = None
             # Clear the question itself from context now that it's evaluated
-            ctx.context.current_quiz_question = None 
+            ctx.context.current_quiz_question = None
             return feedback_item
         else:
             # The evaluate_single_answer helper should ideally return feedback or raise
@@ -327,10 +327,43 @@ async def get_user_model_status(ctx: RunContextWrapper[TutorContext], topic: Opt
         }
     } 
 
+@function_tool
+async def reflect_on_interaction(
+    ctx: RunContextWrapper[TutorContext],
+    topic: str,
+    interaction_summary: str, # e.g., "User answered checking question incorrectly."
+    user_response: Optional[str] = None, # The actual user answer/input
+    feedback_provided: Optional[QuizFeedbackItem] = None # Feedback from teacher tool if available
+) -> Dict[str, Any]:
+    """
+    Analyzes the last interaction for a given topic, identifies potential reasons for user difficulty,
+    and suggests adaptive next steps for the Orchestrator.
+    """
+    print(f"[Tool reflect_on_interaction] Called for topic '{topic}'. Summary: {interaction_summary}")
+
+    # Basic reflection logic (can be enhanced, e.g., calling another LLM for deeper analysis)
+    suggestions = []
+    analysis = f"Reflection on interaction regarding '{topic}': {interaction_summary}. "
+
+    if feedback_provided and not feedback_provided.is_correct:
+        analysis += f"User incorrectly selected '{feedback_provided.user_selected_option}' when the correct answer was '{feedback_provided.correct_option}'. "
+        analysis += f"Explanation: {feedback_provided.explanation}. "
+        suggestions.append(f"Re-explain the core concept using the provided explanation: '{feedback_provided.explanation}'.")
+        if feedback_provided.improvement_suggestion:
+            suggestions.append(f"Focus on the improvement suggestion: '{feedback_provided.improvement_suggestion}'.")
+        suggestions.append(f"Try asking a slightly different checking question on the same concept.")
+    elif "incorrect" in interaction_summary.lower() or "struggled" in interaction_summary.lower():
+        suggestions.append(f"Consider re-explaining the last segment of '{topic}' using a different approach or analogy.")
+        suggestions.append(f"Ask a simpler checking question focused on the specific confusion points for '{topic}'.")
+
+    print(f"[Tool reflect_on_interaction] Analysis: {analysis}. Suggestions: {suggestions}")
+    return {"analysis": analysis, "suggested_next_steps": suggestions}
+
 # Ensure all tools intended for the orchestrator are exported or available
 __all__ = [
     'call_quiz_creator_mini',
     'call_quiz_teacher_evaluate',
+    'reflect_on_interaction',
     'determine_next_learning_step',
     'update_user_model',
     'get_user_model_status',

@@ -76,15 +76,16 @@ def create_interactive_teacher_agent(vector_store_id: str) -> Agent['TutorContex
             *   **(Optional) To Prompt Summary:** Call `prompt_for_summary` tool. **This ends your turn.**
         4.  **Your final action MUST be a call to ONE of the available tools (`present_explanation`, `ask_checking_question`, etc.).** The result of that tool call will be the output relayed to the user.
 
-        CRITICAL:
+        **CRITICAL:**
         - Focus ONLY on the `current_teaching_topic` and `current_topic_segment_index`.
         - Your goal is to take ONE step in the interactive loop (explain or ask).
-        - You MUST end your turn by calling exactly one interaction tool (`present_explanation`, `ask_checking_question`).
+        - **You MUST end your turn by calling exactly ONE interaction tool (`present_explanation`, `ask_checking_question`). Do not call multiple interaction tools in a single turn.**
         """,
         tools=teacher_tools,
-        # The output type is now the *result* of one of its interaction tools
+        # The output type IS the *result* of one of its interaction tools
         output_type=TeacherInteractionOutput,
         model=base_model,
+        tool_use_behavior="stop_on_first_tool", # Force stop after one tool call
         # No handoffs needed FROM the teacher in this model
     )
     return teacher_agent

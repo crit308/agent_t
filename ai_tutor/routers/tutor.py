@@ -481,6 +481,7 @@ async def interact_with_tutor(
             run_config=run_config
         )
         orchestrator_output = orchestrator_result.final_output # This is TutorInteractionResponse type
+        # Log the raw output which might contain implicit reasoning before parsing
         logger.log_orchestrator_output(orchestrator_output)
         print(f"[Interact] Orchestrator Raw Output: {orchestrator_output}") # Log raw output first
         print(f"[Interact] Orchestrator Output Type: {type(orchestrator_output)}")
@@ -490,6 +491,11 @@ async def interact_with_tutor(
         # A) If Orchestrator initiated teaching:
         if isinstance(orchestrator_output, MessageResponse) and orchestrator_output.message_type == 'initiate_teaching':
             print(f"[Interact] Orchestrator signaled to initiate teaching. Running Teacher Agent.")
+            # Log the decision explicitly
+            logger.log_orchestrator_decision(
+                decision="Initiate Teaching",
+                reasoning=f"Based on state, decided to teach segment {tutor_context.user_model_state.current_topic_segment_index} of topic '{tutor_context.current_teaching_topic}'.",
+                data={"topic": tutor_context.current_teaching_topic, "segment": tutor_context.user_model_state.current_topic_segment_index})
             if not tutor_context.current_teaching_topic:
                  logger.log_error("TeacherRun", "Orchestrator signaled teaching but current_teaching_topic is not set in context.")
                  raise HTTPException(status_code=500, detail="Internal error: Cannot initiate teaching without a topic set by Orchestrator.")
@@ -535,6 +541,11 @@ async def interact_with_tutor(
         elif isinstance(orchestrator_output, (ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse)):
             # If orchestrator returns a direct response, use it
             response_data = orchestrator_output
+            # Log the decision
+            logger.log_orchestrator_decision(
+                decision=f"Return Direct Response ({response_data.response_type})",
+                reasoning="Orchestrator determined a direct response was needed.",
+                data={"response_type": response_data.response_type})
             # Update context if orchestrator modified it (Runner does this), then save to DB
             # await session_manager.update_session_context(supabase, session_id, user.id, tutor_context) # Moved saving to after response determination
             print(f"[Interact] Orchestrator returned direct response. Type: {type(response_data)}")
@@ -543,6 +554,10 @@ async def interact_with_tutor(
             # Fallback for unexpected orchestrator output
             print(f"[Interact] Unexpected Orchestrator output type: {type(orchestrator_output)}")
             response_data = ErrorResponse(error=f"Unexpected orchestrator output type: {type(orchestrator_output)}")
+            logger.log_orchestrator_decision(
+                decision="Handle Unexpected Output",
+                reasoning=f"Orchestrator output was of unexpected type: {type(orchestrator_output)}.",
+                data={"output_type": str(type(orchestrator_output))})
             # Create a default error response if none exists
             if not isinstance(response_data, ErrorResponse):
                  response_data = ErrorResponse(error="Unknown or invalid response type from agent.")
