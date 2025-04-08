@@ -23,17 +23,24 @@ class UploadedFile(BaseModel):
 class FileUploadManager:
     """Manages the upload and processing of files for the AI tutor."""
     
-    def __init__(self, supabase: Client):
+    def __init__(self, supabase: Client, vector_store_id: Optional[str] = None):
         """Initialize the FileUploadManager."""
         # API key is handled globally by the SDK setup
         self.client = openai.Client() # Relies on globally configured key/client
         self.uploaded_files = []
-        self.vector_store_id = None
+        self.vector_store_id = vector_store_id # Initialize with passed ID
         self.supabase = supabase
         self.bucket_name = "document_uploads"
     
-    async def upload_and_process_file(self, file_path: str, user_id: UUID, folder_id: UUID) -> UploadedFile:
-        """Upload a file to Supabase Storage, then to OpenAI, and add to Vector Store."""
+    async def upload_and_process_file(self, file_path: str, user_id: UUID, folder_id: UUID, existing_vector_store_id: Optional[str] = None) -> UploadedFile:
+        """
+        Upload a file to Supabase Storage, then to OpenAI, and add to Vector Store.
+        Uses existing_vector_store_id if provided, otherwise creates a new one.
+        Updates the corresponding folder record with the vector store ID.
+        """
+        # Use provided existing ID or the manager's stored ID
+        self.vector_store_id = existing_vector_store_id or self.vector_store_id
+
         filename = os.path.basename(file_path)
         supabase_path = f"{user_id}/{folder_id}/{filename}"
 
@@ -60,15 +67,19 @@ class FileUploadManager:
             
             print(f"Successfully uploaded file content: {filename}, OpenAI File ID: {file_id}")
             
-            # Create a vector store if one doesn't exist yet
+            # Create a vector store if one doesn't exist *or wasn't provided*
+            vector_store_created_now = False
             if not self.vector_store_id:
                 # Create a vector store with a meaningful name
                 vs_response = self.client.vector_stores.create(
                     name=f"AI Tutor Vector Store - {filename}"
                 )
                 self.vector_store_id = vs_response.id
-                print(f"Created vector store: {self.vector_store_id}")
-            
+                vector_store_created_now = True
+                print(f"Created NEW vector store: {self.vector_store_id}")
+            else:
+                print(f"Using EXISTING vector store: {self.vector_store_id}")
+
             # Add the file to the vector store
             self.client.vector_stores.files.create(
                 vector_store_id=self.vector_store_id,
@@ -82,6 +93,17 @@ class FileUploadManager:
                 vector_store_id=self.vector_store_id
             )
             print(f"Vector store files status: {files_status}")
+            
+            # Update the folder record with the vector_store_id (if newly created or maybe always to be safe)
+            try:
+                update_resp = self.supabase.table("folders").update(
+                    {"vector_store_id": self.vector_store_id}
+                ).eq("id", str(folder_id)).eq("user_id", user_id).execute()
+                if update_resp.data:
+                    print(f"Updated folder {folder_id} with vector_store_id {self.vector_store_id}")
+                else: print(f"Warning: Failed to update folder {folder_id} with vector_store_id: {update_resp.error}")
+            except Exception as upd_e:
+                print(f"Error updating folder {folder_id} with vector_store_id: {upd_e}")
             
             # Create and return an uploaded file
             uploaded_file = UploadedFile(

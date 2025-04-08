@@ -209,17 +209,18 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
     
     # --- Save analysis text (Knowledge Base) to Supabase folders table ---
     if supabase and context and context.folder_id:
+        folder_id_to_update = str(context.folder_id) # Ensure UUID is string
         try:
             update_response = supabase.table("folders").update(
                 {"knowledge_base": analysis_text}
-            ).eq("id", str(context.folder_id)).eq("user_id", context.user_id).execute()
+            ).eq("id", folder_id_to_update).execute()
 
             if update_response.data:
                 print(f"Knowledge Base saved to Supabase for folder {context.folder_id}")
-            else:
+            elif update_response.error: # Check for explicit error
                 print(f"Error saving Knowledge Base to Supabase folder {context.folder_id}: {update_response.error}")
         except Exception as e:
-            print(f"Exception saving Knowledge Base to Supabase: {e}")
+            print(f"Exception saving Knowledge Base to Supabase folder {context.folder_id}: {e}")
     # --- End Supabase KB saving ---
     
     # Extract key concepts for use in other parts of the application

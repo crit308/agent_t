@@ -37,7 +37,7 @@ def create_interactive_teacher_agent(vector_store_id: str) -> Agent['TutorContex
 
     provider: OpenAIProvider = OpenAIProvider()
     # Maybe use a slightly more capable model for interactive logic
-    base_model = provider.get_model("gpt-4o-mini")
+    base_model = provider.get_model("gpt-4o-2024-08-06")
 
     file_search_tool = FileSearchTool(
         vector_store_ids=[vector_store_id],

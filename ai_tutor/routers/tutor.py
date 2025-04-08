@@ -94,6 +94,7 @@ async def upload_session_documents(
     logger = get_session_logger(session_id)
     folder_id = tutor_context.folder_id
     if not folder_id:
+        logger.log_error("UploadError", "Session context is missing folder_id.")
         raise HTTPException(status_code=400, detail="Session context is missing folder information.")
     file_upload_manager = FileUploadManager(supabase) # Pass Supabase client
     uploaded_filenames = []
@@ -123,7 +124,12 @@ async def upload_session_documents(
     try:
         for i, temp_path in enumerate(temp_file_paths):
             # Pass user_id and folder_id to file upload manager
-            uploaded_file = await file_upload_manager.upload_and_process_file(temp_path, user.id, folder_id)
+            uploaded_file = await file_upload_manager.upload_and_process_file(
+                file_path=temp_path,
+                user_id=user.id,
+                folder_id=folder_id,
+                existing_vector_store_id=vector_store_id # Pass current VS ID
+            )
             if not vector_store_id:
                 vector_store_id = uploaded_file.vector_store_id
             message += f"Uploaded {uploaded_filenames[i]} (Supabase: {uploaded_file.supabase_path}, OpenAI ID: {uploaded_file.file_id}). "

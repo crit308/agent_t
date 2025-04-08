@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Any, Optional, TYPE_CHECKING
 import json
+import re # Import re for parsing KB
 import time
 import uuid
 from pathlib import Path
@@ -9,6 +10,9 @@ from fastapi import HTTPException # For raising errors
 from uuid import UUID # Import UUID
 
 from ai_tutor.context import TutorContext # Import the main context model
+
+# Needed for context creation
+from ai_tutor.context import UserModelState
 
 # Models might still be needed if SessionManager directly interacts with them.
 from ai_tutor.agents.models import LessonPlan, LessonContent, Quiz, QuizFeedback, SessionAnalysis
@@ -32,7 +36,58 @@ class SessionManager:
     async def create_session(self, supabase: Client, user_id: UUID, folder_id: UUID) -> UUID:
         """Creates a new session in Supabase DB and returns its ID."""
         session_id = uuid.uuid4()
-        context = TutorContext(session_id=session_id, user_id=user_id, folder_id=folder_id) # Include user_id and folder_id
+        print(f"Creating new session {session_id} linked to folder {folder_id} for user {user_id}")
+
+        # --- Fetch Folder Data ---
+        folder_data = None
+        initial_vector_store_id = None
+        initial_analysis_result = None
+
+        try:
+            folder_response: PostgrestAPIResponse = supabase.table("folders").select("knowledge_base, vector_store_id, name").eq("id", str(folder_id)).eq("user_id", user_id).maybe_single().execute()
+            if folder_response.data:
+                folder_data = folder_response.data
+                initial_vector_store_id = folder_data.get("vector_store_id")
+                kb_text = folder_data.get("knowledge_base")
+                print(f"Found existing folder data. VS_ID: {initial_vector_store_id}, KB Length: {len(kb_text) if kb_text else 0}")
+
+                # Attempt to parse knowledge_base text into AnalysisResult
+                if kb_text:
+                    try:
+                        # Basic parsing logic - needs to match analyzer_agent output format
+                        concepts = re.findall(r"KEY CONCEPTS:\n(.*?)\nCONCEPT DETAILS:", kb_text, re.DOTALL)
+                        terms_match = re.findall(r"KEY TERMS GLOSSARY:\n(.*)", kb_text, re.DOTALL) # Assume rest is terms
+                        files_match = re.findall(r"FILES:\n(.*?)\nFILE METADATA:", kb_text, re.DOTALL)
+
+                        key_concepts = [c.strip() for c in concepts[0].strip().split('\n')] if concepts else []
+                        key_terms = dict(re.findall(r"^\s*([^:]+):\s*(.+)$", terms_match[0].strip(), re.MULTILINE)) if terms_match else {}
+                        file_names = [f.strip() for f in files_match[0].strip().split('\n')] if files_match else []
+
+                        initial_analysis_result = AnalysisResult(analysis_text=kb_text, key_concepts=key_concepts, key_terms=key_terms, file_names=file_names, vector_store_id=initial_vector_store_id or "")
+                        print("Successfully parsed Knowledge Base into AnalysisResult object.")
+                    except Exception as parse_error:
+                        print(f"Warning: Failed to parse Knowledge Base text for folder {folder_id}: {parse_error}. Proceeding without parsed analysis.")
+                        initial_analysis_result = None # Ensure it's None if parsing fails
+
+            else:
+                print(f"No existing folder data found for folder {folder_id}. Creating fresh context.")
+                # Folder might be newly created, context will be minimal initially
+
+        except Exception as folder_exc:
+            print(f"Error fetching folder data for {folder_id}: {folder_exc}")
+            # Decide whether to proceed with empty context or raise error
+            # Proceeding with empty for now
+
+        # --- Initialize TutorContext ---
+        context = TutorContext(
+            session_id=session_id,
+            user_id=user_id,
+            folder_id=folder_id,
+            vector_store_id=initial_vector_store_id,
+            analysis_result=initial_analysis_result,
+            # Keep default UserModelState unless loading from a *previous session's* context
+            user_model_state=UserModelState()
+        )
         context_dict = context.model_dump(mode='json')
 
         try:
