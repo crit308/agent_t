@@ -1,9 +1,30 @@
 from __future__ import annotations
-from pydantic import BaseModel
+
+import json
+from uuid import UUID
+
+# Store original default method from the JSONEncoder class
+_original_json_encoder_default = json.JSONEncoder.default
+
+def _custom_json_encoder_default(self, obj):
+    """Custom default method for JSONEncoder to handle UUIDs."""
+    if isinstance(obj, UUID):
+        # If the object is a UUID, convert it to its string representation
+        return str(obj)
+    # For any other object type, fall back to the original default method
+    # This ensures that standard JSON types and any other custom handling
+    # registered elsewhere are still processed correctly.
+    return _original_json_encoder_default(self, obj)
+
+# Monkey-patch the default method of json.JSONEncoder
+# Now, any part of the application using standard json.dumps
+# (including libraries like httpx used by the tracer) will use this logic.
+json.JSONEncoder.default = _custom_json_encoder_default
+
+from pydantic import BaseModel, ConfigDict
 from datetime import datetime # Keep datetime import for conversion if needed
 from typing import Optional, List, Any, Dict, Literal, TYPE_CHECKING
 from pydantic import Field
-from uuid import UUID # Import UUID
 
 # Use TYPE_CHECKING to prevent runtime circular imports for type hints
 if TYPE_CHECKING:
@@ -39,6 +60,12 @@ class UserModelState(BaseModel):
 
 class TutorContext(BaseModel):
     """Context object for an AI Tutor session."""
+    # Add model_config to specify custom JSON encoders
+    model_config = ConfigDict(
+        json_encoders={
+            UUID: str  # Tell Pydantic to serialize UUID objects as strings
+        }
+    )
     # user_id: Optional[str] = None
     user_id: UUID # User ID from Supabase Auth, now mandatory UUID
     session_id: UUID # Use UUID

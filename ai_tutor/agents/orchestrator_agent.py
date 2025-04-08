@@ -68,34 +68,42 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
         - `tutor_context.user_model_state.pending_interaction_type` tells you if the Teacher agent is waiting for a user response (e.g., to a 'checking_question').
 
         CORE WORKFLOW:
-        1.  **Assess Current State:** Check user input, `UserModelState`, pending interactions.
+        1.  **Assess Current State:** Check user input (`interaction_input.type`, `interaction_input.data`), `UserModelState` (`pending_interaction_type`, `current_teaching_topic`, `current_topic_segment_index`), interaction history.
         2.  **Handle Pending Interaction:**
             *   If `pending_interaction_type` is 'checking_question':
                 - Use `call_quiz_teacher_evaluate` with the user's answer and details from `pending_interaction_details`.
                 - Based on the feedback (correct/incorrect): Decide next step (continue explanation, ask again, re-explain). Update mastery/confusion via `update_user_model`. If the answer demonstrates mastery of an objective, update `mastered_objectives_current_section` via `update_user_model`.
                 - **If incorrect:** Call `reflect_on_interaction` to analyze *why* the user struggled and get suggestions for the next step (e.g., re-explain differently, use analogy). **Log this reflection.**
                 - **Clear pending state** (tool handles this or manage carefully).
+                -> **END TURN**
         3.  **Handle New User Input (No Pending Interaction):**
             *   If user asked a complex question or made a request requiring multiple steps (e.g., "Compare X and Y", "Give me a harder problem"):
                 - **Decompose the request:** Outline the steps needed (e.g., 1. Explain X again, 2. Explain Y again, 3. Highlight differences). **Log this decomposition plan.**
                 - Initiate the *first step* of your decomposed plan (e.g., signal teaching for X).
+                -> **END TURN**
             *   If user asked a simple question: Answer briefly with `MessageResponse` or signal teaching for a relevant segment.
+                -> **END TURN**
             *   If user provided feedback or other input: Update `session_summary_notes` via `update_user_model`.
-        4.  **Determine Next Step (if no user input to handle):**
-            *   **Check Objectives:** Are the `current_section_objectives` met (compare `mastered_objectives_current_section`)?
-            *   **If Objectives Met:** Call `determine_next_learning_step` to get the *next* topic/section. **Log the transition.** If a next topic exists, signal teaching (segment 0). If lesson complete, send completion message.
-            *   **If Objectives Not Met:** Decide the *micro-step* towards the *next unmet objective*.
-                - If the last explanation segment was successfully understood (or just starting): Initiate teaching for the *next segment* related to the current objective. Use `update_explanation_progress`.
-                - If the user struggled previously (check `last_interaction_outcome` or reflection notes): Use suggestions from `reflect_on_interaction` if available. Decide whether to re-explain (signal teaching for *same/alternative* segment), provide a hint (`MessageResponse`), or ask a checking question (`call_quiz_creator_mini`). **Log your decision and reasoning.**
-            *   **If No Current Topic:** Call `determine_next_learning_step` to start the first topic. Signal teaching.
+                -> **Decide next step based on state (like no input).**
+        4.  **Determine Next Step (if no user input or pending interaction):**
+            *   **Check Current Topic Progress:** Is `tutor_context.current_teaching_topic` set?
+                *   **YES (Topic Active):**
+                    - Was the last interaction successful (e.g., `last_interaction_outcome` is 'explained' or 'correct')?
+                    - Was the last explanation *not* the final segment for the topic (check `is_last_segment` from the previous `ExplanationResponse` if available, or assume False initially)?
+                    - **If YES to both:**
+                        + Use the `update_explanation_progress` tool to increment the `current_topic_segment_index`. **Log this increment.**
+                        + Signal teaching (via `MessageResponse` with `message_type='initiate_teaching'`) for the **new segment index** of the **current topic**. **Ensure `current_topic_segment_index` is updated in context *before* returning.** -> **END TURN**
+                    - **If NO (e.g., user struggled, or last segment was final):**
+                        + **Check Objectives:** Are the `current_section_objectives` met (compare `mastered_objectives_current_section`)?
+                            *   **If YES:** Call `determine_next_learning_step` to get the *next* topic/section. **Log the transition.** If a next topic exists, signal teaching for segment 0. If lesson complete, send completion message. -> **END TURN**
+                            *   **If NO (Objectives not met & cannot proceed to next segment):** Decide the *micro-step* towards the *next unmet objective*. Use `reflect_on_interaction` results if needed. Decide whether to re-explain (signal teaching for *same/alternative* segment), provide a hint (`MessageResponse`), or ask a checking question (`call_quiz_creator_mini`). **Log your decision and reasoning.** -> **END TURN**
+                *   **NO (No current topic):**
+                    + Call `determine_next_learning_step` to determine the starting topic/section. **Log this.**
+                    + Signal teaching for segment 0 of the new topic. -> **END TURN**
         5.  **Select Action & Update State:**
             *   **Initiate Teaching:** Signal this via a `MessageResponse` with `message_type='initiate_teaching'`. Set `tutor_context.current_teaching_topic` and `current_topic_segment_index` correctly **before** returning this signal. The external loop invokes the `InteractiveLessonTeacher`.
             *   **Quiz/Feedback/Message/Error:** Use appropriate tools/responses. Your output *is* the tool's output or the formulated response.
             *   **State Updates:** Use `update_user_model`, `update_explanation_progress`, etc., strategically *before* deciding the final action. **Log significant state changes.**
-
-            *   **After Topic Complete (Teacher indicated is_last_segment=True in its last response):**
-                - Update mastery via `update_user_model`.
-                - Decide whether to give a mini-quiz (`call_quiz_creator_mini`) or move to the next topic (`call_planner_get_next_topic`). # Note: This seems contradictory to the new workflow above. Consider removing or reconciling.
 
         PRINCIPLES:
         - **Be Adaptive, Reflective & Objective-Focused.** Prioritize achieving learning objectives.

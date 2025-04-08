@@ -444,145 +444,119 @@ async def interact_with_tutor(
     logger = get_session_logger(session_id)
     print(f"\n=== Starting /interact for session {session_id} ===")
     print(f"[Interact] Input Type: {interaction_input.type}, Data: {interaction_input.data}")
-    print(f"[Interact] Context before run: pending_interaction={tutor_context.user_model_state.pending_interaction_type}, current_topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
+    print(f"[Interact] Context BEFORE Orchestrator: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
 
     user: User = request.state.user
-    # --- Agent Execution Logic --- 
+    # --- Agent Execution Logic ---
     final_response_data: TutorInteractionResponse
 
-    try:
-        print(f"[Interact] Fetching context for session {session_id}...") # Log context fetch
-        run_config = RunConfig(
-            workflow_name="AI Tutor Interaction",
-            group_id=str(tutor_context.session_id) # Convert UUID to string
-        )
+    print(f"[Interact] Fetching context for session {session_id}...") # Log context fetch
+    run_config = RunConfig(
+        workflow_name="Tutor_Interaction",
+        group_id=session_id
+    )
 
-        # Always run the Orchestrator first to decide the next step or handle pending interactions.
-        orchestrator_agent = create_orchestrator_agent(tutor_context.vector_store_id)
-        print(f"[Interact] Orchestrator agent created.") # Log agent creation
+    # Always run the Orchestrator first to decide the next step or handle pending interactions.
+    orchestrator_agent = create_orchestrator_agent(tutor_context.vector_store_id)
+    print(f"[Interact] Orchestrator agent created.") # Log agent creation
 
-        # Prepare input for the Orchestrator
-        if tutor_context.user_model_state.pending_interaction_type:
-            # If waiting for user input, provide it clearly
-            print("[Interact] Pending interaction detected. Running Orchestrator to evaluate.")
-            orchestrator_input = f"User Response to Pending Interaction '{tutor_context.user_model_state.pending_interaction_type}' | Type: {interaction_input.type} | Data: {json.dumps(interaction_input.data)}"
-            logger.log_user_input(f"User Response (Pending): {interaction_input.type} - {interaction_input.data}") # Log user input
-        else:
-            # No pending interaction, Orchestrator decides next general step
-            print("[Interact] No pending interaction. Running Orchestrator to decide next step.")
-            orchestrator_input = f"User Action | Type: {interaction_input.type} | Data: {json.dumps(interaction_input.data)}"
-            logger.log_user_input(f"User Action: {interaction_input.type} - {interaction_input.data}") # Log user input
+    # Prepare input for the Orchestrator
+    if tutor_context.user_model_state.pending_interaction_type:
+        # If waiting for user input, provide it clearly
+        print("[Interact] Pending interaction detected. Running Orchestrator to evaluate.")
+        orchestrator_input = f"User Response to Pending Interaction '{tutor_context.user_model_state.pending_interaction_type}' | Type: {interaction_input.type} | Data: {json.dumps(interaction_input.data)}"
+        logger.log_user_input(f"User Response (Pending): {interaction_input.type} - {interaction_input.data}") # Log user input
+    else:
+        # No pending interaction, Orchestrator decides next general step
+        print("[Interact] No pending interaction. Running Orchestrator to decide next step.")
+        orchestrator_input = f"User Action | Type: {interaction_input.type} | Data: {json.dumps(interaction_input.data)}"
+        logger.log_user_input(f"User Action: {interaction_input.type} - {interaction_input.data}") # Log user input
 
-        print(f"[Interact] Running Agent: {orchestrator_agent.name}")
-        orchestrator_result = await Runner.run(
-            orchestrator_agent,
-            orchestrator_input,
-            context=tutor_context, # Context is mutable and modified by tools
+    print(f"[Interact] Running Agent: {orchestrator_agent.name}")
+    orchestrator_result = await Runner.run(
+        orchestrator_agent,
+        orchestrator_input,
+        context=tutor_context, # Context is mutable and modified by tools
+        run_config=run_config
+    )
+    orchestrator_output = orchestrator_result.final_output # This is TutorInteractionResponse type
+    # Log the raw output which might contain implicit reasoning before parsing
+    logger.log_orchestrator_output(orchestrator_output)
+    print(f"[Interact] Orchestrator Raw Output: {orchestrator_output}") # Log raw output first
+    print(f"[Interact] Orchestrator Output Type: {type(orchestrator_output)}")
+
+    # --- Handle Orchestrator Output ---
+    if isinstance(orchestrator_output, (MessageResponse, FeedbackResponse, ErrorResponse)):
+        # Direct responses from orchestrator (no teacher needed)
+        final_response_data = orchestrator_output
+        print(f"[Interact] Using direct Orchestrator response of type: {type(final_response_data)}")
+
+    elif isinstance(orchestrator_output, TutorInteractionResponse) and orchestrator_output.message_type == 'initiate_teaching':
+        # Orchestrator wants the teacher to explain/teach
+        print(f"[Interact] Orchestrator signaled teaching. Creating Teacher Agent...")
+
+        # Create Teacher Agent (lazy loading)
+        if not teacher_agent:
+            teacher_agent = create_interactive_teacher_agent(tutor_context.vector_store_id)
+            print(f"[Interact] Created new Teacher Agent: {teacher_agent.name}")
+
+        # Teacher input can be generic; its instructions guide it based on context
+        teacher_input = f"Explain segment {tutor_context.user_model_state.current_topic_segment_index} of topic '{tutor_context.current_teaching_topic}'."
+
+        print(f"[Interact] Context BEFORE Teacher: topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
+        print(f"[Interact] Running Teacher Agent: {teacher_agent.name} for topic '{tutor_context.current_teaching_topic}' segment {tutor_context.user_model_state.current_topic_segment_index}")
+        teacher_result = await Runner.run(
+            teacher_agent,
+            teacher_input,
+            context=tutor_context,
             run_config=run_config
         )
-        orchestrator_output = orchestrator_result.final_output # This is TutorInteractionResponse type
-        # Log the raw output which might contain implicit reasoning before parsing
-        logger.log_orchestrator_output(orchestrator_output)
-        print(f"[Interact] Orchestrator Raw Output: {orchestrator_output}") # Log raw output first
-        print(f"[Interact] Orchestrator Output Type: {type(orchestrator_output)}")
 
-        # --- Handle Orchestrator Output ---
+        # The teacher's output (ExplanationResponse or QuestionResponse) is the final response
+        final_response_data = teacher_result.final_output # Type is TeacherInteractionOutput
+        logger.log_teacher_output(final_response_data) # Log teacher's specific output
+        print(f"[Interact] Context AFTER Teacher: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
+        print(f"[Interact] Teacher Output Type: {type(final_response_data)}, Content: {final_response_data}")
 
-        # A) If Orchestrator initiated teaching:
-        if isinstance(orchestrator_output, MessageResponse) and orchestrator_output.message_type == 'initiate_teaching':
-            print(f"[Interact] Orchestrator signaled to initiate teaching. Running Teacher Agent.")
-            # Log the decision explicitly
-            logger.log_orchestrator_decision(
-                decision="Initiate Teaching",
-                reasoning=f"Based on state, decided to teach segment {tutor_context.user_model_state.current_topic_segment_index} of topic '{tutor_context.current_teaching_topic}'.",
-                data={"topic": tutor_context.current_teaching_topic, "segment": tutor_context.user_model_state.current_topic_segment_index})
-            if not tutor_context.current_teaching_topic:
-                 logger.log_error("TeacherRun", "Orchestrator signaled teaching but current_teaching_topic is not set in context.")
-                 raise HTTPException(status_code=500, detail="Internal error: Cannot initiate teaching without a topic set by Orchestrator.")
-            
-            try:
-                teacher_agent = create_interactive_teacher_agent(tutor_context.vector_store_id)
-                # Teacher input can be generic; its instructions guide it based on context
-                teacher_input = f"Explain segment {tutor_context.user_model_state.current_topic_segment_index} of topic '{tutor_context.current_teaching_topic}'."
-                
-                print(f"[Interact] Running Teacher Agent: {teacher_agent.name} for topic '{tutor_context.current_teaching_topic}' segment {tutor_context.user_model_state.current_topic_segment_index}")
-                teacher_result = await Runner.run(
-                    teacher_agent,
-                    teacher_input,
-                    context=tutor_context, # Pass the *same context object*
-                    run_config=run_config 
-                )
-                # The teacher's output (ExplanationResponse or QuestionResponse) is the final response
-                final_response_data = teacher_result.final_output # Type is TeacherInteractionOutput
-                logger.log_teacher_output(final_response_data) # Log teacher's specific output
-                print(f"[Interact] Teacher Output Type: {type(final_response_data)}, Content: {final_response_data}")
+        # Update context based on teacher's action (Runner updates context in-place)
+        if isinstance(final_response_data, QuestionResponse):
+            # Teacher asked a checking question - set pending state
+            tutor_context.user_model_state.pending_interaction_type = 'checking_question'
+            tutor_context.user_model_state.pending_interaction_details = {
+                'question': final_response_data.question,
+                'options': final_response_data.options,
+                'correct_index': final_response_data.correct_index,
+                'topic': tutor_context.current_teaching_topic
+            }
+            print(f"[Interact] Teacher asked checking question. Set pending_interaction_type='checking_question'")
 
-                # Update context based on teacher's action (Runner updates context in-place)
-                # Example: Teacher might set pending_interaction_type in the context
-                # Persist the updated context back to Supabase
-                # await session_manager.update_session_context(supabase, session_id, user.id, tutor_context) # Moved saving to after response determination
-                print(f"[Interact] Context after Teacher: pending_interaction={tutor_context.user_model_state.pending_interaction_type}, current_topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
+        elif isinstance(final_response_data, ExplanationResponse):
+            # Teacher provided an explanation - update progress if needed
+            if final_response_data.is_last_segment:
+                print(f"[Interact] Teacher indicated last segment. Orchestrator will handle next steps.")
+            else:
+                print(f"[Interact] Teacher provided explanation for segment {tutor_context.user_model_state.current_topic_segment_index}")
 
-                # Return the Teacher's output, not the Orchestrator's message
-                response_data = final_response_data
-
-            except Exception as teacher_error:
-                detailed_error = traceback.format_exc()
-                logger.log_error("TeacherAgentError", f"Error running Teacher Agent: {teacher_error}")
-                print(f"[Interact] !!! Teacher Agent Error: {teacher_error} !!!\n{detailed_error}") # Log error
-                # Return an error response instead of raising HTTP exception immediately
-                response_data = ErrorResponse(
-                    response_type="error",
-                    message=f"Error during teaching phase: {str(teacher_error)}",
-                    details={"traceback": detailed_error}
-                )
-        
-        # B) Handle other orchestrator outputs (e.g., asking for clarification, quiz)
-        elif isinstance(orchestrator_output, (ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse)):
-            # If orchestrator returns a direct response, use it
-            response_data = orchestrator_output
-            # Log the decision
-            logger.log_orchestrator_decision(
-                decision=f"Return Direct Response ({response_data.response_type})",
-                reasoning="Orchestrator determined a direct response was needed.",
-                data={"response_type": response_data.response_type})
-            # Update context if orchestrator modified it (Runner does this), then save to DB
-            # await session_manager.update_session_context(supabase, session_id, user.id, tutor_context) # Moved saving to after response determination
-            print(f"[Interact] Orchestrator returned direct response. Type: {type(response_data)}")
-        else:
-            # This case should ideally not happen if the agent's output_type is enforced
-            # Fallback for unexpected orchestrator output
-            print(f"[Interact] Unexpected Orchestrator output type: {type(orchestrator_output)}")
-            response_data = ErrorResponse(error=f"Unexpected orchestrator output type: {type(orchestrator_output)}")
-            logger.log_orchestrator_decision(
-                decision="Handle Unexpected Output",
-                reasoning=f"Orchestrator output was of unexpected type: {type(orchestrator_output)}.",
-                data={"output_type": str(type(orchestrator_output))})
-            # Create a default error response if none exists
-            if not isinstance(response_data, ErrorResponse):
-                 response_data = ErrorResponse(error="Unknown or invalid response type from agent.")
-
-        # --- Save Context AFTER determining the final response ---
-        print(f"[Interact] Saving final context state to Supabase for session {session_id}")
-        await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
-        print(f"[Interact] Context after full run: pending_interaction={tutor_context.user_model_state.pending_interaction_type}, current_topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}") # Log final state
-
-        # Return the structured response
-        return InteractionResponseData(
-            content_type=response_data.response_type,
-            data=response_data, # Send the response from the final agent run
-            user_model_state=tutor_context.user_model_state # Send updated state
+    else:
+        # Unexpected output type - return error
+        error_msg = f"Unexpected output type from Orchestrator: {type(orchestrator_output)}"
+        print(f"[Interact] Error: {error_msg}")
+        final_response_data = ErrorResponse(
+            error=error_msg,
+            message="There was an internal error processing your request."
         )
 
-    except HTTPException as http_exc:
-        print(f"[Interact] HTTPException: {http_exc.detail}") # Log HTTP exceptions
-        raise http_exc # Re-raise HTTP exceptions
-    except Exception as e:
-        logger.log_error("InteractEndpoint", e)
-        print(f"[Interact] Internal Server Error: {e}") # Log general errors
-        # Print traceback for detailed debugging
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"An internal server error occurred: {e}")
+    # --- Save Context AFTER determining the final response ---
+    print(f"[Interact] Saving final context state to Supabase for session {session_id}")
+    await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
+    print(f"[Interact] Context saved AFTER run: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
+
+    # Return the structured response
+    return InteractionResponseData(
+        content_type=final_response_data.response_type,
+        data=final_response_data, # Send the response from the final agent run
+        user_model_state=tutor_context.user_model_state # Send updated state
+    )
 
 # --- Remove POST /quiz/submit (Legacy) ---
 # Quiz answers are now handled via the /interact endpoint.
