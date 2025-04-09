@@ -6,7 +6,7 @@ from agents import Agent, FileSearchTool, ModelProvider, function_tool
 from agents.models.openai_provider import OpenAIProvider
 from agents.run_context import RunContextWrapper
 
-from ai_tutor.agents.models import LearningObjective, LessonSection, LessonPlan, QuizQuestion
+from ai_tutor.agents.models import FocusObjective
 from ai_tutor.agents.utils import RoundingModelWrapper
 from ai_tutor.context import TutorContext
 import os
@@ -71,42 +71,41 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
 
     # Instantiate the base model provider and get the base model
     provider: OpenAIProvider = OpenAIProvider()
-    base_model = provider.get_model("o3-mini")
+    base_model = provider.get_model("gpt-4o")
 
-    # Create the planner agent with access to the file search tool
+    # Create the planner agent specifying context type generically and output_type via parameter
     planner_agent = Agent[TutorContext](
-        name="Lesson Planner",
-        instructions="""You are an expert curriculum designer. Your task is to create a well-structured lesson plan based on analyzed documents.
+        name="Focus Planner",
+        instructions="""You are an expert learning strategist. Your task is to determine the user's **next learning focus** based on the analyzed documents and potentially their current progress (provided in the prompt context).
 
         AVAILABLE INFORMATION:
         - You have a `read_knowledge_base` tool to get the document analysis summary stored in the database.
         - You have a `file_search` tool to look up specific details within the source documents (vector store).
+        - The prompt may contain information about the user's current state (`UserModelState` summary).
 
         YOUR WORKFLOW **MUST** BE:
-        1.  **Read Knowledge Base ONCE:** Call the `read_knowledge_base` tool *exactly one time* at the beginning to get the document analysis summary.
-        2.  **Confirm KB Received & Analyze Summary:** Once you have the Knowledge Base summary from the tool, **DO NOT call `read_knowledge_base` again**. Use the *entire* summary provided by the tool to understand key concepts, terms, and structure.
-        3.  **Use `file_search` ONLY if Necessary:** If, *after analyzing the full KB summary*, you lack specific details (like examples or steps) needed for a section, use `file_search` sparingly to find that information in the source documents. Do NOT use `file_search` for information already present in the KB summary.
-        4.  **Create Lesson Plan:** Synthesize information from the KB analysis and any necessary `file_search` results to create a complete `LessonPlan` object.
-        - For each `LessonSection`, you MUST include:
-          * Clear learning objectives for each section
-          * Logical sequence of sections
-          * Appropriate time durations for each section
-          * Consideration of prerequisites
-          * Target audience
-          * `prerequisites`: A list of concept/section titles that must be understood *before* this section. Leave empty if none.
-          * `is_optional`: A boolean indicating if the section covers core material (False) or is supplementary/advanced (True). Infer this based on the content's nature (e.g., introductory sections are rarely optional).
-          * Ensure `concepts_to_cover` clearly relates to the `objectives` for that section.
+        1.  **Read Knowledge Base ONCE:** Call the `read_knowledge_base` tool *exactly one time* at the beginning to get the document analysis summary (key concepts, terms, etc.).
+        2.  **Confirm KB Received & Analyze Summary:** Once you have the Knowledge Base summary from the tool, **DO NOT call `read_knowledge_base` again**. Analyze the KB and any provided user state summary.
+        3.  **Identify Next Focus:** Determine the single most important topic or concept the user should learn next. Consider prerequisites implied by the KB structure and the user's current state (e.g., last completed topic, identified struggles).
+        4.  **Define Learning Goal:** Formulate a clear, specific learning goal for this focus topic.
+        5.  **Use `file_search` Sparingly:** If needed to clarify the goal or identify crucial related concepts for the chosen focus topic, use `file_search`.
 
-        STEP 4: OUTPUT
-        - Output the lesson plan as a complete structured LessonPlan object.
+        OUTPUT:
+        - Your output **MUST** be a single, valid JSON object matching the `FocusObjective` schema. Do NOT add any other text before or after the JSON object.
+        - The `FocusObjective` object MUST contain:
+            * `topic`: The main topic to focus on.
+            * `learning_goal`: The specific objective for this topic.
+            * `priority`: An estimated priority (1-5).
+            * `relevant_concepts`: Key concepts from the KB related to this topic.
+            * `suggested_approach`: (Optional) A hint for the Orchestrator.
 
         CRITICAL REMINDERS:
         - **You MUST call `read_knowledge_base` only ONCE at the very start.**
-        - DO NOT call any handoff tools. Your only output should be the LessonPlan object.
+        - Your only output MUST be a single `FocusObjective` object. Do NOT create a full `LessonPlan`.
         """,
         tools=planner_tools,
-        output_type=LessonPlan,
-        model=RoundingModelWrapper(base_model),
+        output_type=FocusObjective,
+        model=base_model,
     )
     
     return planner_agent 

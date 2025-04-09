@@ -1,15 +1,15 @@
 import os
 import openai
 import json
+from typing import Any
 
 from agents import Agent, Runner, handoff, HandoffInputData, ModelProvider
 from agents.models.openai_provider import OpenAIProvider
 from agents.run_context import RunContextWrapper
 from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 
-from ai_tutor.agents.models import LessonContent, Quiz
+from ai_tutor.agents.models import LessonContent, Quiz, QuizCreationResult, QuizQuestion
 from ai_tutor.agents.utils import process_handoff_data, RoundingModelWrapper
-from ai_tutor.agents.quiz_teacher_agent import create_quiz_teacher_agent
 
 
 def quiz_to_teacher_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
@@ -41,14 +41,14 @@ def create_quiz_creator_agent(api_key: str = None):
     
     # Instantiate the base model provider and get the base model
     provider: ModelProvider = OpenAIProvider()
-    base_model = provider.get_model("o3-mini")
+    base_model = provider.get_model("gpt-4o")
     
     # Create the quiz creator agent
-    quiz_creator_agent = Agent(
+    quiz_creator_agent = Agent[Any](
         name="Quiz Creator",
         instructions="""
         You are an expert educational assessment designer specialized in creating effective quizzes.
-        Your task is to create a comprehensive quiz based on the lesson content provided to you.
+        Your task is to create quiz questions based on the specific instructions provided in the prompt (e.g., topic, number of questions, difficulty).
         
         Guidelines for creating effective quiz questions:
         1. Create a mix of easy, medium, and hard questions that cover all key concepts from the lesson
@@ -59,32 +59,23 @@ def create_quiz_creator_agent(api_key: str = None):
         6. Target approximately 2-3 questions per lesson section
         
         CRITICAL REQUIREMENTS:
-        1. You MUST create at least 5 questions for the quiz, even if the lesson content is minimal
-        2. Each question MUST have exactly 4 multiple-choice options
+        1. Follow the instructions in the prompt regarding the number of questions. If asked for ONE question, create only ONE.
+        2. Each multiple-choice question MUST have exactly 4 options unless specified otherwise.
         3. Set an appropriate passing score (typically 70% of total points)
         4. Ensure total_points equals the number of questions
         5. Set a reasonable estimated_completion_time_minutes (typically 1-2 minutes per question)
         
-        FORMAT REQUIREMENTS:
-        - Your output MUST be a valid Quiz object with the following structure:
-          * title: String (quiz title)
-          * description: String (quiz description)
-          * lesson_title: String (title of the lesson this quiz is based on)
-          * questions: Array of QuizQuestion objects, each with:
-            - question: String (the question text)
-            - options: Array of 4 strings (multiple choice options)
-            - correct_answer_index: Integer (0-based index of correct answer)
-            - explanation: String (explanation of correct answer)
-            - difficulty: String (Easy, Medium, or Hard)
-            - related_section: String (section this question relates to)
-          * passing_score: Integer (minimum points to pass)
-          * total_points: Integer (total possible points)
-          * estimated_completion_time_minutes: Integer (estimated time to complete)
-        
-        YOUR OUTPUT MUST BE ONLY A VALID QUIZ OBJECT.
+        FORMAT REQUIREMENTS FOR YOUR OUTPUT:
+        - Your final output MUST be a single, valid `QuizCreationResult` JSON object.
+        - If successful, set `status` to "created".
+        - If you created a single question, put the `QuizQuestion` object in the `question` field.
+        - If you created multiple questions, put the full `Quiz` object in the `quiz` field.
+        - If failed, set `status` to "failed" and provide details.
+
+        Do NOT ask follow-up questions or manage conversation flow. Just create the requested quiz/question(s).
         """,
-        output_type=Quiz,
-        model=RoundingModelWrapper(base_model),
+        output_type=QuizCreationResult,
+        model=base_model,
     )
     
     return quiz_creator_agent
@@ -104,9 +95,6 @@ def create_quiz_creator_agent_with_teacher_handoff(api_key: str = None):
     else:
         print(f"Using OPENAI_API_KEY from environment for quiz creator agent")
     
-    # Create the quiz teacher agent to hand off to
-    quiz_teacher_agent = create_quiz_teacher_agent(api_key)
-    
     # Define an on_handoff function for when quiz creator hands off to quiz teacher
     async def on_handoff_to_quiz_teacher(ctx: RunContextWrapper[any], quiz: Quiz) -> None:
         print(f"Handoff triggered from quiz creator to quiz teacher: {quiz.title}")
@@ -114,14 +102,14 @@ def create_quiz_creator_agent_with_teacher_handoff(api_key: str = None):
     
     # Instantiate the base model provider and get the base model
     provider: ModelProvider = OpenAIProvider()
-    base_model = provider.get_model("o3-mini")
+    base_model = provider.get_model("gpt-4o")
     
     # Create the quiz creator agent
-    quiz_creator_agent = Agent(
+    quiz_creator_agent = Agent[Any](
         name="Quiz Creator",
         instructions=prompt_with_handoff_instructions("""
         You are an expert educational assessment designer specialized in creating effective quizzes.
-        Your task is to create a comprehensive quiz based on the lesson content provided to you.
+        Your task is to create quiz questions based on the specific instructions provided in the prompt (e.g., topic, number of questions, difficulty).
         
         Guidelines for creating effective quiz questions:
         1. Create a mix of easy, medium, and hard questions that cover all key concepts from the lesson
@@ -132,44 +120,26 @@ def create_quiz_creator_agent_with_teacher_handoff(api_key: str = None):
         6. Target approximately 2-3 questions per lesson section
         
         CRITICAL REQUIREMENTS:
-        1. You MUST create at least 5 questions for the quiz, even if the lesson content is minimal
-        2. Each question MUST have exactly 4 multiple-choice options
+        1. Follow the instructions in the prompt regarding the number of questions. If asked for ONE question, create only ONE.
+        2. Each multiple-choice question MUST have exactly 4 options unless specified otherwise.
         3. Set an appropriate passing score (typically 70% of total points)
         4. Ensure total_points equals the number of questions
         5. Set a reasonable estimated_completion_time_minutes (typically 1-2 minutes per question)
         
-        FORMAT REQUIREMENTS:
-        - Your output MUST be a valid Quiz object with the following structure:
-          * title: String (quiz title)
-          * description: String (quiz description)
-          * lesson_title: String (title of the lesson this quiz is based on)
-          * questions: Array of QuizQuestion objects, each with:
-            - question: String (the question text)
-            - options: Array of 4 strings (multiple choice options)
-            - correct_answer_index: Integer (0-based index of correct answer)
-            - explanation: String (explanation of correct answer)
-            - difficulty: String (Easy, Medium, or Hard)
-            - related_section: String (section this question relates to)
-          * passing_score: Integer (minimum points to pass)
-          * total_points: Integer (total possible points)
-          * estimated_completion_time_minutes: Integer (estimated time to complete)
-        
-        YOUR OUTPUT MUST BE ONLY A VALID QUIZ OBJECT.
-        
-        After generating the quiz, use the transfer_to_quiz_teacher tool to hand off to the Quiz Teacher agent
-        which will evaluate user responses and provide feedback.
+        FORMAT REQUIREMENTS FOR YOUR OUTPUT:
+        - Your final output MUST be a single, valid `QuizCreationResult` JSON object.
+        - If successful, set `status` to "created".
+        - If you created a single question, put the `QuizQuestion` object in the `question` field.
+        - If you created multiple questions, put the full `Quiz` object in the `quiz` field.
+        - If failed, set `status` to "failed" and provide details.
+
+        Do NOT ask follow-up questions or manage conversation flow. Just create the requested quiz/question(s).
         """),
         handoffs=[
-            handoff(
-                agent=quiz_teacher_agent,
-                on_handoff=on_handoff_to_quiz_teacher,
-                input_type=Quiz,
-                input_filter=quiz_to_teacher_handoff_filter,
-                tool_description_override="Transfer to the Quiz Teacher agent who will evaluate user responses and provide feedback. Provide the complete Quiz object as input."
-            )
+            # Remove handoff - Orchestrator calls Quiz Teacher tool directly if needed
         ],
-        output_type=Quiz,
-        model=RoundingModelWrapper(base_model),
+        output_type=QuizCreationResult,
+        model=base_model,
     )
     
     return quiz_creator_agent

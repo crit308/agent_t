@@ -1,10 +1,10 @@
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
 import json
 
 # Custom JSON encoder to control floating point precision
 class PrecisionControlEncoder(json.JSONEncoder):
-    """Custom JSON encoder that ensures floating point values don't exceed 8 decimal places."""
+    """DEPRECATED: Use RoundingModelWrapper. Custom JSON encoder for float precision."""
     
     def __init__(self, *args, **kwargs):
         # Remove our custom parameter if present
@@ -258,3 +258,26 @@ class SessionAnalysis(BaseModel):
 # And MiniQuizInfo which references QuizQuestion
 # LessonContent.model_rebuild()
 # MiniQuizInfo.model_rebuild() 
+
+# --- NEW: Focus Objective from Planner ---
+class FocusObjective(BaseModel):
+    """The next learning focus identified by the Planner Agent."""
+    topic: str = Field(description="The primary topic or concept to focus on.")
+    learning_goal: str = Field(description="A specific, measurable goal for this focus area (e.g., 'Understand local vs global scope', 'Solve quadratic equations').")
+    priority: int = Field(description="Priority from 1-5 (5=highest) based on prerequisites or user need.")
+    relevant_concepts: List[str] = Field(default_factory=list, description="List of related concepts from the knowledge base.")
+    suggested_approach: Optional[str] = Field(None, description="Optional hint for the Orchestrator (e.g., 'Needs examples', 'Requires practice quiz').")
+
+# --- NEW: Potential Result Models for Agents as Tools ---
+class ExplanationResult(BaseModel):
+    """Result returned by the Teacher agent tool."""
+    status: Literal["delivered", "failed", "skipped"]
+    details: Optional[str] = None
+
+# --- NEW: Potential Result Models for Agents as Tools ---
+class QuizCreationResult(BaseModel):
+    """Result returned by the Quiz Creator agent tool."""
+    status: Literal["created", "failed"]
+    quiz: Optional[Quiz] = None # Could contain the full quiz if multiple questions requested
+    question: Optional[QuizQuestion] = None # Could contain a single question
+    details: Optional[str] = None 

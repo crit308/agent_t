@@ -14,8 +14,10 @@ from ai_tutor.dependencies import get_supabase_client # Import dependency from n
 from agents import set_default_openai_key, set_default_openai_api, Agent # Import Agent
 from ai_tutor.auth import verify_token # Assume auth.py exists for JWT verification
 
-# Import models needed for resolving forward references in TutorContext
-from ai_tutor.agents.models import LessonPlan, LessonSection, LearningObjective, QuizQuestion, QuizFeedbackItem # Add LessonSection, LearningObjective
+# Import models needed for resolving forward references in TutorContext and other API models
+from ai_tutor.agents.models import (
+    LessonPlan, LessonSection, LearningObjective, QuizQuestion, QuizFeedbackItem, FocusObjective # Add FocusObjective
+)
 from ai_tutor.agents.analyzer_agent import AnalysisResult
 from ai_tutor.api_models import TutorInteractionResponse, InteractionResponseData # Add InteractionResponseData
 
@@ -43,6 +45,7 @@ AnalysisResult.model_rebuild() # Rebuild if it uses forward refs
 LessonPlan.model_rebuild() # Rebuild if it uses forward refs
 QuizQuestion.model_rebuild() # Rebuild if it uses forward refs
 QuizFeedbackItem.model_rebuild() # Add if used in TutorInteractionResponse directly or indirectly
+FocusObjective.model_rebuild() # Rebuild the newly added model if it uses forward refs (likely not, but safe)
 TutorContext.model_rebuild() # Now this should work
 
 app = FastAPI(

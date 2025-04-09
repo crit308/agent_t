@@ -28,7 +28,7 @@ from pydantic import Field
 
 # Use TYPE_CHECKING to prevent runtime circular imports for type hints
 if TYPE_CHECKING:
-    from ai_tutor.agents.models import LessonPlan, QuizQuestion, LearningObjective
+    from ai_tutor.agents.models import LessonPlan, QuizQuestion, LearningObjective, FocusObjective
     from ai_tutor.agents.analyzer_agent import AnalysisResult
 
 class UserConceptMastery(BaseModel):
@@ -76,6 +76,7 @@ class TutorContext(BaseModel):
     knowledge_base_path: Optional[str] = None # Add path to KB file
     lesson_plan: Optional['LessonPlan'] = None # Use forward reference
     current_quiz_question: Optional['QuizQuestion'] = None # Use forward reference
+    current_focus_objective: Optional['FocusObjective'] = None # NEW: Store the current focus from Planner
     user_model_state: UserModelState = Field(default_factory=UserModelState)
     last_interaction_summary: Optional[str] = None # What did the tutor just do? What did user respond?
     current_teaching_topic: Optional[str] = None # Which topic is the Teacher actively explaining?

@@ -12,7 +12,10 @@ import traceback # Import traceback for error logging
 from ai_tutor.context import TutorContext, UserConceptMastery, UserModelState
 
 # --- Import necessary models ---
-from ai_tutor.agents.models import LessonPlan, QuizQuestion, QuizFeedbackItem, LessonContent, Quiz, LessonSection, LearningObjective
+#from ai_tutor.agents.models import LessonPlan, QuizQuestion, QuizFeedbackItem, LessonContent, Quiz, LessonSection, LearningObjective
+# Models needed by the tools themselves or for type hints
+from ai_tutor.agents.models import FocusObjective, QuizQuestion, QuizFeedbackItem, ExplanationResult, QuizCreationResult # Import new models
+# from ai_tutor.agents.models import LessonPlan, LessonContent, Quiz, LessonSection, LearningObjective # Remove unused models
 
 # Import API response models for potentially formatting tool output
 from ai_tutor.api_models import (
@@ -26,73 +29,13 @@ async def call_quiz_creator_mini(
     ctx: RunContextWrapper[TutorContext],
     topic: str
 ) -> Union[QuizQuestion, str]: # Return Question object or error string
-    """Generates a single multiple-choice question for the given topic using the Quiz Creator agent."""
-    print(f"[Tool] Requesting mini-quiz for topic '{topic}'")
-    
-    if not topic or not isinstance(topic, str):
-        return "Error: Invalid topic provided for quiz."
-
-    try:
-        # --- Import and Create Agent *Inside* ---
-        from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent # Import here
-        # ----------------------------------------
-        run_config = RunConfig(workflow_name="Orchestrator_QuizCall", group_id=ctx.context.session_id)
-
-        # Get user's mastery level for difficulty adjustment
-        mastery_level = 0.0
-        if topic in ctx.context.user_model_state.concepts:
-            mastery_level = ctx.context.user_model_state.concepts[topic].mastery_level
-
-        # Get confusion points if any
-        confusion_points = []
-        if topic in ctx.context.user_model_state.concepts:
-            confusion_points = ctx.context.user_model_state.concepts[topic].confusion_points
-
-        # Construct the prompt
-        confusion_points_str = "\nFocus on these areas of confusion:\n- " + "\n- ".join(confusion_points) if confusion_points else ""
-        difficulty_guidance = "Make the question more challenging." if mastery_level > 0.7 else "Keep the question straightforward." if mastery_level < 0.3 else ""
-
-        quiz_prompt = f"""
-        Create a single multiple-choice question to test understanding of: {topic}
-        
-        Current mastery level: {mastery_level:.2f}
-        {difficulty_guidance}
-        {confusion_points_str}
-        
-        Format your response as a Quiz object with a single question that includes:
-        - question text
-        - multiple choice options
-        - correct answer index
-        - explanation for the correct answer
-        - related_section: '{topic}'
-        """
-
-        result = await Runner.run(
-            quiz_creator,
-            quiz_prompt,
-            context=ctx.context,
-            run_config=run_config
-        )
-
-        quiz_output = result.final_output_as(Quiz)
-        if quiz_output and quiz_output.questions:
-            first_question = quiz_output.questions[0]
-            print(f"[Tool] Got mini-quiz for '{topic}': {first_question.question[:50]}...")
-            ctx.context.current_quiz_question = first_question
-            return first_question
-        else:
-            return f"Error: Quiz creator failed to generate question for topic '{topic}'."
-
-    except Exception as e:
-        error_msg = f"Error in call_quiz_creator_mini: {str(e)}"
-        print(f"[Tool] {error_msg}")
-        return error_msg
-
+    """DEPRECATED: Use call_quiz_creator_agent instead. Generates a single multiple-choice question."""
+    return "Error: This tool is deprecated. Use call_quiz_creator_agent to invoke the quiz creator."
 
 @function_tool
 async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_answer_index: int) -> Union[QuizFeedbackItem, str]:
     """Evaluates the user's answer to the current question using the Quiz Teacher logic (via helper function)."""
-    print(f"[Tool] Evaluating user answer index '{user_answer_index}' for current question.")
+    print(f"[Tool call_quiz_teacher_evaluate] Evaluating user answer index '{user_answer_index}'.")
     
     try:
         # --- Import evaluation function *Inside* ---
@@ -105,7 +48,7 @@ async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_
             # Add type check for safety
             return f"Error: Expected QuizQuestion in context, found {type(question_to_evaluate).__name__}."
 
-        print(f"[Tool] Evaluating answer for question: {question_to_evaluate.question[:50]}...")
+        print(f"[Tool call_quiz_teacher_evaluate] Evaluating answer for question: {question_to_evaluate.question[:50]}...")
         feedback_item = await evaluate_single_answer(
             question=question_to_evaluate,
             user_answer_index=user_answer_index,
@@ -113,7 +56,7 @@ async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_
         )
 
         if feedback_item:
-            print(f"[Tool] Evaluation complete. Feedback: Correct={feedback_item.is_correct}, Explanation: {feedback_item.explanation[:50]}...")
+            print(f"[Tool call_quiz_teacher_evaluate] Evaluation complete. Feedback: Correct={feedback_item.is_correct}, Explanation: {feedback_item.explanation[:50]}...")
             # Clear pending interaction *after* successful evaluation & getting feedback
             ctx.context.user_model_state.pending_interaction_type = None
             ctx.context.user_model_state.pending_interaction_details = None
@@ -122,97 +65,21 @@ async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_
             return feedback_item
         else:
             # The evaluate_single_answer helper should ideally return feedback or raise
-            error_msg = f"Error: Evaluation helper function returned None for question on topic '{getattr(question_to_evaluate, 'related_section', 'N/A')}'."
+            error_msg = f"Error: Evaluation failed for question on topic '{getattr(question_to_evaluate, 'related_section', 'N/A')}'."
             print(f"[Tool] {error_msg}")
             return error_msg # Return error string
             
     except Exception as e:
-        error_msg = f"Error in call_quiz_teacher_evaluate: {str(e)}"
+        error_msg = f"Exception in call_quiz_teacher_evaluate: {str(e)}"
         print(f"[Tool] {error_msg}")
         # Optionally clear pending state even on error? Depends on desired flow.
         # ctx.context.user_model_state.pending_interaction_type = None 
-        # ctx.context.user_model_state.pending_interaction_details = None
         return error_msg # Return error string
 
 @function_tool
-def determine_next_learning_step(ctx: RunContextWrapper[TutorContext], lesson_plan: LessonPlan = None) -> Dict[str, Any]:
-    """Determines the next learning step based on the current state and lesson plan."""
-    user_state = ctx.context.user_model_state
-    current_topic = ctx.context.current_teaching_topic
-
-    print(f"[Tool determine_next_learning_step] Called. Current topic from context: '{current_topic}'")
-
-    if not lesson_plan or not lesson_plan.sections:
-        print("[Tool determine_next_learning_step] Lesson plan not found or empty.")
-        return {"error": "Lesson plan not found or empty.", "next_topic": None}
-
-    current_section_index = -1
-    if current_topic:
-        try:
-            current_section_index = next(i for i, sec in enumerate(lesson_plan.sections) if sec.title == current_topic)
-        except StopIteration:
-            print(f"[Tool determine_next_learning_step] Warning: Current topic '{current_topic}' not found in plan. Resetting.")
-            current_topic = None # Reset if current topic is invalid
-            current_section_index = -1 # Ensure index is reset too
-
-    next_section_index = -1
-    next_section = None
-
-    # If there's a current topic, check if objectives are met before moving on
-    if current_section_index != -1:
-        print(f"[Tool determine_next_learning_step] Current topic '{current_topic}' found at index {current_section_index}.")
-        current_section = lesson_plan.sections[current_section_index]
-        # Basic check: Have all objectives for this section been 'mastered'?
-        # TODO: Enhance this check - map concept mastery to objectives if possible.
-        all_objectives_mastered = len(user_state.mastered_objectives_current_section) >= len(current_section.objectives)
-
-        if all_objectives_mastered:
-            print(f"[Tool determine_next_learning_step] Objectives for '{current_topic}' seem complete. Determining next section.")
-            if current_section_index + 1 < len(lesson_plan.sections):
-                next_section_index = current_section_index + 1
-            else:
-                next_section_index = -2 # Signal end of lesson
-        else:
-            # **** CHANGE ****
-            # If objectives are NOT met, the decision to stay or re-assess
-            # should be made by the Orchestrator based on interaction outcomes.
-            # This tool should signal that the current topic is NOT complete.
-            print(f"[Tool determine_next_learning_step] Objectives for '{current_topic}' not yet met. Signaling to stay on topic.")
-            # Return current topic details, but Orchestrator should know not to reset segment index
-            # based on its own logic.
-            ctx.context.user_model_state.current_section_objectives = current_section.objectives # Ensure objectives are set
-            return {"next_topic": current_topic, "objectives": [o.model_dump() for o in current_section.objectives], "status": "topic_incomplete"}
-            # **** END CHANGE ****
-    else:
-        # No current topic, start from the beginning
-        print("[Tool determine_next_learning_step] No current topic. Starting from the first section.")
-        next_section_index = 0
-
-    if next_section_index >= 0:
-        next_section = lesson_plan.sections[next_section_index]
-        next_topic_title = next_section.title
-
-        # --- Update Context ONLY WHEN MOVING TO A NEW TOPIC ---
-        print(f"[Tool determine_next_learning_step] Selecting NEW topic: '{next_topic_title}'")
-        ctx.context.current_teaching_topic = next_topic_title
-        ctx.context.user_model_state.current_topic_segment_index = 0 # Reset segment index for new/repeated topic
-        ctx.context.user_model_state.current_section_objectives = next_section.objectives
-        # Reset mastered objectives if it's a *new* topic
-        if current_topic != next_topic_title:
-            print(f"[Tool determine_next_learning_step] Resetting mastered objectives for new topic.")
-            ctx.context.user_model_state.mastered_objectives_current_section = []
-        # --- End Update Context ---
-
-        print(f"[Tool determine_next_learning_step] Next step: Topic='{next_topic_title}', Objectives: {[o.title for o in next_section.objectives]}")
-        return {"next_topic": next_topic_title, "objectives": [o.model_dump() for o in next_section.objectives], "status": "new_topic_selected"}
-    else:
-        # End of lesson plan (index was -2 or out of bounds)
-        print("[Tool determine_next_learning_step] Reached end of lesson plan.")
-        ctx.context.current_teaching_topic = None
-        ctx.context.user_model_state.current_topic_segment_index = 0 # Reset segment index
-        ctx.context.user_model_state.current_section_objectives = []
-        return {"next_topic": None, "message": "Lesson complete!", "status": "lesson_complete"}
-
+def determine_next_learning_step(ctx: RunContextWrapper[TutorContext]) -> Dict[str, Any]:
+    """DEPRECATED: The Planner agent now determines the next focus. Use call_planner_agent."""
+    return {"error": "This tool is deprecated. Use call_planner_agent to get the next focus."}
 
 @function_tool
 async def update_user_model(
@@ -224,7 +91,7 @@ async def update_user_model(
     mastered_objective_title: Optional[str] = None, # Optional: Mark an objective as mastered
 ) -> str:
     """Updates the user model state with interaction outcomes and temporal data."""
-    print(f"[Tool] Updating user model for topic '{topic}' with outcome '{outcome}'")
+    print(f"[Tool update_user_model] Updating '{topic}' with outcome '{outcome}'")
 
     # Ensure context and user model state exist
     if not ctx.context or not ctx.context.user_model_state:
@@ -273,15 +140,8 @@ async def update_user_model(
 
 @function_tool
 def update_explanation_progress(ctx: RunContextWrapper[TutorContext], segment_index: int) -> str:
-    """Updates the current explanation segment index in the user model state."""
-    print(f"[Tool] Updating explanation segment index to {segment_index}")
-    if not isinstance(segment_index, int) or segment_index < 0:
-        print(f"[Tool] Error: Invalid segment_index '{segment_index}' provided.")
-        return "Error: Invalid segment_index provided."
-    # Directly update the context object's state
-    ctx.context.user_model_state.current_topic_segment_index = segment_index
-    ctx.context.last_interaction_summary = f"Advanced to explanation segment {segment_index}"
-    return f"Explanation progress updated to segment {segment_index}."
+    """DEPRECATED: The Orchestrator manages micro-steps directly."""
+    return "Error: This tool is deprecated. Orchestrator manages micro-steps."
 
 @function_tool
 async def get_user_model_status(ctx: RunContextWrapper[TutorContext], topic: Optional[str] = None) -> Dict[str, Any]:
@@ -312,20 +172,9 @@ async def get_user_model_status(ctx: RunContextWrapper[TutorContext], topic: Opt
             "last_accessed": concept.last_accessed
         }
     
-    return {
-        "overall_progress": state.overall_progress,
-        "current_topic": state.current_topic,
-        "learning_pace": state.learning_pace_factor,
-        "preferred_style": state.preferred_interaction_style,
-        "topics": {
-            topic: {
-                "mastery": concept.mastery_level,
-                "attempts": concept.attempts,
-                "confusion_points": len(concept.confusion_points)
-            }
-            for topic, concept in state.concepts.items()
-        }
-    } 
+    # Return full state summary if no specific topic requested
+    # Use model_dump for serializable output
+    return state.model_dump(mode='json')
 
 @function_tool
 async def reflect_on_interaction(
@@ -355,17 +204,196 @@ async def reflect_on_interaction(
     elif "incorrect" in interaction_summary.lower() or "struggled" in interaction_summary.lower():
         suggestions.append(f"Consider re-explaining the last segment of '{topic}' using a different approach or analogy.")
         suggestions.append(f"Ask a simpler checking question focused on the specific confusion points for '{topic}'.")
+    else: # If interaction was positive or just an explanation
+        analysis += "Interaction seems positive or neutral."
+        suggestions.append("Proceed with the next logical step in the micro-plan (e.g., next segment, checking question).")
 
     print(f"[Tool reflect_on_interaction] Analysis: {analysis}. Suggestions: {suggestions}")
     return {"analysis": analysis, "suggested_next_steps": suggestions}
 
+# --- NEW Tools to Call Other Agents ---
+
+@function_tool
+async def call_planner_agent(
+    ctx: RunContextWrapper[TutorContext],
+    user_state_summary: Optional[str] = None # Optional summary of user state
+) -> Union[FocusObjective, str]:
+    """Calls the Planner Agent to determine the next learning focus objective. Returns FocusObjective on success, or an error string on failure."""
+    print("[Tool call_planner_agent] Calling Planner Agent...")
+    try:
+        # --- Import and Create Agent *Inside* ---
+        from ai_tutor.agents.planner_agent import create_planner_agent # Import here
+        # ----------------------------------------
+        if not ctx.context.vector_store_id:
+            return "Error: Vector store ID not found in context for Planner."
+
+        planner_agent = create_planner_agent(ctx.context.vector_store_id)
+        run_config = RunConfig(workflow_name="Orchestrator_PlannerCall", group_id=ctx.context.session_id)
+
+        # Construct prompt for the planner
+        planner_prompt = f"""
+        Determine the next learning focus for the user.
+        First, call `read_knowledge_base` to understand the material's structure and concepts.
+        Analyze the knowledge base.
+        {f'Consider the user state: {user_state_summary}' if user_state_summary else 'Assume the user is starting or has just completed the previous focus.'}
+        Identify the single most important topic or concept for the user to focus on next.
+        Output your decision ONLY as a FocusObjective object.
+        """
+
+        result = await Runner.run(
+            planner_agent,
+            planner_prompt,
+            context=ctx.context,
+            run_config=run_config
+        )
+
+        # Check the type of the final output BEFORE trying to access attributes
+        if isinstance(result.final_output, FocusObjective):
+            focus_objective = result.final_output
+            print(f"[Tool call_planner_agent] Planner returned focus: {focus_objective.topic}")
+            # Store the new focus in context
+            ctx.context.current_focus_objective = focus_objective
+            return focus_objective
+        else:
+            error_msg = f"Error: Planner agent did not return a valid FocusObjective object. Got type: {type(result.final_output).__name__}. Raw output: {result.final_output}"
+            print(f"[Tool call_planner_agent] {error_msg}")
+            # Return a descriptive error string that the orchestrator might understand
+            return "PLANNER_OUTPUT_ERROR: Planner failed to generate valid focus objective."
+
+    except Exception as e:
+        # Catch any exception during the agent run or creation
+        error_msg = f"EXCEPTION calling Planner Agent: {str(e)}\n{traceback.format_exc()}"
+        print(f"[Tool] {error_msg}")
+        # Return a different error string for exceptions vs. wrong output type
+        return "PLANNER_EXECUTION_ERROR: An exception occurred while running the planner."
+
+@function_tool
+async def call_teacher_agent(
+    ctx: RunContextWrapper[TutorContext],
+    topic: str,
+    explanation_details: str # e.g., "Explain the concept generally", "Provide an example", "Focus on the difference between X and Y"
+) -> Union[ExplanationResult, str]:
+    """Calls the Teacher Agent to provide an explanation for a specific topic/detail."""
+    print(f"[Tool call_teacher_agent] Requesting explanation for '{topic}': {explanation_details}")
+    try:
+        # --- Import and Create Agent *Inside* ---
+        from ai_tutor.agents.teacher_agent import create_interactive_teacher_agent # Naming needs update based on actual refactor
+        # ----------------------------------------
+        if not ctx.context.vector_store_id:
+            return "Error: Vector store ID not found in context for Teacher."
+
+        teacher_agent = create_interactive_teacher_agent(ctx.context.vector_store_id) # TODO: Update function name if changed
+        run_config = RunConfig(workflow_name="Orchestrator_TeacherCall", group_id=ctx.context.session_id)
+
+        teacher_prompt = f"""
+        Explain the topic: '{topic}'.
+        Specific instructions for this explanation: {explanation_details}.
+        Use the file_search tool if needed to find specific information or examples from the documents.
+        Format your response ONLY as an ExplanationResult object containing the explanation text in the 'details' field.
+        """
+
+        result = await Runner.run(
+            teacher_agent,
+            teacher_prompt,
+            context=ctx.context,
+            run_config=run_config
+        )
+
+        # Log the raw output for debugging
+        print(f"[Tool call_teacher_agent] Teacher Agent Raw Output Type: {type(result.final_output)}")
+        print(f"[Tool call_teacher_agent] Teacher Agent Raw Output Content: {result.final_output}")
+
+        # Check the type BEFORE trying to access attributes or using final_output_as
+        if isinstance(result.final_output, ExplanationResult):
+            explanation_result = result.final_output
+            if explanation_result.status == "delivered":
+                print(f"[Tool call_teacher_agent] Teacher delivered structured explanation for '{topic}'.")
+                ctx.context.last_interaction_summary = f"Teacher explained {topic}." # Update summary
+                return explanation_result # Return the structured result
+            else:
+                # Handle structured failure/skipped cases
+                error_msg = f"TEACHER_RESULT_ERROR: Teacher agent returned status '{explanation_result.status}'. Details: {explanation_result.details}"
+                print(f"[Tool call_teacher_agent] {error_msg}")
+                return error_msg # Return error string
+        elif isinstance(result.final_output, str):
+            # If it's a string, wrap it in a successful ExplanationResult for consistency.
+            print(f"[Tool call_teacher_agent] Teacher delivered explanation for '{topic}'.")
+
+            wrapped_result = ExplanationResult(status="delivered", details=result.final_output)
+            ctx.context.last_interaction_summary = f"Teacher explained {topic} (raw string)."
+            return wrapped_result # Return the wrapped result
+        else:
+            # Handle other unexpected output types
+            error_msg = f"TEACHER_OUTPUT_ERROR: Teacher agent returned unexpected output type: {type(result.final_output).__name__}. Raw output: {result.final_output}"
+            print(f"[Tool call_teacher_agent] {error_msg}")
+            return error_msg # Return error string
+
+    except Exception as e:
+        error_msg = f"Error calling Teacher Agent: {str(e)}\n{traceback.format_exc()}"
+        print(f"[Tool] {error_msg}")
+        return error_msg
+
+@function_tool
+async def call_quiz_creator_agent(
+    ctx: RunContextWrapper[TutorContext],
+    topic: str,
+    instructions: str # e.g., "Create one medium difficulty question", "Create a 3-question quiz covering key concepts"
+) -> Union[QuizCreationResult, str]:
+    """Calls the Quiz Creator Agent to generate one or more quiz questions."""
+    print(f"[Tool call_quiz_creator_agent] Requesting quiz creation for '{topic}': {instructions}")
+    try:
+        # --- Import and Create Agent *Inside* ---
+        from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent # Or the new tool function name
+        # ----------------------------------------
+
+        # Assuming create_quiz_creator_agent is the function that returns the agent instance
+        quiz_creator_agent = create_quiz_creator_agent() # TODO: Update function name if changed. Pass API key if needed.
+        run_config = RunConfig(workflow_name="Orchestrator_QuizCreatorCall", group_id=ctx.context.session_id)
+
+        quiz_creator_prompt = f"""
+        Create quiz questions based on the following instructions:
+        Topic: '{topic}'
+        Instructions: {instructions}
+        Format your response ONLY as a QuizCreationResult object. Include the created question(s) in the appropriate field ('question' or 'quiz').
+        """
+
+        result = await Runner.run(
+            quiz_creator_agent,
+            quiz_creator_prompt,
+            context=ctx.context,
+            run_config=run_config
+        )
+
+        quiz_creation_result = result.final_output_as(QuizCreationResult)
+        if quiz_creation_result and quiz_creation_result.status == "created":
+            question_count = 1 if quiz_creation_result.question else len(quiz_creation_result.quiz.questions) if quiz_creation_result.quiz else 0
+            print(f"[Tool call_quiz_creator_agent] Quiz Creator created {question_count} question(s) for '{topic}'.")
+            # Store the created question if it's a single one for evaluation
+            if quiz_creation_result.question:
+                 ctx.context.current_quiz_question = quiz_creation_result.question
+            return quiz_creation_result
+        else:
+            details = getattr(quiz_creation_result, 'details', 'No details provided.')
+            return f"Error: Quiz Creator agent failed for '{topic}'. Status: {getattr(quiz_creation_result, 'status', 'unknown')}. Details: {details}"
+
+    except Exception as e:
+        error_msg = f"Error calling Quiz Creator Agent: {str(e)}\n{traceback.format_exc()}"
+        print(f"[Tool] {error_msg}")
+        return error_msg
+
 # Ensure all tools intended for the orchestrator are exported or available
 __all__ = [
-    'call_quiz_creator_mini',
+    # --- NEW ---
+    'call_planner_agent',
+    'call_teacher_agent',
+    'call_quiz_creator_agent',
+    # --- Kept ---
     'call_quiz_teacher_evaluate',
     'reflect_on_interaction',
-    'determine_next_learning_step',
     'update_user_model',
     'get_user_model_status',
-    'update_explanation_progress',
+    # --- Removed ---
+    # 'call_quiz_creator_mini',
+    # 'determine_next_learning_step',
+    # 'update_explanation_progress',
 ] 

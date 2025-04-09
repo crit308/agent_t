@@ -14,12 +14,12 @@ from uuid import UUID
 from ai_tutor.session_manager import SessionManager
 from ai_tutor.tools.file_upload import FileUploadManager
 from ai_tutor.agents.analyzer_agent import analyze_documents
-from ai_tutor.agents.planner_agent import create_planner_agent
 from ai_tutor.agents.session_analyzer_agent import analyze_teaching_session
 from ai_tutor.agents.orchestrator_agent import create_orchestrator_agent
 from ai_tutor.agents.teacher_agent import create_interactive_teacher_agent
 from ai_tutor.agents.analyzer_agent import AnalysisResult
 from ai_tutor.agents.models import (
+    FocusObjective,
     LessonPlan, LessonContent, Quiz, QuizUserAnswers, QuizFeedback, SessionAnalysis
 )
 from ai_tutor.api_models import (
@@ -212,7 +212,7 @@ async def get_session_analysis_results(
 
 @router.post(
     "/sessions/{session_id}/plan",
-    response_model=LessonPlan,
+    response_model=FocusObjective,
     summary="Generate Lesson Plan",
     dependencies=[Depends(verify_token)], # Add auth dependency
     tags=["Tutoring Workflow"]
@@ -223,73 +223,72 @@ async def generate_session_lesson_plan(
     tutor_context: TutorContext = Depends(get_tutor_context) # Use parsed context
 ):
     """
-    Generates a lesson plan based on the analyzed documents stored in the session context.
-    Stores the plan back into the session context.
+    DEPRECATED: Use /interact instead.
+    This endpoint triggers the Orchestrator to get the initial focus objective from the Planner.
+    The focus objective is stored in the session context and returned.
     """
     logger = get_session_logger(session_id)
     # Get user from request state
-    user: User = request.state.user # Get user from request state populated by verify_token dependency
+    user: User = request.state.user
 
     # Get vector store ID and analysis result from context
     vector_store_id = tutor_context.vector_store_id
-    analysis_result = tutor_context.analysis_result
-    folder_id = tutor_context.folder_id # Get folder_id from context
+    # analysis_result = tutor_context.analysis_result # No longer directly needed by this endpoint
+    # folder_id = tutor_context.folder_id # No longer directly needed by this endpoint
 
     # Initial checks are good to keep, ensure data looks okay before agent creation
     if not vector_store_id:
         raise HTTPException(status_code=400, detail="Documents must be uploaded first.")
-    if not folder_id:
-        raise HTTPException(status_code=400, detail="Knowledge base file path not found or file missing.")
+    # Remove KB check, planner tool handles reading it
 
     # --- Wrap the main logic in a try...except block ---
     try:
-        print(f"[Debug /plan] Creating planner agent for vs_id: {vector_store_id}") # Add log
-        planner_agent: Agent[TutorContext] = create_planner_agent(vector_store_id)
+        # --- Orchestrator now calls Planner via a tool ---
+        # print(f"[Debug /plan] Creating planner agent for vs_id: {vector_store_id}") # Add log
+        # planner_agent: Agent[TutorContext] = create_planner_agent(vector_store_id)
 
         # Pass the full TutorContext to the Runner
         run_config = RunConfig(
-            workflow_name="AI Tutor API - Planning",
-            group_id=str(session_id) # Convert UUID to string
+            workflow_name="AI Tutor API - Get Initial Focus", # Name reflects new purpose
+            group_id=str(session_id)
         )
 
-        print(f"[Debug /plan] Starting Runner.run for planner agent...") # Add log
+        # We need the orchestrator to call the planner tool
+        orchestrator_agent = create_orchestrator_agent() # Assuming it doesn't need vs_id directly anymore
 
-        # Prompt tells planner to use its tools (read_knowledge_base and file_search)
-        plan_prompt = """
-        Create a lesson plan. First, use the `read_knowledge_base` tool to understand the document analysis. Then, use the `file_search` tool to clarify details as needed. Finally, generate the `LessonPlan` object based on both sources of information. Follow your detailed agent instructions.
-        """
-        print(f"[Debug /plan] Planner prompt:\n{plan_prompt[:500]}...") # Log start of prompt
+        # Prompt for orchestrator to get initial focus
+        orchestrator_prompt = "The session is starting. Call the `call_planner_agent` tool to determine the initial learning focus objective."
+
+        print(f"[Debug /plan] Running Orchestrator to get initial focus...") # Add log
+        print(f"[Debug /plan] Orchestrator prompt:\n{orchestrator_prompt}") # Log start of prompt
 
         result = await Runner.run(
-            planner_agent,
-            plan_prompt,
+            orchestrator_agent,
+            orchestrator_prompt,
             run_config=run_config,
             context=tutor_context # Pass the parsed TutorContext object
         )
-        print(f"[Debug /plan] Runner.run completed. Result final_output type: {type(result.final_output)}") # Add log
+        print(f"[Debug /plan] Orchestrator run completed. Result final_output type: {type(result.final_output)}") # Add log
 
-        # --- Check the result and update session ---
-        # Use final_output_as for potential validation
-        try:
-            lesson_plan_obj = result.final_output_as(LessonPlan, raise_if_incorrect_type=True)
-            lesson_plan_to_store = lesson_plan_obj
-            logger.log_planner_output(lesson_plan_obj)
+        # Check the context *after* the run to see if the focus objective was set
+        focus_objective = tutor_context.current_focus_objective
+        if not focus_objective:
+            # Orchestrator/Planner tool failed. Log the Orchestrator's actual output for debugging.
+            logger.log_error("GetInitialFocus", f"Orchestrator failed to set focus. Final output: {result.final_output}")
+            # It's possible the orchestrator returned an ErrorResponse, check that
+            error_detail = f"Orchestrator output: {result.final_output}"
+            raise HTTPException(status_code=500, detail=f"Failed to determine initial learning focus. {error_detail}")
 
-            # Update context object and save it
-            tutor_context.lesson_plan = lesson_plan_to_store
-            # Need supabase client - get it via Depends implicitly or pass it
-            # Easiest is often to add Depends(get_supabase_client) to the signature or get it again
-            supabase: Client = await get_supabase_client() # Or add to Depends
-            success = await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
-            if not success:
-                 logger.log_error("SessionUpdate", f"Failed to update session {session_id} with lesson plan.")
-            print(f"[Debug /plan] LessonPlan stored in session.") # Add log
-            return lesson_plan_obj # Return the generated plan
-        except Exception as parse_error: # Catch if final_output isn't a LessonPlan
-            error_msg = f"Planner agent returned unexpected output or parsing failed: {parse_error}. Raw output: {result.final_output}"
-            logger.log_error("PlannerAgentOutputParse", error_msg)
-            print(f"[ERROR /plan] {error_msg}") # Add log
-            raise HTTPException(status_code=500, detail="Planner agent failed to return a valid LessonPlan.")
+        # If focus_objective is set in context, log, save context, and return it
+        logger.log_planner_output(focus_objective) # Log the focus objective
+        supabase: Client = await get_supabase_client() # Get supabase client
+        success = await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
+        if not success:
+            logger.log_error("SessionUpdate", f"Failed to update session {session_id} with focus objective.")
+            # Don't fail the request just because saving failed, but log it.
+
+        print(f"[Debug /plan] FocusObjective stored in session.") # Add log
+        return focus_objective # Return the focus objective
 
     except Exception as e:
         # --- Explicit Exception Catching and Logging ---
@@ -305,8 +304,8 @@ async def generate_session_lesson_plan(
         print(error_traceback)
         # -------------------------------------------------
 
-        # Raise a generic 500, but the logs now contain the details
-        raise HTTPException(status_code=500, detail=f"Failed to generate lesson plan due to internal error: {error_type}")
+        # Raise a generic 500, but the logs now contain the details. The detail message could be improved.
+        raise HTTPException(status_code=500, detail=f"Failed to get initial focus due to internal error: {error_type}")
 
 @router.get(
     "/sessions/{session_id}/lesson",
@@ -457,7 +456,7 @@ async def interact_with_tutor(
     )
 
     # Always run the Orchestrator first to decide the next step or handle pending interactions.
-    orchestrator_agent = create_orchestrator_agent(tutor_context.vector_store_id)
+    orchestrator_agent = create_orchestrator_agent() # Doesn't need vs_id directly
     print(f"[Interact] Orchestrator agent created.") # Log agent creation
 
     # Prepare input for the Orchestrator
@@ -467,9 +466,16 @@ async def interact_with_tutor(
         orchestrator_input = f"User Response to Pending Interaction '{tutor_context.user_model_state.pending_interaction_type}' | Type: {interaction_input.type} | Data: {json.dumps(interaction_input.data)}"
         logger.log_user_input(f"User Response (Pending): {interaction_input.type} - {interaction_input.data}") # Log user input
     else:
-        # No pending interaction, Orchestrator decides next general step
-        print("[Interact] No pending interaction. Running Orchestrator to decide next step.")
-        orchestrator_input = f"User Action | Type: {interaction_input.type} | Data: {json.dumps(interaction_input.data)}"
+        # No pending interaction. Check if focus objective exists.
+        if not tutor_context.current_focus_objective:
+            print("[Interact] No current focus. Instructing Orchestrator to call Planner.")
+            # If focus is missing, tell orchestrator to get it first.
+            orchestrator_input = "No current focus objective set. Call the `call_planner_agent` tool to determine the initial focus objective for the user."
+            # NOTE: This requires the orchestrator to handle this specific instruction.
+        else:
+            # Focus exists, proceed normally based on user input
+            print("[Interact] Focus exists. Running Orchestrator to decide next step based on user input.")
+            orchestrator_input = f"Current Focus: {tutor_context.current_focus_objective.topic} ({tutor_context.current_focus_objective.learning_goal}). User Action | Type: {interaction_input.type} | Data: {json.dumps(interaction_input.data)}"
         logger.log_user_input(f"User Action: {interaction_input.type} - {interaction_input.data}") # Log user input
 
     print(f"[Interact] Running Agent: {orchestrator_agent.name}")
@@ -486,56 +492,18 @@ async def interact_with_tutor(
     print(f"[Interact] Orchestrator Output Type: {type(orchestrator_output)}")
 
     # --- Handle Orchestrator Output ---
-    if isinstance(orchestrator_output, (MessageResponse, FeedbackResponse, ErrorResponse)):
-        # Direct responses from orchestrator (no teacher needed)
+    # The orchestrator's output *is* the final response for this turn,
+    # as it comes from the specialist agent tool call or a direct response.
+    if isinstance(orchestrator_output, TutorInteractionResponse):
         final_response_data = orchestrator_output
-        print(f"[Interact] Using direct Orchestrator response of type: {type(final_response_data)}")
-
-    elif isinstance(orchestrator_output, TutorInteractionResponse) and orchestrator_output.message_type == 'initiate_teaching':
-        # Orchestrator wants the teacher to explain/teach
-        print(f"[Interact] Orchestrator signaled teaching. Creating Teacher Agent...")
-
-        # Create Teacher Agent (lazy loading)
-        if not teacher_agent:
-            teacher_agent = create_interactive_teacher_agent(tutor_context.vector_store_id)
-            print(f"[Interact] Created new Teacher Agent: {teacher_agent.name}")
-
-        # Teacher input can be generic; its instructions guide it based on context
-        teacher_input = f"Explain segment {tutor_context.user_model_state.current_topic_segment_index} of topic '{tutor_context.current_teaching_topic}'."
-
-        print(f"[Interact] Context BEFORE Teacher: topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
-        print(f"[Interact] Running Teacher Agent: {teacher_agent.name} for topic '{tutor_context.current_teaching_topic}' segment {tutor_context.user_model_state.current_topic_segment_index}")
-        teacher_result = await Runner.run(
-            teacher_agent,
-            teacher_input,
-            context=tutor_context,
-            run_config=run_config
-        )
-
-        # The teacher's output (ExplanationResponse or QuestionResponse) is the final response
-        final_response_data = teacher_result.final_output # Type is TeacherInteractionOutput
-        logger.log_teacher_output(final_response_data) # Log teacher's specific output
-        print(f"[Interact] Context AFTER Teacher: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
-        print(f"[Interact] Teacher Output Type: {type(final_response_data)}, Content: {final_response_data}")
-
-        # Update context based on teacher's action (Runner updates context in-place)
+        print(f"[Interact] Orchestrator returned response of type: {final_response_data.response_type}")
+        # If orchestrator called quiz creator which returned a question, update pending state
         if isinstance(final_response_data, QuestionResponse):
-            # Teacher asked a checking question - set pending state
             tutor_context.user_model_state.pending_interaction_type = 'checking_question'
             tutor_context.user_model_state.pending_interaction_details = {
-                'question': final_response_data.question,
-                'options': final_response_data.options,
-                'correct_index': final_response_data.correct_index,
-                'topic': tutor_context.current_teaching_topic
+                'question': final_response_data.question.model_dump() # Store the question details
             }
             print(f"[Interact] Teacher asked checking question. Set pending_interaction_type='checking_question'")
-
-        elif isinstance(final_response_data, ExplanationResponse):
-            # Teacher provided an explanation - update progress if needed
-            if final_response_data.is_last_segment:
-                print(f"[Interact] Teacher indicated last segment. Orchestrator will handle next steps.")
-            else:
-                print(f"[Interact] Teacher provided explanation for segment {tutor_context.user_model_state.current_topic_segment_index}")
 
     else:
         # Unexpected output type - return error
