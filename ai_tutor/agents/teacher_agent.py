@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import json
 
-from google.adk.agents import LLMAgent # Use ADK Agent
+from google.adk.agents import LlmAgent # Use ADK Agent
 from google.adk.tools import BaseTool, FunctionTool, FilesRetrieval, ToolContext, LongRunningFunctionTool # ADK Tools
 from google.adk.agents import types as adk_types # ADK types
 
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 # Output type for the Agent when called *as a tool* by Orchestrator
 TeacherAgentToolOutput = TeacherTurnResult
 
-def create_interactive_teacher_agent(vector_store_id: str) -> LLMAgent:
+def create_interactive_teacher_agent(vector_store_id: str) -> LlmAgent:
     """Creates an INTERACTIVE Teacher Agent."""
 
     # provider: OpenAIProvider = OpenAIProvider() # Use ADK models
@@ -49,7 +49,7 @@ def create_interactive_teacher_agent(vector_store_id: str) -> LLMAgent:
     ]
 
     # Use LLMAgent, define input/output schemas
-    teacher_agent = LLMAgent(
+    teacher_agent = LlmAgent(
         name="InteractiveLessonTeacher",
         # Instructions now describe the internal autonomous loop
         instructions="""

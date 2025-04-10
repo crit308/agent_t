@@ -9,7 +9,8 @@ from collections import defaultdict # Added import
 import re # Added import
 
 from google.adk.runners import Runner # Use ADK Runner
-from google.adk.agents import Agent, LLMAgent # Use ADK Agents
+from google.adk.agents import BaseAgent
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig # Use ADK RunConfig
 
 from ai_tutor.tools.file_upload import FileUploadManager, upload_document

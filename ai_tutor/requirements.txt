@@ -11,5 +11,6 @@ supabase>=2.0.0 # Assuming you have this already
 google-adk>=0.1.0 # Add Google ADK
 google-cloud-aiplatform>=1.87.0 # Dependency for ADK
 sqlalchemy>=2.0 # Dependency for ADK DatabaseSessionService (even if we use custom Supabase one)
+google-generativeai>=0.5.0 # Explicitly add the dependency for ADK types
 psycopg2-binary # Or appropriate driver for Supabase connection with SQLAlchemy interface if used by BaseSessionService impl.
 google-cloud-storage # If using GCS ArtifactService (optional) 

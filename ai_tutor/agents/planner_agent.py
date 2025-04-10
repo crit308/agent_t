@@ -2,8 +2,9 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from supabase import Client
-from google.adk.agents import LLMAgent
-from google.adk.tools import BaseTool, FunctionTool, FilesRetrieval
+from google.adk.agents import LlmAgent
+from google.adk.tools import BaseTool, FunctionTool
+from google.adk.tools.retrieval import FilesRetrieval
 from agents.models.openai_provider import OpenAIProvider
 from agents.run_context import RunContextWrapper
 
@@ -75,7 +76,7 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
     base_model = provider.get_model("gpt-4o")
 
     # Create the planner agent specifying context type generically and output_type via parameter
-    planner_agent = LLMAgent(
+    planner_agent = LlmAgent(
         name="FocusPlanner",
         instructions="""You are an expert learning strategist. Your task is to determine the user's **next learning focus** based on the analyzed documents and potentially their current progress (provided in the prompt context).
 

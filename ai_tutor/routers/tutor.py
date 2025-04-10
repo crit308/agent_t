@@ -29,9 +29,11 @@ from ai_tutor.api_models import ( # Keep API models
 from ai_tutor.context import TutorContext
 from ai_tutor.output_logger import get_logger, TutorOutputLogger
 # Use ADK Runner and related components
-from google.adk.runners import Runner, RunConfig
-from google.adk.agents import LLMAgent, Event # Import ADK Event
-from google.adk.agents import types as adk_types # For content/parts
+from google.adk.runners import Runner, RunConfig # Remove RunnerError import
+# Import LLMAgent and Event from their specific modules
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.events import Event, EventActions
+from google.generativeai import types as adk_types # Import core types directly
 from ai_tutor.manager import AITutorManager
 from pydantic import BaseModel
 from ai_tutor.dependencies import get_supabase_client, get_session_service # Get ADK service dependency

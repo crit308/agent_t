@@ -12,7 +12,7 @@ from ai_tutor.agents.models import QuizQuestion # If asking structured questions
 from ai_tutor.context import TutorContext # Import TutorContext for type hint
 
 from google.adk.tools import LongRunningFunctionTool, ToolContext
-from google.adk.agents import types as adk_types
+from google.generativeai import types as adk_types
 from google.adk.events import Event, EventActions # Import Event classes
 
 logger = logging.getLogger(__name__)

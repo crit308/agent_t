@@ -13,7 +13,9 @@ from ai_tutor.routers import sessions, tutor, folders # Import folders router
 from ai_tutor.dependencies import get_supabase_client # Import dependency from new location
 from agents import set_default_openai_key, set_default_openai_api, Agent # Import Agent
 from ai_tutor.auth import verify_token # Assume auth.py exists for JWT verification
-from google.adk.agents import LLMAgent # Import ADK Agent
+from google.adk.agents.llm_agent import LlmAgent # Correct casing
+# from ai_tutor.agents.student_modeler_agent import StudentModelerAgent, InteractionAnalysis   # Remove unused import
+from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent, generate_quiz # Assuming these exist
 
 # Import models needed for resolving forward references in TutorContext and other API models
 from ai_tutor.agents.models import (

@@ -28,7 +28,9 @@ from ai_tutor.api_models import (
     FeedbackResponse, MessageResponse, ErrorResponse
 )
 
-from google.adk.tools import AgentTool # Import AgentTool wrapper
+from google.adk.tools.agent_tool import AgentTool # Import AgentTool from its specific module
+from google.adk.agents import LlmAgent # Use ADK Agent
+from google.adk.runners import Runner, RunConfig # Use ADK Runner/Config
 
 def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
     """Creates the Orchestrator Agent for the AI Tutor."""
@@ -59,7 +61,7 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
         reflect_on_interaction,
     ]
 
-    orchestrator_agent = LLMAgent( # Use ADK LLMAgent
+    orchestrator_agent = LlmAgent( # Corrected casing
         name="TutorOrchestrator",
         instructions="""
         You are the central conductor of an AI tutoring session. Your primary goal is to guide the user towards mastering specific learning objectives identified by the Planner Agent.

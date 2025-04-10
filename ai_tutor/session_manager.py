@@ -20,7 +20,10 @@ from ai_tutor.context import UserModelState
 from ai_tutor.agents.models import LessonPlan, LessonContent, Quiz, QuizFeedback, SessionAnalysis
 from ai_tutor.agents.analyzer_agent import AnalysisResult # Import AnalysisResult from its correct location
 
-from google.adk.sessions import BaseSessionService, Session, Event, ListSessionsResponse, GetSessionConfig, ListEventsResponse
+# Import Event from the correct ADK submodule
+# Import SessionService classes from the correct ADK submodule
+from google.adk.sessions.base_session_service import BaseSessionService, Session, ListSessionsResponse, GetSessionConfig, ListEventsResponse # Import SessionService classes
+from google.adk.events import Event # Import Event from google.adk.events
 
 if TYPE_CHECKING:
     from supabase import Client
