@@ -51,83 +51,69 @@ class SupabaseSessionService(BaseSessionService):
         self,
         app_name: str,
         user_id: str, # ADK expects str, convert UUID in API layer if needed
-        state: Optional[Dict[str, Any]] = None, # Initial state (TutorContext dict)
+        state: Optional[Dict[str, Any]] = None, # Initial state (should contain folder_id)
         session_id: Optional[str] = None # ADK expects str
     ) -> Session:
-        """Creates a new session in Supabase."""
+        """Creates a new session record in Supabase."""
+        session_uuid = UUID(session_id) if session_id else uuid.uuid4()
+        user_uuid = UUID(user_id)
+
+        # Initial state must contain folder_id.
+        if not state or not state.get('folder_id'):
+             logger.error(f"folder_id missing in initial state for session creation. State: {state}")
+             raise ValueError("folder_id is required in the initial state dict.")
+
         try:
-            session_uuid = UUID(session_id) if session_id else uuid.uuid4()
-            user_uuid = UUID(user_id)
+            folder_uuid = UUID(state['folder_id'])
+        except ValueError:
+            logger.error(f"Invalid folder_id format provided in state: {state.get('folder_id')}")
+            raise ValueError("Invalid folder_id format.")
 
-            # Validate and prepare initial state
-            if not state:
-                logger.error("Initial state is required to create a session.")
-                raise ValueError("Initial state (with folder_id) is required to create a session.")
+        # Create a default TutorContext and serialize it for initial storage
+        try:
+            initial_context = TutorContext(session_id=session_uuid, user_id=user_uuid, folder_id=folder_uuid)
+            context_dict = initial_context.model_dump(mode='json') # Use Pydantic dump for consistency
+            logger.info(f"Creating session {session_uuid} for user {user_id}, folder {folder_uuid} with initial context.")
+        except Exception as model_error:
+            logger.exception(f"Failed to create initial TutorContext model: {model_error}")
+            raise ValueError(f"Failed to initialize context state: {model_error}")
 
-            # Ensure folder_id exists and is valid
-            try:
-                folder_uuid = UUID(state.get('folder_id', ''))
-            except (ValueError, TypeError, AttributeError):
-                logger.error(f"Invalid or missing folder_id in initial state for user {user_id}")
-                raise ValueError("Valid folder_id is required in initial state.")
+        # Persist to Database
+        try:
+            response: PostgrestAPIResponse = self.supabase.table("sessions").insert({
+                "id": str(session_uuid),
+                "user_id": str(user_uuid),
+                "app_name": app_name,
+                "context_data": context_dict, # Store the serialized valid context
+                "folder_id": str(folder_uuid) # Ensure folder_id column is populated
+            }).execute()
 
-            # Validate state structure matches TutorContext
-            try:
-                # This validates the structure but we keep the dict form
-                _ = TutorContext.model_validate(state)
-                logger.debug(f"Initial state validated successfully for session {session_uuid}")
-            except Exception as e:
-                logger.error(f"Invalid initial state structure: {e}")
-                raise ValueError(f"Initial state does not match TutorContext structure: {e}")
+            if not response.data:
+                error_info = response.error
+                error_msg = f"Failed to create session record in DB: {error_info.message if error_info else 'Unknown DB error'}"
+                logger.error(error_msg)
+                # Raise HTTPException here because this is an internal server error
+                raise HTTPException(status_code=500, detail="Failed to save session.")
 
-            # Initialize UserModelState if not present
-            if 'user_model_state' not in state:
-                state['user_model_state'] = UserModelState().model_dump()
+            logger.info(f"Session {session_uuid} created successfully in Supabase.")
 
-            logger.info(f"Creating session {session_uuid} for user {user_id}, folder {folder_uuid}")
+            # Return ADK Session object with the *actual initial state used*
+            # Using the passed 'state' might be incorrect if create_session modified/created it
+            return Session(
+                id=str(session_uuid),
+                app_name=app_name,
+                user_id=user_id,
+                state=context_dict, # Return the validated, serialized context dict
+                events=[],
+                last_update_time=time.time() # Use current time as last update
+            )
 
-            # Create session record with validated data
-            try:
-                response: PostgrestAPIResponse = self.supabase.table("sessions").insert({
-                    "id": str(session_uuid),
-                    "folder_id": str(folder_uuid),
-                    "user_id": str(user_uuid),
-                    "context_data": state,
-                    "created_at": datetime.now().isoformat(),
-                    "updated_at": datetime.now().isoformat()
-                }).execute()
-
-                if not response.data:
-                    error_msg = f"Failed to create session record: {response.error.message if response.error else 'Unknown error'}"
-                    logger.error(error_msg)
-                    raise HTTPException(status_code=500, detail=error_msg)
-
-                logger.info(f"Session {session_uuid} created successfully in Supabase.")
-
-                # Return ADK Session object with validated state
-                return Session(
-                    id=str(session_uuid),
-                    app_name=app_name,
-                    user_id=user_id,
-                    state=state,
-                    events=[],
-                    last_update_time=time.time()
-                )
-
-            except Exception as db_error:
-                error_msg = f"Database error during session creation: {db_error}"
-                logger.exception(error_msg)
-                raise HTTPException(status_code=500, detail=error_msg)
-
-        except ValueError as ve:
-            # Re-raise validation errors with clear messages
-            logger.error(f"Validation error during session creation: {ve}")
-            raise HTTPException(status_code=400, detail=str(ve))
-        except Exception as e:
-            # Handle unexpected errors
-            error_msg = f"Unexpected error during session creation: {e}"
+        except HTTPException as http_exc: # Re-raise HTTPExceptions
+            raise http_exc
+        except Exception as db_error:
+            error_msg = f"Database error during session creation: {db_error}"
             logger.exception(error_msg)
-            raise HTTPException(status_code=500, detail=error_msg)
+            raise HTTPException(status_code=500, detail="Database error during session creation.")
 
     def get_session(
         self,

@@ -36,7 +36,7 @@ class SessionResponse(BaseModel):
     session_id: UUID # Use UUID type
 
 class DocumentUploadResponse(BaseModel):
-    vector_store_id: Optional[str]
+    # vector_store_id: Optional[str] # Remove field as it's no longer used
     files_received: List[str]
     analysis_status: str # e.g., "completed", "failed", "pending" (if async)
     message: str

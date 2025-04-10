@@ -1,53 +1,57 @@
 from __future__ import annotations
-import logging # Add logging import
-from typing import Optional, List, Dict, Any, Literal
-from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, BackgroundTasks, Form, Body, Request
+import logging # Add standard logging import
 import os
-import shutil
-import time
 import json
-import traceback
-from supabase import Client
-from gotrue.types import User # To type hint the user object
+import traceback  # Add traceback import
+import shutil # Make sure shutil is imported
+import time
+from typing import Optional, List, Dict, Any, Literal
 from uuid import UUID
 
-from ai_tutor.session_manager import SessionManager, SupabaseSessionService # Import ADK Session Service
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, BackgroundTasks, Form, Body, Request
+from supabase import Client
+from gotrue.types import User
+from pydantic import BaseModel
+from pydantic_core import ValidationError # Import Pydantic validation error
+
+# ADK and Agent related imports
+from google.adk.runners import Runner, RunConfig
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.events import Event, EventActions
+# Import types from google.adk.agents
+from google.adk.agents import types as adk_types
+
+# Project specific imports
+from ai_tutor.session_manager import SessionManager, SupabaseSessionService, Session # Use Session from ADK session_manager
 from ai_tutor.tools.file_upload import FileUploadManager
-from ai_tutor.agents.analyzer_agent import analyze_documents
+from ai_tutor.agents.analyzer_agent import analyze_documents, AnalysisResult
 from ai_tutor.agents.session_analyzer_agent import analyze_teaching_session
 from ai_tutor.agents.orchestrator_agent import create_orchestrator_agent
-from ai_tutor.agents.analyzer_agent import AnalysisResult
 from ai_tutor.agents.models import (
     FocusObjective,
     LessonPlan, LessonContent, Quiz, QuizUserAnswers, QuizFeedback, SessionAnalysis, QuizQuestion, QuizFeedbackItem
 )
-from ai_tutor.api_models import ( # Keep API models
+from ai_tutor.api_models import (
     DocumentUploadResponse, AnalysisResponse, TutorInteractionResponse,
     ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse,
-    InteractionRequestData, InteractionResponseData  # Add InteractionResponseData
+    InteractionRequestData, InteractionResponseData
 )
 from ai_tutor.context import TutorContext
-from ai_tutor.output_logger import get_logger, TutorOutputLogger
-# Use ADK Runner and related components
-from google.adk.runners import Runner, RunConfig # Remove RunnerError import
-# Import LLMAgent and Event from their specific modules
-from google.adk.agents.llm_agent import LlmAgent
-from google.adk.events import Event, EventActions
-from google.generativeai import types as adk_types # Import core types directly
+from ai_tutor.output_logger import get_logger as get_session_logger_instance, TutorOutputLogger # Rename import
 from ai_tutor.manager import AITutorManager
-from pydantic import BaseModel
-from ai_tutor.dependencies import get_supabase_client, get_session_service # Get ADK service dependency
-from ai_tutor.auth import verify_token # Get auth dependency
+from ai_tutor.dependencies import get_supabase_client, get_session_service
+from ai_tutor.auth import verify_token
+
 
 router = APIRouter()
-session_manager = SessionManager()
+# session_manager = SessionManager() # Keep for create_session? Or fully replace with service? Consider removing.
+
+# Setup standard Python logger for this module
+logger = logging.getLogger(__name__)
 
 # Directory for temporary file uploads
 TEMP_UPLOAD_DIR = "temp_uploads"
 os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
-
-# Setup module logger
-logger = logging.getLogger(__name__)
 
 # --- Dependency to get TutorContext from DB ---
 async def get_tutor_context(
@@ -59,16 +63,35 @@ async def get_tutor_context(
     # ADK session service expects string IDs
     session = session_service.get_session(app_name="ai_tutor", user_id=str(user.id), session_id=str(session_id))
     if not session or not session.state:
+        logger.warning(f"Session not found or state missing for session_id: {session_id}, user_id: {user.id}")
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found or not authorized for user.")
-    # Deserialize TutorContext from session state
-    return TutorContext.model_validate(session.state)
+    
+    # --- DEBUGGING ---
+    logger.debug(f"Raw session state fetched for {session_id}: {session.state}")
+    try:
+        # Deserialize TutorContext from session state dictionary
+        validated_context = TutorContext.model_validate(session.state)
+        logger.debug(f"Successfully validated TutorContext for session {session_id}")
+        return validated_context
+    except ValidationError as e:
+        # Log the detailed Pydantic errors
+        error_details = e.errors()
+        logger.error(f"Pydantic validation failed for TutorContext in session {session_id}: {error_details}")
+        # It might be helpful to log the raw state again alongside the error
+        logger.error(f"Raw state causing validation error: {session.state}") 
+        # Raise 500 to avoid 422 if it's a server-side data consistency issue
+        raise HTTPException(status_code=500, detail=f"Internal server error: Session context data is invalid. Details: {error_details}")
+    except Exception as e:
+        logger.exception(f"Unexpected error during TutorContext validation for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error validating session context.")
 
 # --- Helper to get logger ---
 def get_session_logger(session_id: UUID) -> TutorOutputLogger:
     # Customize logger per session if needed, e.g., different file path
     log_file = os.path.join("logs", f"session_{session_id}.log") # Example path
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
-    return get_logger(output_file=log_file)
+    # Use the renamed import for clarity
+    return get_session_logger_instance(output_file=log_file)
 
 # --- Define Models for New Endpoints ---
 class MiniQuizLogData(BaseModel):
@@ -81,100 +104,146 @@ class MiniQuizLogData(BaseModel):
 
 # --- Endpoints ---
 
-@router.post("/documents", response_model=DocumentUploadResponse)
-async def upload_documents(
-    request: Request,
-    files: List[UploadFile],
-    folder_id: UUID,
-    session_id: UUID,
-    background_tasks: BackgroundTasks,
-    supabase: Client = Depends(get_supabase_client)
-) -> DocumentUploadResponse:
+@router.post("/sessions/{session_id}/documents", response_model=DocumentUploadResponse)
+async def upload_documents( # Function name was already correct
+    session_id: UUID,                             # Path Param
+    request: Request,                             # Raw Request Dependency
+    files: List[UploadFile] = File(...),          # Body (Form Data) Dependency
+    supabase: Client = Depends(get_supabase_client), # Dependency 1
+    # tutor_context: TutorContext = Depends(get_tutor_context) # Temporarily remove dependency
+):
+    """ # noqa: D415
+    Uploads one or more documents to the specified session.
+    Stores files temporarily, uploads them to Supabase Storage,
+    and synchronously triggers document analysis.
     """
-    Upload documents to Supabase Storage and trigger analysis.
-    """
-    # Get user from request state
-    user: User = request.state.user
-    if not user:
-        raise HTTPException(status_code=401, detail="User not authenticated")
+    user: User = request.state.user # Get user from request state populated by verify_token dependency
+    # Use the standard logger for general messages
+    # session_logger = get_session_logger(session_id) # Keep if needed for specific TutorOutputLogger methods
 
-    # Get or create tutor context
-    tutor_context = await _get_or_create_context(session_id, user.id, supabase)
+    # --- Manually fetch context since dependency is removed ---
+    try:
+        session_service: SupabaseSessionService = await get_session_service(supabase) # Get service instance
+        tutor_context: TutorContext = await get_tutor_context(session_id, request, session_service) # Call dependency logic manually
+    except HTTPException as he:
+        raise he # Re-raise validation/auth errors
+    except Exception as e:
+        logger.exception(f"Error manually fetching context for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error fetching session context.")
+    # --- End Manual Fetch ---
+
+    folder_id = tutor_context.folder_id
+    if not folder_id:
+        # Use standard logger here
+        logger.error(f"Session context is missing folder_id for session {session_id}.")
+        raise HTTPException(status_code=400, detail="Session context is invalid (missing folder ID).")
     
-    # Create temporary files and upload
+    logger.info(f"Starting document upload for session {session_id}, folder {folder_id}") # Use standard logger
     temp_file_paths = []
     uploaded_filenames = []
-    message = ""
-
+    
+    # Save uploaded files temporarily
     try:
-        # Save uploaded files temporarily
         for file in files:
-            temp_path = f"/tmp/{file.filename}"
+            # Sanitize filename to prevent directory traversal or invalid chars
+            filename = os.path.basename(file.filename or f"upload_{uuid.uuid4()}") 
+            temp_path = os.path.join(TEMP_UPLOAD_DIR, filename)
+            # Read file content into memory, then write to temp file
+            # Consider chunking for very large files to avoid high memory usage
+            content = await file.read()
             with open(temp_path, "wb") as temp_file:
-                content = await file.read()
                 temp_file.write(content)
             temp_file_paths.append(temp_path)
-            uploaded_filenames.append(file.filename)
+            uploaded_filenames.append(filename)
+            # No need to close file.file when using await file.read() context
+    except Exception as e:
+        logger.exception(f"Error saving files locally for session {session_id}: {e}")
+        # Clean up any partially saved files
+        for path in temp_file_paths:
+             if os.path.exists(path): os.remove(path)
+        raise HTTPException(status_code=500, detail="Failed to process uploaded files")
 
-        # Upload to Supabase Storage
+    if not temp_file_paths:
+        raise HTTPException(status_code=400, detail="No files were successfully processed locally.")
+
+    # Upload to Supabase Storage
+    message = ""
+    try:
         file_upload_manager = FileUploadManager(supabase=supabase)
         
-        try:
-            for temp_path in temp_file_paths:
-                uploaded_file = await file_upload_manager.upload_and_process_file(
-                    file_path=temp_path,
-                    user_id=user.id,
-                    folder_id=folder_id
-                )
-                message += f"Uploaded {uploaded_file.filename} to Supabase at {uploaded_file.supabase_path}. "
+        for i, temp_path in enumerate(temp_file_paths):
+            uploaded_file = await file_upload_manager.upload_and_process_file(
+                file_path=temp_path,
+                user_id=user.id,
+                folder_id=folder_id
+            )
+            message += f"Uploaded {uploaded_filenames[i]} to Supabase at {uploaded_file.supabase_path}. "
+        logger.info(f"Supabase upload complete for session {session_id}") # Use standard logger
 
-            # Update context with file paths and save
-            if uploaded_filenames:
-                tutor_context.uploaded_file_paths.extend(uploaded_filenames)
-                await _update_context_in_db(session_id, user.id, tutor_context, supabase)
+        # Update context with file paths and save
+        if uploaded_filenames:
+            tutor_context.uploaded_file_paths.extend(uploaded_filenames) # Keep track of names
+            logger.info("Explicitly saving context with updated file paths BEFORE analysis.") # Standard logger
+            # Use the helper, ensuring it uses standard logging internally or returns success/failure
+            success = await _update_context_in_db(session_id, user.id, tutor_context, supabase)
+            if not success:
+                # Handle context update failure if critical
+                logger.error(f"Failed to persist context update for session {session_id} before analysis.")
+                # Decide if this is a fatal error for the upload process
 
-        except Exception as e:
-            logger.error("FileUpload", e)
-            raise HTTPException(status_code=500, detail=f"Failed to upload files to Supabase: {e}")
-
-    finally:
-        # Cleanup temporary files
+    except Exception as e:
+        logger.exception(f"Error during file upload processing for session {session_id}: {e}")
+        # Clean up temp files on failure
         for temp_path in temp_file_paths:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+        raise HTTPException(status_code=500, detail=f"Failed to upload files: {str(e)}")
+
+    # Clean up temp files after successful upload
+    for temp_path in temp_file_paths:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
     # Trigger analysis synchronously
     analysis_status = "failed"
     try:
-        logger.info(f"Starting synchronous analysis for session {session_id}")
+        logger.info(f"Starting synchronous analysis for session {session_id}...") # Standard logger
+
         analysis_result: Optional[AnalysisResult] = await analyze_documents(
             context=tutor_context,
             supabase=supabase
         )
-        
+
         if analysis_result:
-            # Store analysis result in knowledge base
-            kb_id = await save_to_knowledge_base(
-                session_id=session_id,
-                user_id=user.id,
-                analysis_result=analysis_result,
-                supabase=supabase
-            )
             analysis_status = "completed"
-            message += f"Analysis completed and saved to knowledge base {kb_id}."
+            tutor_context.analysis_result = analysis_result
+            logger.info(f"Analysis completed for session {session_id}. Persisting context with analysis result.") # Standard logger
+            success = await _update_context_in_db(session_id, user.id, tutor_context, supabase)
+            if not success:
+                logger.error(f"Failed to persist context update for session {session_id} after analysis.")
+                # Log error but maybe continue to return response to user?
+            message += "Analysis completed."
         else:
-            message += "Analysis failed or returned no results."
-            
+            message += "Analysis completed but no results were generated."
+            analysis_status = "completed_empty"
+
     except Exception as e:
-        logger.error("Analysis", e)
-        message += f"Analysis failed: {str(e)}"
+        logger.exception(f"Error during document analysis execution for session {session_id}: {e}")
+        message += f"Analysis trigger failed: {str(e)}"
         analysis_status = "failed"
 
-    return DocumentUploadResponse(
-        files_received=uploaded_filenames,
-        analysis_status=analysis_status,
-        message=message
-    )
+    # Construct and return the final response
+    try:
+        response_payload = DocumentUploadResponse(
+            files_received=uploaded_filenames,
+            analysis_status=analysis_status,
+            message=message
+        )
+        logger.info(f"Successfully constructed DocumentUploadResponse for session {session_id}") # Standard logger
+        return response_payload
+    except Exception as validation_error:
+        logger.exception(f"Pydantic validation failed for DocumentUploadResponse on session {session_id}: {validation_error}")
+        raise HTTPException(status_code=500, detail=f"Internal server error creating response: {str(validation_error)}")
 
 @router.get(
     "/sessions/{session_id}/analysis",
@@ -341,7 +410,11 @@ async def interact_with_tutor(
 
     # Initialize ADK components
     orchestrator_agent = create_orchestrator_agent()
-    adk_runner = Runner("ai_tutor", orchestrator_agent, session_service)
+    adk_runner = Runner(
+        app_name="ai_tutor", # Use keyword arg
+        agent=orchestrator_agent,        # Use keyword arg
+        session_service=session_service # Use keyword arg
+    )
     run_config = RunConfig(workflow_name="Tutor_Interaction", group_id=str(session_id))
 
     last_agent_event: Optional[Event] = None
@@ -489,8 +562,12 @@ async def submit_answer_to_tutor(
 
     # Resume the ADK Runner
     orchestrator_agent = create_orchestrator_agent()
-    adk_runner = Runner("ai_tutor", orchestrator_agent, session_service)
-    run_config = RunConfig(workflow_name="Tutor_Interaction_Resume", group_id=str(session_id))
+    adk_runner = Runner(
+        app_name="ai_tutor", # Use keyword arg
+        agent=orchestrator_agent,        # Use keyword arg
+        session_service=session_service # Use keyword arg
+    )
+    run_config = RunConfig(workflow_name="Tutor_Interaction", group_id=str(session_id))
 
     try:
         last_agent_event_after_resume: Optional[Event] = None

@@ -33,24 +33,26 @@ COMMENT ON COLUMN public.folders.knowledge_base IS 'Stores the text content gene
 -- Enable RLS for folders table
 ALTER TABLE public.folders ENABLE ROW LEVEL SECURITY;
 
--- Create the table
+-- Create the sessions table
 CREATE TABLE public.sessions (
     id uuid NOT NULL DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL,
+    app_name character varying NOT NULL DEFAULT 'ai_tutor', -- Add app_name column
     context_data jsonb NOT NULL, -- Store the TutorContext object here
     created_at timestamp with time zone NOT NULL DEFAULT now(),
     folder_id uuid NULL, -- Link to the folder this session belongs to
     updated_at timestamp with time zone NOT NULL DEFAULT now(),
-    CONSTRAINT sessions_pkey PRIMARY KEY (id),
+    CONSTRAINT sessions_pkey PRIMARY KEY (user_id, app_name, id), -- Composite PK including app_name
     CONSTRAINT sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON UPDATE CASCADE ON DELETE CASCADE,
     CONSTRAINT sessions_folder_id_fkey FOREIGN KEY (folder_id) REFERENCES public.folders(id) ON UPDATE CASCADE ON DELETE SET NULL -- Or CASCADE if sessions should be deleted with folders
 );
 
--- Add comments
-COMMENT ON TABLE public.sessions IS 'Stores AI tutor session state and context for users.';
+-- Add comments to clarify column purposes
+COMMENT ON TABLE public.sessions IS 'Stores the state and context for AI Tutor sessions.';
 COMMENT ON COLUMN public.sessions.folder_id IS 'Links to the folder containing the documents for this session.';
 COMMENT ON COLUMN public.sessions.id IS 'Unique identifier for the session.';
 COMMENT ON COLUMN public.sessions.user_id IS 'Links to the authenticated user who owns the session.';
+COMMENT ON COLUMN public.sessions.app_name IS 'Identifier for the application using the session.';
 COMMENT ON COLUMN public.sessions.context_data IS 'JSONB blob containing the serialized TutorContext Pydantic model.';
 COMMENT ON COLUMN public.sessions.created_at IS 'Timestamp when the session was created.';
 COMMENT ON COLUMN public.sessions.updated_at IS 'Timestamp when the session was last updated.';
@@ -95,26 +97,26 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.folders TO authenticated;
 -- Allow users to select their own sessions
 CREATE POLICY "Allow individual user select access"
 ON public.sessions
-FOR SELECT
+FOR SELECT -- Users can only select sessions matching their user_id (app_name check isn't strictly needed for SELECT if using user_id)
 USING (auth.uid() = user_id);
 
 -- Allow users to insert new sessions for themselves
 CREATE POLICY "Allow individual user insert access"
 ON public.sessions
-FOR INSERT
+FOR INSERT -- Users can insert sessions matching their user_id
 WITH CHECK (auth.uid() = user_id);
 
 -- Allow users to update their own sessions
 CREATE POLICY "Allow individual user update access"
 ON public.sessions
-FOR UPDATE
+FOR UPDATE -- Users can update sessions matching their user_id
 USING (auth.uid() = user_id)
 WITH CHECK (auth.uid() = user_id);
 
 -- Allow users to delete their own sessions (Optional: Remove if deletion is not desired)
 CREATE POLICY "Allow individual user delete access"
 ON public.sessions
-FOR DELETE
+FOR DELETE -- Users can delete sessions matching their user_id
 USING (auth.uid() = user_id);
 
 

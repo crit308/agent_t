@@ -26,92 +26,55 @@ class TeachingResponse(BaseModel):
 def create_teacher_agent() -> LlmAgent:
     """Creates a teacher agent that explains concepts using ADK."""
 
-    # Import the common tools
-    from ai_tutor.tools.orchestrator_tools import read_knowledge_base, get_document_content
+    # Use ADK models
+    model_identifier = "gemini-1.5-flash" # Or other ADK supported model
+
+    # Import tools needed by the teacher
+    from ai_tutor.tools.orchestrator_tools import read_knowledge_base, get_document_content # Keep common tools
+    # Import the tool function, not the decorator result if possible
+    # Or ensure the tool instance is correctly exported/imported
+    from ai_tutor.tools.teacher_tools import ask_user_question_and_get_answer_tool # Import the specific tool instance
 
     teacher_tools = [
         read_knowledge_base,
-        get_document_content
+        get_document_content,
+        ask_user_question_and_get_answer_tool,
+        # Potentially add call_quiz_creator_agent tool if needed
     ]
 
-    # Use Gemini model via ADK
-    model_name = "gemini-1.5-pro"  # Using Pro for better teaching capabilities
-
-    # Create the teacher agent
+    # Use LLMAgent, define input/output schemas
     teacher_agent = LlmAgent(
-        name="Expert Teacher",
-        instructions="""
-        You are an expert teacher. Your task is to explain concepts clearly and effectively, 
-        providing examples and practice exercises based on the focus objective and available content.
+        name="interactive_lesson_teacher", # Use valid Python identifier
+        instruction=""" # Use singular 'instruction'
+        You are an autonomous AI Teacher responsible for guiding a student through a specific `FocusObjective` provided as input (topic, learning_goal).
 
-        AVAILABLE INFORMATION:
-        - You have a `read_knowledge_base` tool to get the document analysis summary.
-        - You have a `get_document_content` tool to fetch full text if needed (provide file path from KB).
-        - The prompt will contain a FocusObjective with the topic to teach.
-        - The prompt may contain information about the user's current understanding.
+        YOUR CONTEXT:
+        - You receive the `FocusObjective` details in the initial prompt/input.
+        - Maintain your progress internally through the conversation history.
+        - Use `read_knowledge_base` or `get_document_content` tools to get content details for explanations. Provide the file path from the context/KB analysis when calling `get_document_content`.
+        - Use the `ask_user_question_and_get_answer` tool to pause, ask the user a question (provide the full QuizQuestion JSON as args), and wait for their answer index.
 
-        YOUR WORKFLOW **MUST** BE:
-        1. **Read Knowledge Base ONCE:** Call the `read_knowledge_base` tool *exactly one time* at the beginning 
-           to get the document analysis and available content.
-        2. **Get Detailed Content:** If the KB summary doesn't have enough detail about the focus topic, 
-           use `get_document_content` to fetch relevant sections (use file paths from KB).
-        3. **Prepare Teaching Material:**
-           - Create a clear, structured explanation of the topic
-           - Provide relevant examples from the content
-           - Design practice exercises
-           - Identify additional resources
-           - Highlight key points to remember
-           - Suggest next steps for learning
+        YOUR AUTONOMOUS TASK:
+        1.  **Plan Micro-steps:** Based on the `FocusObjective`, plan a sequence (explain, example, check).
+        2.  **Execute Loop:** Iterate through your plan:
+            *   **Explain:** Generate explanation text (use content tools if needed). Provide this text directly in your response.
+            *   **Check Understanding:** Generate a `QuizQuestion` JSON. Call `ask_user_question_and_get_answer` tool with this JSON as arguments. **Execution Pauses Here.**
+            *   **Resume & Evaluate:** When execution resumes, the `FunctionResponse` in the history will contain the user's answer index. Evaluate if it's correct based on the question you asked previously.
+            *   **Adapt:** Based on evaluation, decide the next micro-step (next explanation, re-explain, next check, etc.).
+        3.  **Objective Completion:** Continue until the `learning_goal` is met or you determine the user is stuck.
+        4.  **Return Final Result:** Your *very final message* in this execution run MUST be ONLY a JSON object matching the `TeacherTurnResult` schema (e.g., `{"status": "objective_complete", "summary": "Covered topic X..."}`).
 
-        TEACHING PRINCIPLES:
-        - Start with the basics and build up gradually
-        - Use clear, concise language
-        - Provide concrete examples
-        - Include practical exercises
-        - Relate concepts to real-world applications
-        - Break down complex ideas into manageable parts
-
-        OUTPUT FORMAT:
-        Your output **MUST** be a valid JSON object matching the TeachingResponse schema with these fields:
-        - explanation: Clear, structured explanation of the topic
-        - examples: List of relevant examples
-        - practice_exercises: List of exercises for practice
-        - additional_resources: List of suggested resources
-        - key_points: List of important points to remember
-        - next_steps: List of suggested next steps
-
-        EXAMPLE OUTPUT:
-        {
-            "explanation": "Variables in programming are like containers that store data...",
-            "examples": [
-                "Example 1: Declaring a variable - `let name = 'John'`",
-                "Example 2: Changing variable value - `name = 'Jane'`"
-            ],
-            "practice_exercises": [
-                "1. Declare three different variables with different data types",
-                "2. Write code to swap values between two variables"
-            ],
-            "additional_resources": [
-                "MDN Web Docs - Variables and Scoping",
-                "Practice exercises in Chapter 2"
-            ],
-            "key_points": [
-                "Variables must be declared before use",
-                "Variable names are case-sensitive",
-                "Use meaningful variable names"
-            ],
-            "next_steps": [
-                "Practice with different data types",
-                "Learn about variable scope",
-                "Explore const vs let declarations"
-            ]
-        }
+        **CRITICAL:**
+        - Manage your own loop.
+        - Use `ask_user_question_and_get_answer` tool to get user input when needed.
+        - Your FINAL response for this entire run MUST be ONLY the `TeacherTurnResult` JSON. Intermediate explanations/interactions should be plain text or tool calls.
         """,
-        tools=teacher_tools,
-        output_schema=TeachingResponse,
-        model=model_name
+        tools=teacher_tools, # Pass the list of ADK tools
+        input_schema=FocusObjective, # Define input schema (Pydantic model)
+        # output_schema=TeacherTurnResult, # REMOVE output_schema
+        model=model_identifier, # Correct keyword is 'model'
+        # No handoffs needed FROM the teacher in this model
     )
-    
     return teacher_agent
 
 async def teach_topic(focus: FocusObjective, context=None, supabase: Client = None) -> Optional[TeachingResponse]:
@@ -187,3 +150,8 @@ async def teach_topic(focus: FocusObjective, context=None, supabase: Client = No
     except Exception as e:
         logger.error(f"teach_topic: Error during teaching: {str(e)}")
         return None 
+
+# Placeholder import for TeacherTurnResult if not defined elsewhere
+class TeacherTurnResult(BaseModel):
+    status: str = "unknown"
+    summary: str = "" 

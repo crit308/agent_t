@@ -43,9 +43,8 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
 
-    # --- ADK Setup ---
-    # model_name = "gemini-1.5-pro" # Or another capable model
-    model_name = "gemini-1.5-flash" # Use flash for now
+    # --- ADK Model Setup ---
+    model_identifier = "gemini-1.5-flash" # Use flash for now
     
     # --- Create Agent Instances for AgentTool ---
     # For now, create dummy instances; real creation might need context/vs_id
@@ -54,18 +53,18 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
     teacher_agent_instance: BaseAgent = create_teacher_agent()
     
     orchestrator_tools = [
-        AgentTool(planner_agent_instance, name="focus_planner"), # Wrap planner agent with specific name
-        AgentTool(teacher_agent_instance, name="call_teacher_agent", description="Delegates teaching tasks (leading the interactive lesson for the current objective) to the Teacher Agent."), # Wrap teacher agent
+        AgentTool(planner_agent_instance), # Name is inherited from planner_agent_instance.name
+        AgentTool(teacher_agent_instance), # Name is inherited from teacher_agent_instance.name
         # Keep utility tools if Orchestrator still uses them directly
         update_user_model,
         get_user_model_status,
         reflect_on_interaction,
     ]
 
-    orchestrator_agent = LlmAgent( # Corrected casing
-        name="TutorOrchestrator",
-        instructions="""
-        You are the central conductor of an AI tutoring session. Your primary goal is to guide the user towards mastering specific learning objectives identified by the Planner Agent.
+    orchestrator_agent = LlmAgent( # Use ADK LlmAgent, correct casing
+        name="tutor_orchestrator", # Use valid Python identifier
+        instruction="""
+        You are the high-level conductor of an AI tutoring session. Your primary goal is to sequence learning objectives.
 
         CONTEXT:
         - You access the session state (including `current_focus_objective` and `UserModelState`) via the `ToolContext`.
@@ -102,8 +101,8 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
         - Ensure your final output strictly adheres to the required JSON format (`TutorInteractionResponse`).
         """,
         tools=orchestrator_tools,
-        output_schema=TutorInteractionResponse, # Or a simpler status model
-        model=model_name,
+        # output_schema=TutorInteractionResponse, # REMOVE output_schema - cannot be Union and conflicts with tools
+        model=model_identifier, # Correct keyword is 'model'
     )
 
     return orchestrator_agent 

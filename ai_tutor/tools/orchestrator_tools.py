@@ -6,6 +6,7 @@ import os
 from datetime import datetime
 import traceback # Import traceback for error logging
 import logging # Add logging import
+import json
 
 # --- Import TutorContext directly ---
 # We need the actual class definition available for get_type_hints called by the decorator.
@@ -129,7 +130,7 @@ async def call_quiz_creator_mini(
     return "Error: This tool is deprecated. Use call_quiz_creator_agent to invoke the quiz creator."
 
 @FunctionTool
-async def call_quiz_teacher_evaluate(ctx: google.adk.runners.RunContextWrapper[TutorContext], user_answer_index: int) -> Union[QuizFeedbackItem, str]:
+async def call_quiz_teacher_evaluate(tool_context: ToolContext, user_answer_index: int) -> Union[QuizFeedbackItem, str]:
     """Evaluates the user's answer to the current question using the Quiz Teacher logic (via helper function)."""
     print(f"[Tool call_quiz_teacher_evaluate] Evaluating user answer index '{user_answer_index}'.")
     
@@ -137,27 +138,38 @@ async def call_quiz_teacher_evaluate(ctx: google.adk.runners.RunContextWrapper[T
         # --- Import evaluation function *Inside* ---
         from ai_tutor.agents.quiz_teacher_agent import evaluate_single_answer # Import helper here
         # -------------------------------------------
-        question_to_evaluate = ctx.context.current_quiz_question
-        if not question_to_evaluate:
+        # Access state via tool_context.state dictionary
+        state_dict = tool_context.state
+        current_quiz_question_data = state_dict.get("current_quiz_question")
+
+        if not current_quiz_question_data:
             return "Error: No current question found in context to evaluate."
-        if not isinstance(question_to_evaluate, QuizQuestion):
-            # Add type check for safety
-            return f"Error: Expected QuizQuestion in context, found {type(question_to_evaluate).__name__}."
+
+        # Validate and parse the question data from the state dictionary
+        try:
+            question_to_evaluate = QuizQuestion.model_validate(current_quiz_question_data)
+        except Exception as parse_err:
+            return f"Error: Failed to parse QuizQuestion from context state: {parse_err}"
 
         print(f"[Tool call_quiz_teacher_evaluate] Evaluating answer for question: {question_to_evaluate.question[:50]}...")
+        
+        # Re-parse TutorContext to pass to the helper if needed
+        # Ideally, evaluate_single_answer would only take necessary data, not the whole context object
+        tutor_context_for_helper = TutorContext.model_validate(state_dict) 
+        
         feedback_item = await evaluate_single_answer(
             question=question_to_evaluate,
             user_answer_index=user_answer_index,
-            context=ctx.context # Pass context
+            context=tutor_context_for_helper # Pass re-parsed context if needed
         )
 
         if feedback_item:
             print(f"[Tool call_quiz_teacher_evaluate] Evaluation complete. Feedback: Correct={feedback_item.is_correct}, Explanation: {feedback_item.explanation[:50]}...")
-            # Clear pending interaction *after* successful evaluation & getting feedback
-            ctx.context.user_model_state.pending_interaction_type = None
-            ctx.context.user_model_state.pending_interaction_details = None
-            # Clear the question itself from context now that it's evaluated
-            ctx.context.current_quiz_question = None
+            # Modify the state dictionary directly
+            user_model_state = state_dict.setdefault("user_model_state", {})
+            user_model_state["pending_interaction_type"] = None
+            user_model_state["pending_interaction_details"] = None
+            state_dict["current_quiz_question"] = None
             return feedback_item
         else:
             # The evaluate_single_answer helper should ideally return feedback or raise
@@ -169,122 +181,143 @@ async def call_quiz_teacher_evaluate(ctx: google.adk.runners.RunContextWrapper[T
         error_msg = f"Exception in call_quiz_teacher_evaluate: {str(e)}"
         print(f"[Tool] {error_msg}")
         # Optionally clear pending state even on error? Depends on desired flow.
-        # ctx.context.user_model_state.pending_interaction_type = None 
+        # tool_context.state.get("user_model_state", {})["pending_interaction_type"] = None 
         return error_msg # Return error string
 
 @FunctionTool
-def determine_next_learning_step(ctx: google.adk.runners.RunContextWrapper[TutorContext]) -> Dict[str, Any]:
+def determine_next_learning_step(tool_context: ToolContext) -> Dict[str, Any]:
     """DEPRECATED: The Planner agent now determines the next focus. Use call_planner_agent."""
     return {"error": "This tool is deprecated. Use call_planner_agent to get the next focus."}
 
 @FunctionTool
 async def update_user_model(
-    ctx: google.adk.runners.RunContextWrapper[TutorContext],
+    tool_context: ToolContext,
     topic: str,
     outcome: Literal['correct', 'incorrect', 'mastered', 'struggled', 'explained'],
     confusion_point: Optional[str] = None,
     last_accessed: Optional[str] = None,
     mastered_objective_title: Optional[str] = None, # Optional: Mark an objective as mastered
 ) -> str:
-    """Updates the user model state with interaction outcomes and temporal data."""
+    """Updates the user model state (within tool_context.state) with interaction outcomes and temporal data."""
     print(f"[Tool update_user_model] Updating '{topic}' with outcome '{outcome}'")
+    state_dict = tool_context.state # Access state dict
 
     # Ensure context and user model state exist
-    if not ctx.context or not ctx.context.user_model_state:
-        return "Error: TutorContext or UserModelState not found."
+    if not state_dict or "user_model_state" not in state_dict:
+        return "Error: TutorContext state or UserModelState not found in tool_context.state."
 
     if not topic or not isinstance(topic, str):
         return "Error: Invalid topic provided for user model update."
 
-    # Initialize concept if needed
-    if topic not in ctx.context.user_model_state.concepts:
-        ctx.context.user_model_state.concepts[topic] = UserConceptMastery()
+    # Initialize concept if needed within the state dictionary
+    user_model_state_dict = state_dict.setdefault("user_model_state", UserModelState().model_dump())
+    concepts_dict = user_model_state_dict.setdefault("concepts", {})
+    # Ensure concept_state is a dictionary for modification
+    concept_state = concepts_dict.setdefault(topic, UserConceptMastery().model_dump())
+    if not isinstance(concept_state, dict):
+        # If it exists but is not a dict (unlikely), reset it
+        concept_state = UserConceptMastery().model_dump()
+        concepts_dict[topic] = concept_state 
 
-    concept_state = ctx.context.user_model_state.concepts[topic]
-    concept_state.last_interaction_outcome = outcome
+    concept_state['last_interaction_outcome'] = outcome
 
     # Update last_accessed with ISO 8601 timestamp
-    concept_state.last_accessed = last_accessed or datetime.now().isoformat()
+    concept_state['last_accessed'] = last_accessed or datetime.now().isoformat()
 
     # Add confusion point if provided
-    if confusion_point and confusion_point not in concept_state.confusion_points:
-        concept_state.confusion_points.append(confusion_point)
+    if confusion_point:
+        confusion_points_list = concept_state.setdefault("confusion_points", [])
+        if confusion_point not in confusion_points_list:
+            confusion_points_list.append(confusion_point)
 
     # Update attempts and mastery for evaluative outcomes
     if outcome in ['correct', 'incorrect', 'mastered', 'struggled']:
-        concept_state.attempts += 1
+        concept_state['attempts'] = concept_state.get('attempts', 0) + 1
 
         # Adjust mastery level based on outcome
+        mastery_level = concept_state.get('mastery_level', 0.0)
         if outcome in ['correct', 'mastered']:
-            concept_state.mastery_level = min(1.0, concept_state.mastery_level + 0.2)
+            mastery_level = min(1.0, mastery_level + 0.2)
         elif outcome in ['incorrect', 'struggled']:
-            concept_state.mastery_level = max(0.0, concept_state.mastery_level - 0.1)
+            mastery_level = max(0.0, mastery_level - 0.1)
+        concept_state['mastery_level'] = mastery_level
             
-            # Adjust learning pace if struggling
-            if len(concept_state.confusion_points) > 2:
-                ctx.context.user_model_state.learning_pace_factor = max(0.5, 
-                    ctx.context.user_model_state.learning_pace_factor - 0.1)
+        # Adjust learning pace if struggling
+        if len(concept_state.get("confusion_points", [])) > 2:
+            current_pace = user_model_state_dict.get("learning_pace_factor", 1.0)
+            user_model_state_dict["learning_pace_factor"] = max(0.5, current_pace - 0.1)
 
     # Update mastered objectives if provided
-    if mastered_objective_title and mastered_objective_title not in ctx.context.user_model_state.mastered_objectives_current_section:
-         ctx.context.user_model_state.mastered_objectives_current_section.append(mastered_objective_title)
-         print(f"[Tool] Marked objective '{mastered_objective_title}' as mastered for current section.")
+    if mastered_objective_title:
+        mastered_list = user_model_state_dict.setdefault("mastered_objectives_current_section", [])
+        if mastered_objective_title not in mastered_list:
+            mastered_list.append(mastered_objective_title)
+            print(f"[Tool] Marked objective '{mastered_objective_title}' as mastered for current section.")
 
-    print(f"[Tool] Updated '{topic}' - Mastery: {concept_state.mastery_level:.2f}, "
-          f"Pace: {ctx.context.user_model_state.learning_pace_factor:.2f}")
-    return f"User model updated for {topic}."
+    print(f"[Tool] Updated '{topic}' - Mastery: {concept_state.get('mastery_level', 0.0):.2f}, "
+          f"Pace: {user_model_state_dict.get('learning_pace_factor', 1.0):.2f}")
+    return f"User model updated for {topic}." # Note: state is modified in-place
 
 @FunctionTool
-def update_explanation_progress(ctx: google.adk.runners.RunContextWrapper[TutorContext], segment_index: int) -> str:
+def update_explanation_progress(tool_context: ToolContext, segment_index: int) -> str:
     """DEPRECATED: The Orchestrator manages micro-steps directly."""
     return "Error: This tool is deprecated. Orchestrator manages micro-steps."
 
 @FunctionTool
-async def get_user_model_status(ctx: google.adk.runners.RunContextWrapper[TutorContext], topic: Optional[str] = None) -> Dict[str, Any]:
+async def get_user_model_status(tool_context: ToolContext, topic: Optional[str] = None) -> Dict[str, Any]:
     """Retrieves detailed user model state, optionally for a specific topic."""
     print(f"[Tool get_user_model_status] Retrieving status for topic '{topic}'")
 
-    if not ctx.context.user_model_state:
+    state_dict = tool_context.state
+    user_model_state_dict = state_dict.get("user_model_state")
+
+    if not user_model_state_dict:
         return {"error": "No user model state found in context."}
 
-    state = ctx.context.user_model_state
-
     if topic:
-        if topic not in state.concepts:
+        concepts_dict = user_model_state_dict.get("concepts", {})
+        if topic not in concepts_dict:
             return {
                 "topic": topic,
                 "exists": False,
                 "message": "Topic not found in user model."
             }
             
-        concept = state.concepts[topic]
+        concept = concepts_dict[topic] # Should be a dictionary now
         return {
             "topic": topic,
             "exists": True,
-            "mastery_level": concept.mastery_level,
-            "attempts": concept.attempts,
-            "last_outcome": concept.last_interaction_outcome,
-            "confusion_points": concept.confusion_points,
-            "last_accessed": concept.last_accessed
+            "mastery_level": concept.get("mastery_level"),
+            "attempts": concept.get("attempts"),
+            "last_outcome": concept.get("last_interaction_outcome"),
+            "confusion_points": concept.get("confusion_points", []),
+            "last_accessed": concept.get("last_accessed")
         }
     
     # Return full state summary if no specific topic requested
-    # Use model_dump for serializable output
-    return state.model_dump(mode='json')
+    # Already a dictionary, just return it
+    return user_model_state_dict 
 
 @FunctionTool
 async def reflect_on_interaction(
-    ctx: google.adk.runners.RunContextWrapper[TutorContext],
+    tool_context: ToolContext,
     topic: str,
     interaction_summary: str, # e.g., "User answered checking question incorrectly."
     user_response: Optional[str] = None, # The actual user answer/input
-    feedback_provided: Optional[QuizFeedbackItem] = None # Feedback from teacher tool if available
+    feedback_provided_data: Optional[Dict] = None # Pass feedback as dict from state
 ) -> Dict[str, Any]:
     """
     Analyzes the last interaction for a given topic, identifies potential reasons for user difficulty,
     and suggests adaptive next steps for the Orchestrator.
     """
     print(f"[Tool reflect_on_interaction] Called for topic '{topic}'. Summary: {interaction_summary}")
+
+    feedback_provided: Optional[QuizFeedbackItem] = None
+    if feedback_provided_data:
+        try:
+            feedback_provided = QuizFeedbackItem.model_validate(feedback_provided_data)
+        except Exception as parse_err:
+            print(f"[Tool reflect_on_interaction] Warning: Could not parse feedback_provided data: {parse_err}")
 
     # Basic reflection logic (can be enhanced, e.g., calling another LLM for deeper analysis)
     suggestions = []
@@ -311,44 +344,61 @@ async def reflect_on_interaction(
 
 @FunctionTool
 async def call_planner_agent(
-    ctx: google.adk.runners.RunContextWrapper[TutorContext],
-    user_state_summary: Optional[str] = None # Optional summary of user state
+    ctx: ToolContext
 ) -> Union[FocusObjective, str]:
-    """Calls the Planner Agent to determine the next learning focus objective. Returns FocusObjective on success, or an error string on failure."""
+    """Calls the Planner Agent to determine the next learning focus objective."""
     print("[Tool call_planner_agent] Calling Planner Agent...")
+    # --- Prepare Input for Planner ---
+    kb_content = await read_knowledge_base(ctx) # Fetch KB content
+    if isinstance(kb_content, str) and kb_content.startswith("Error:"):
+        return kb_content # Propagate error
+
+    # Optionally get user state summary (assuming get_user_model_status returns a suitable dict/string)
+    user_state_data = await get_user_model_status(ctx)
+    # Ensure user_state_data is serializable to JSON
+    if isinstance(user_state_data, dict):
+        try:
+            user_state_summary = json.dumps(user_state_data)
+        except TypeError as e:
+            user_state_summary = f"Error serializing user state: {e}"
+            print(f"[Tool call_planner_agent] {user_state_summary}")
+    else:
+        user_state_summary = str(user_state_data)
+
+    planner_prompt = f"""
+    Knowledge Base Summary:
+    {kb_content}
+
+    User Model State Summary:
+    {user_state_summary}
+
+    Based on the above information, determine the next single learning focus objective for the user. Output ONLY the FocusObjective JSON object.
+    """
     try:
         # --- Import and Create Agent *Inside* ---
         from ai_tutor.agents.planner_agent import create_planner_agent # Import here
         # ----------------------------------------
-        if not ctx.context.vector_store_id:
-            return "Error: Vector store ID not found in context for Planner."
 
-        planner_agent = create_planner_agent(ctx.context.vector_store_id)
-        run_config = RunConfig(workflow_name="Orchestrator_PlannerCall", group_id=ctx.context.session_id)
+        planner_agent = create_planner_agent() # Create planner (no longer needs vs_id)
+        run_config = RunConfig(
+            # workflow_name="Orchestrator_PlannerCall", # Remove invalid args
+            # group_id=str(ctx.state.session_id)       # Remove invalid args
+        )
 
-        # Construct prompt for the planner
-        planner_prompt = f"""
-        Determine the next learning focus for the user.
-        First, call `read_knowledge_base` to understand the material's structure and concepts.
-        Analyze the knowledge base.
-        {f'Consider the user state: {user_state_summary}' if user_state_summary else 'Assume the user is starting or has just completed the previous focus.'}
-        Identify the single most important topic or concept for the user to focus on next.
-        Output your decision ONLY as a FocusObjective object.
-        """
-
+        # Run the planner agent with the prepared prompt
         result = await Runner.run(
             planner_agent,
             planner_prompt,
-            context=ctx.context,
-            run_config=run_config
+            session_id=str(ctx.state.session_id), # Pass session_id for context
+            run_config=run_config # Pass the cleaned run_config
         )
 
         # Check the type of the final output BEFORE trying to access attributes
         if isinstance(result.final_output, FocusObjective):
             focus_objective = result.final_output
             print(f"[Tool call_planner_agent] Planner returned focus: {focus_objective.topic}")
-            # Store the new focus in context
-            ctx.context.current_focus_objective = focus_objective
+            # Store the new focus in context state dictionary
+            ctx.state["current_focus_objective"] = focus_objective.model_dump() # Modify state dict
             return focus_objective
         else:
             error_msg = f"Error: Planner agent did not return a valid FocusObjective object. Got type: {type(result.final_output).__name__}. Raw output: {result.final_output}"
@@ -365,21 +415,28 @@ async def call_planner_agent(
 
 @FunctionTool
 async def call_teacher_agent(
-    ctx: google.adk.runners.RunContextWrapper[TutorContext],
+    tool_context: ToolContext,
     topic: str,
     explanation_details: str # e.g., "Explain the concept generally", "Provide an example"
 ) -> Union[ExplanationResult, str]:
     """Calls the Teacher Agent to provide an explanation for a specific topic/detail."""
     print(f"[Tool call_teacher_agent] Requesting explanation for '{topic}': {explanation_details}")
+    state_dict = tool_context.state # Access state dict
     try:
         # --- Import and Create Agent *Inside* ---
         from ai_tutor.agents.teacher_agent import create_interactive_teacher_agent # Naming needs update based on actual refactor
         # ----------------------------------------
-        if not ctx.context.vector_store_id:
-            return "Error: Vector store ID not found in context for Teacher."
+        # Vector store ID should be part of the state dictionary
+        vector_store_id = state_dict.get("vector_store_id")
+        if not vector_store_id:
+            return "Error: Vector store ID not found in context state for Teacher."
+        
+        session_id = state_dict.get("session_id") # Get session_id from state if available
 
-        teacher_agent = create_interactive_teacher_agent(ctx.context.vector_store_id) # TODO: Update function name if changed
-        run_config = RunConfig(workflow_name="Orchestrator_TeacherCall", group_id=ctx.context.session_id)
+        teacher_agent = create_interactive_teacher_agent(vector_store_id) # TODO: Update function name if changed
+        run_config = RunConfig(
+            # Remove invalid args
+        )
 
         teacher_prompt = f"""
         Explain the topic: '{topic}'.
@@ -391,7 +448,8 @@ async def call_teacher_agent(
         result = await Runner.run(
             teacher_agent,
             teacher_prompt,
-            context=ctx.context,
+            session_id=session_id, # Pass session_id if available
+            # state=state_dict, # Pass the state dictionary if needed by the runner/agent directly (unlikely for standard ADK run)
             run_config=run_config
         )
 
@@ -404,7 +462,7 @@ async def call_teacher_agent(
             explanation_result = result.final_output
             if explanation_result.status == "delivered":
                 print(f"[Tool call_teacher_agent] Teacher delivered structured explanation for '{topic}'.")
-                ctx.context.last_interaction_summary = f"Teacher explained {topic}." # Update summary
+                state_dict["last_interaction_summary"] = f"Teacher explained {topic}." # Update summary in state
                 return explanation_result # Return the structured result
             else:
                 # Handle structured failure/skipped cases
@@ -416,7 +474,7 @@ async def call_teacher_agent(
             print(f"[Tool call_teacher_agent] Teacher delivered explanation for '{topic}'.")
 
             wrapped_result = ExplanationResult(status="delivered", details=result.final_output)
-            ctx.context.last_interaction_summary = f"Teacher explained {topic} (raw string)."
+            state_dict["last_interaction_summary"] = f"Teacher explained {topic} (raw string)."
             return wrapped_result # Return the wrapped result
         else:
             # Handle other unexpected output types
@@ -431,20 +489,25 @@ async def call_teacher_agent(
 
 @FunctionTool
 async def call_quiz_creator_agent(
-    ctx: google.adk.runners.RunContextWrapper[TutorContext],
+    tool_context: ToolContext,
     topic: str,
     instructions: str # e.g., "Create one medium difficulty question", "Create a 3-question quiz covering key concepts"
 ) -> Union[QuizCreationResult, str]:
     """Calls the Quiz Creator Agent to generate one or more quiz questions."""
     print(f"[Tool call_quiz_creator_agent] Requesting quiz creation for '{topic}': {instructions}")
+    state_dict = tool_context.state # Access state dict
     try:
         # --- Import and Create Agent *Inside* ---
         from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent # Or the new tool function name
         # ----------------------------------------
+        
+        session_id = state_dict.get("session_id") # Get session_id from state
 
         # Assuming create_quiz_creator_agent is the function that returns the agent instance
         quiz_creator_agent = create_quiz_creator_agent() # TODO: Update function name if changed. Pass API key if needed.
-        run_config = RunConfig(workflow_name="Orchestrator_QuizCreatorCall", group_id=ctx.context.session_id)
+        run_config = RunConfig(
+            # Remove invalid args
+        )
 
         quiz_creator_prompt = f"""
         Create quiz questions based on the following instructions:
@@ -456,7 +519,7 @@ async def call_quiz_creator_agent(
         result = await Runner.run(
             quiz_creator_agent,
             quiz_creator_prompt,
-            context=ctx.context,
+            session_id=session_id, # Pass session_id if available
             run_config=run_config
         )
 
@@ -466,7 +529,7 @@ async def call_quiz_creator_agent(
             print(f"[Tool call_quiz_creator_agent] Quiz Creator created {question_count} question(s) for '{topic}'.")
             # Store the created question if it's a single one for evaluation
             if quiz_creation_result.question:
-                 ctx.context.current_quiz_question = quiz_creation_result.question
+                 state_dict["current_quiz_question"] = quiz_creation_result.question
             return quiz_creation_result
         else:
             details = getattr(quiz_creation_result, 'details', 'No details provided.')

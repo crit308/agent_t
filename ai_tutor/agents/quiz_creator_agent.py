@@ -22,54 +22,27 @@ from ai_tutor.agents.models import QuizCreationResult, QuizQuestion
 # This function now defines the AGENT used AS A TOOL
 def create_quiz_creator_agent() -> LlmAgent:
     """Creates the Quiz Creator Agent."""
-    # Assuming llm and prompt are defined elsewhere or passed as arguments
-    # If using OpenAIProvider directly:
-    # llm = OpenAIProvider(model="gpt-4-1106-preview", temperature=0.2).llm
-    # If using ADK integrated model:
-    # llm = RoundingModelWrapper(model="gemini-1.0-pro", temperature=0.2) # Adjust as needed
-    
-    # Simplified prompt example - adjust based on actual requirements
-    prompt = """
-    You are an AI assistant specialized in creating educational quizzes.
-    Based on the provided context (e.g., text, lesson summary), generate a single multiple-choice question.
-    The question should have one correct answer and several plausible distractors.
-    Output the question, options, and the correct answer index in JSON format.
-    Example Input: Photosynthesis is the process plants use to convert light energy into chemical energy.
-    Example Output:
-    {
-      "question": "What process do plants use to convert light energy into chemical energy?",
-      "options": ["Respiration", "Transpiration", "Photosynthesis", "Fermentation"],
-      "answer_index": 2
-    }
-    Context: {context}
-    """
+    model_identifier = "gemini-1.5-flash" # Use Flash for potentially faster/cheaper quiz generation
 
-    # Define the agent with appropriate tools, LLM, and prompt
-    # Example: llm = RoundingModelWrapper(model="gemini-1.0-pro", temperature=0.2)
-    # agent = LlmAgent(llm=llm, prompt=prompt) # Corrected casing, Adapt based on how LLM is initialized
+    # Create the quiz creator agent as an ADK LLMAgent
+    quiz_creator_agent = LlmAgent(
+        name="quiz_creator_tool_agent", # Use valid Python identifier
+        instruction="""
+        You are an expert educational assessment designer. Your task is to create quiz questions based on the specific instructions provided in the prompt (e.g., topic, number of questions, difficulty).
 
-    # Placeholder for agent creation - replace with actual ADK agent setup
-    # This likely involves setting up the model, prompt template, and potentially tools
-    # print("DEBUG: Creating Quiz Creator Agent")
-    # agent = LlmAgent(...) # Corrected casing, Replace ... with actual agent configuration
-    # return agent
-    
-    # Temporary return for structure - replace with actual agent
-    # This needs to be replaced with the actual agent initialization using google.adk
-    print("Placeholder: Quiz Creator Agent creation logic goes here.")
-    # Example using a placeholder or a simple setup if ADK provides one easily
-    # For now, let's assume a basic LlmAgent structure needs to be filled
-    # You might need to initialize the LLM (e.g., from google.adk.llms) and define the prompt properly
-    
-    # Using a placeholder for the llm and prompt as they are not defined in the snippet
-    # You'll need to replace 'placeholder_llm' and 'placeholder_prompt' with actual instances
-    placeholder_llm = None # Replace with actual LLM instance, e.g., GeminiLLM()
-    placeholder_prompt = "Your prompt here" # Replace with the actual prompt string or template
+        Guidelines for creating effective quiz questions:
+        - Align questions directly with the provided context or learning objective.
+        - Ensure clarity and avoid ambiguity in question wording.
+        - Create plausible distractors (incorrect options) that are related to the topic but clearly wrong.
+        - Vary question types if possible (though the current schema focuses on multiple-choice).
+        - Ensure the question strictly requires only one correct answer based *only* on the provided context.
+        - Output *only* the JSON structure as defined in the output schema. Do not add any extra text or explanation before or after the JSON.
+        """,
+        model=model_identifier,
+        output_schema=QuizCreationResult # Define the expected output structure
+    )
 
-    # Ensure google.adk.agents.LlmAgent is correctly initialized
-    # agent = LlmAgent(llm=placeholder_llm, prompt=placeholder_prompt) # Corrected casing
-    # return agent
-    raise NotImplementedError("Quiz Creator Agent creation not fully implemented.")
+    return quiz_creator_agent
 
 
 # Function to generate a single quiz question using the agent

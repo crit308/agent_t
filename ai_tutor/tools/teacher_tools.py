@@ -1,9 +1,7 @@
-from agents import function_tool
-from agents.run_context import RunContextWrapper
-from typing import List, Dict, Any, Literal, cast
-import uuid
 from __future__ import annotations
 import logging
+from typing import List, Dict, Any, Literal, cast
+import uuid
 from uuid import UUID
 
 # Import necessary response models from api_models.py
@@ -11,15 +9,16 @@ from ai_tutor.api_models import ExplanationResponse, QuestionResponse, MessageRe
 from ai_tutor.agents.models import QuizQuestion # If asking structured questions
 from ai_tutor.context import TutorContext # Import TutorContext for type hint
 
-from google.adk.tools import LongRunningFunctionTool, ToolContext
-from google.generativeai import types as adk_types
+from google.adk.tools import LongRunningFunctionTool, ToolContext, FunctionTool # Import FunctionTool
+# Import google.generativeai directly
+from google.adk.agents import types as adk_types # Import types from ADK
 from google.adk.events import Event, EventActions # Import Event classes
 
 logger = logging.getLogger(__name__)
 
 # Tool implementations now return the data structure the API needs
 
-@function_tool
+@FunctionTool
 async def present_explanation(
     ctx: RunContextWrapper[TutorContext],
     explanation_text: str,
@@ -45,7 +44,7 @@ async def present_explanation(
         is_last_segment=is_last_segment,
     )
 
-@function_tool
+@FunctionTool
 async def ask_checking_question(
     ctx: RunContextWrapper[TutorContext],
     question: QuizQuestion # Use the QuizQuestion model for structure

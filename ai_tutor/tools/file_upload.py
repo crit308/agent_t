@@ -37,7 +37,7 @@ class FileUploadManager:
         # 1. Upload to Supabase Storage
         try:
             with open(file_path, "rb") as file:
-                self.supabase.storage.from_("documents").upload(
+                self.supabase.storage.from_("document_uploads").upload(
                     path=supabase_path,
                     file=file,
                     file_options={"content-type": "application/octet-stream"}
