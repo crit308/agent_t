@@ -1,0 +1,511 @@
+Okay, let's apply the necessary changes based on the Google ADK's likely patterns for handling long-running, interactive tools.
+
+The core idea is:
+
+The LongRunningFunctionTool (AskUserQuestionTool) will yield a specific Event to signal it needs input. This event will carry the necessary data (the question) and crucially the function_call_id that initiated this tool call.
+
+The FastAPI /interact endpoint will detect this specific event and return the question data to the frontend, storing the function_call_id associated with the pause.
+
+A new FastAPI /answer endpoint will receive the user's answer and the previously stored function_call_id.
+
+The /answer endpoint will create a new Event containing a types.FunctionResponse (using the original function_call_id) and feed this event back into the ADK Runner for the session.
+
+The Runner will process this event, matching it to the pending tool call, and the agent's execution will resume, now having access to the user's answer via the function response in its history.
+
+1. Update tools/teacher_tools.py (Implement AskUserQuestionTool)
+
+--- a/ai_tutor/tools/teacher_tools.py
++++ b/ai_tutor/tools/teacher_tools.py
+@@ -4,9 +4,11 @@
+ from typing import Dict, Any, Optional, AsyncGenerator
+ from uuid import UUID
+ 
+-from google.adk.tools import LongRunningFunctionTool, ToolContext
+-from google.adk.agents import types # For function call/response parts
++# Use ADK imports
++from google.adk.tools import LongRunningFunctionTool, ToolContext
++from google.adk.agents import types as adk_types
++from google.adk.events import Event, EventActions # Import Event classes
+ 
+ from ai_tutor.agents.models import QuizQuestion # Input schema model
+ 
+@@ -17,37 +19,47 @@
+     A long-running tool used by the Teacher Agent to ask the user a question
+     and wait for their answer.
+     """
+-    def __init__(self):
++    def __init__(self, name: str = "ask_user_question_and_get_answer"):
+         # The actual function logic is within 'run'
+-        super().__init__(func=self.run_tool_logic)
+-        self.name = "ask_user_question_and_get_answer"
++        # The function passed here is just a placeholder for signature/schema generation.
++        # The main logic is in run_async_stream.
++        super().__init__(func=self._placeholder_func_for_schema)
++        self.name = name
+         self.description = "Asks the user a multiple-choice question and waits for their answer index."
+         # Define the input schema based on QuizQuestion (simplified for tool input)
+         self.input_schema = QuizQuestion # Or a subset Pydantic model if preferred
+ 
+-    async def run_tool_logic(self, question_data: Dict[str, Any], tool_context: ToolContext) -> Dict[str, Any]:
++    # Define a placeholder function matching the expected signature for schema generation
++    def _placeholder_func_for_schema(self, question: QuizQuestion) -> Dict[str, Any]:
++         """Placeholder for schema generation. Actual logic is in run_async_stream."""
++         pass
++
++    # Override run_async_stream for long-running/interactive logic
++    async def run_async_stream(
++        self, *, args: Dict[str, Any], tool_context: ToolContext
++    ) -> AsyncGenerator[Event, None]:
+         """
+         The core logic: signal pause, wait for resume, return answer.
+         This implementation yields a specific Event to signal the pause.
+         """
++        # Note: We receive 'args' which is the dict parsed by ADK from the LLM call.
++        # 'question_data' is effectively within 'args'. Let's assume 'args' directly
++        # matches the QuizQuestion structure based on the input_schema.
++        question_data = args
+         try:
+             # Validate input using Pydantic (optional but recommended)
+             question_obj = QuizQuestion.model_validate(question_data)
+-            logger.info(f"AskUserQuestionTool: Asking question - '{question_obj.question[:50]}...'")
++            logger.info(f"{self.name}: Asking question - '{question_obj.question[:50]}...'")
+ 
+             # --- ADK Mechanism to Signal Pause & Wait ---
+-            # Yield a specific event containing the question data and the
+-            # original function_call_id from the context.
+-            # The API layer will intercept this event.
++            # Yield a specific event containing the question data and the original
++            # function_call_id from the context. The API layer will intercept this.
++
+             pause_event = Event(
+                 author=tool_context.agent_name, # Associate with the agent calling the tool
+-                # Content can be minimal or contain a prompt for the user
+                 content=adk_types.Content(role="tool", parts=[adk_types.Part(text=f"Waiting for user answer to question about: {question_obj.related_section}")]),
+                 actions=EventActions(
+                     # Use a custom action field to signal the pause and carry data
+-                    # Ensure this structure is agreed upon with the API layer
+                     custom_action={
+                         "signal": "request_user_input",
+                         "tool_call_id": tool_context.function_call_id, # CRUCIAL: Include the ID that needs the response
+@@ -57,19 +69,12 @@
+                 ),
+                 invocation_id=tool_context.invocation_id # Carry over invocation ID
+             )
+-            yield pause_event
++            yield pause_event # Yield the signal event
++            logger.info(f"{self.name}: Yielded pause signal event for tool_call_id {tool_context.function_call_id}.")
+ 
+             # --- Execution Pauses Here ---
+-            # The ADK framework/Runner stops processing this tool's stream here.
+-            # The API layer needs to handle the yielded 'pause_event'.
+-            # When the API layer receives the user's answer, it will create a
+-            # *new FunctionResponse Event* and send it back into the Runner
+-            # for this session. That FunctionResponse event will trigger the
+-            # continuation of the agent's logic (in the Teacher agent's loop),
+-            # NOT the resumption of *this specific function*.
+-
+-            # Therefore, this tool function effectively finishes after yielding the pause signal.
+-            # It doesn't return the user's answer directly.
++            # The ADK framework/Runner stops processing this tool's stream. The tool's execution context is suspended.
++            # The API layer handles the yielded 'pause_event', gets user input, and sends a *FunctionResponse* event back.
++            # The ADK Runner receives the FunctionResponse, matches it to the `tool_context.function_call_id`, and the agent proceeds.
++            # This tool's specific async generator function *completes* after yielding the pause event.
++            # The *result* of the tool call for the agent will be the FunctionResponse sent later.
+ 
+         except Exception as e:
+              logger.exception(f"Error in {self.name}: {e}")
+@@ -78,4 +83,4 @@
+              # Return an error structure if needed (although this function yielding signals success/failure differently now)
+ 
+ # Instantiate the tool for export
+-ask_user_question_and_get_answer = AskUserQuestionTool()
++ask_user_question_and_get_answer_tool = AskUserQuestionTool()
+
+
+2. Refactor routers/tutor.py (/interact and add /answer)
+
+--- a/ai_tutor/routers/tutor.py
++++ b/ai_tutor/routers/tutor.py
+@@ -23,7 +23,7 @@
+ from ai_tutor.context import TutorContext # Keep TutorContext
+ from ai_tutor.output_logger import get_logger, TutorOutputLogger
+ # Use ADK Runner and related components
+-from google.adk.runners import Runner, RunConfig
++from google.adk.runners import Runner, RunConfig, RunnerError # Import RunnerError
+ from google.adk.agents import LLMAgent, Event # Import ADK Event
+ from google.adk.agents import types as adk_types # For content/parts
+ from ai_tutor.manager import AITutorManager
+@@ -31,6 +31,7 @@
+ from ai_tutor.dependencies import get_supabase_client, get_session_service # Get ADK service dependency
+ from ai_tutor.auth import verify_token # Get auth dependency
+ 
++
+ router = APIRouter()
+ session_manager = SessionManager() # Keep for create_session? Or fully replace with service? Consider removing.
+ 
+@@ -48,14 +49,14 @@
+ async def get_tutor_context(
+     session_id: UUID, # Expect UUID
+     request: Request, # Access user from request state
+-    session_service: SupabaseSessionService = Depends(get_session_service) # Use ADK Service
++    session_service: SupabaseSessionService = Depends(get_session_service) # Inject ADK Service
+ ) -> TutorContext:
+     user: User = request.state.user # Get authenticated user
+     # ADK session service expects string IDs
+     session = session_service.get_session(app_name="ai_tutor", user_id=str(user.id), session_id=str(session_id))
+     if not session or not session.state:
+         raise HTTPException(status_code=404, detail=f"Session {session_id} not found or not authorized for user.")
+-    # Deserialize TutorContext from session state
++    # Deserialize TutorContext from session state dictionary
+     return TutorContext.model_validate(session.state)
+ # --- Helper to get logger ---
+ def get_session_logger(session_id: UUID) -> TutorOutputLogger:
+@@ -130,7 +131,11 @@
+             tutor_context.vector_store_id = vector_store_id
+             tutor_context.uploaded_file_paths.extend(uploaded_filenames) # Append new files
+             # --- Persist context via SessionService ---
+-            # Update happens implicitly when events with state_delta are appended via Runner
++            # Explicit save might be needed here BEFORE analysis if analysis reads context
++            # Or ensure analysis reads directly from DB / receives fresh context
++            # This helper function bypasses ADK's event mechanism for direct state update
++            # Use with caution, prefer state updates via agent actions/events if possible.
++            logger.info(f"Explicitly updating context after file upload for session {session_id}")
+             await _update_context_in_db(session_id, user.id, tutor_context, supabase)
+             message += f"Vector Store ID: {vector_store_id}. "
+         else:
+@@ -159,7 +164,8 @@
+             analysis_status = "completed"
+             # Store analysis result (as dict or object) - Keep storing the object
+             tutor_context.analysis_result = analysis_result # Store the Pydantic object
+-            await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
++            # --- Persist context via SessionService ---
++            await _update_context_in_db(session_id, user.id, tutor_context, supabase) # Persist after analysis
+             message += "Analysis completed."
+ 
+         else:
+@@ -193,7 +199,7 @@
+         return AnalysisResponse(status="error", error=f"Failed to parse analysis data: {e}")
+     else:
+         return AnalysisResponse(status="not_found", analysis=None)
+-# --- DEPRECATE /plan Endpoint ---
++# --- DEPRECATED /plan Endpoint ---
+ '''
+ @router.post(
+     "/sessions/{session_id}/plan",
+@@ -334,6 +340,7 @@
+ 
+     last_agent_event: Optional[Event] = None
+     question_for_user: Optional[QuizQuestion] = None
++    paused_tool_call_id: Optional[str] = None # Store the ID needed for resume
+ 
+     try:
+         # Use run_async and process events
+@@ -346,26 +353,27 @@
+             print(f"[Interact] Received Event: ID={event.id}, Author={event.author}, Actions={event.actions}")
+             logger.log_orchestrator_output(event.content) # Log content
+             last_agent_event = event # Keep track of the last agent event
+-
++            
+             # --- Check for Pause/Input Request ---
+-            # TODO: Replace with actual ADK mechanism detection for long-running tool pause
+-            # Example: Check if a specific action or content structure indicates a pause
+-            # if event.actions.custom_signal == "request_user_input" and event.content:
+-            #     try:
+-            #         question_data = json.loads(event.content.parts[0].text) # Assuming question is passed as JSON text
+-            #         question_for_user = QuizQuestion.model_validate(question_data)
+-            #         print(f"[Interact] Detected pause request. Sending question to user: {question_for_user.question[:50]}...")
+-            #         # Break the loop to return the question to the frontend
+-            #         break
+-            #     except Exception as parse_err:
+-            #         logger.log_error("PauseSignalParse", f"Failed to parse question from pause signal: {parse_err}")
+-            #         # Continue processing other events or raise error? For now, continue.
+-
++            # Check the specific action yielded by AskUserQuestionTool
++            if event.actions and event.actions.custom_action:
++                 custom_action = event.actions.custom_action
++                 if custom_action.get("signal") == "request_user_input":
++                     question_data = custom_action.get("question_data")
++                     paused_tool_call_id = custom_action.get("tool_call_id") # Get the ID
++                     if question_data and paused_tool_call_id:
++                         try:
++                             question_for_user = QuizQuestion.model_validate(question_data)
++                             logger.info(f"Detected pause signal from tool_call_id {paused_tool_call_id}.")
++                             print(f"[Interact] Detected pause request. Sending question to user: {question_for_user.question[:50]}...")
++                             # Break the loop to return the question to the frontend
++                             break # Exit the async for loop
++                         except Exception as parse_err:
++                             logger.error(f"PauseSignalParse: Failed to parse question from pause signal event {event.id}: {parse_err}")
++                             # Continue processing other events or raise error? For now, continue.
+     else:
+         # Catch case where loop finishes without yielding any agent events
+-        if not last_agent_event:
++        if not last_agent_event and not question_for_user: # Check both flags
+              print("[Interact] Warning: ADK run completed without yielding any agent events or pause signals.")
+ 
+     except Exception as run_err:
+@@ -373,18 +381,26 @@
+         print(f"[Interact] Error during ADK Runner execution: {run_err}\n{traceback.format_exc()}")
+         raise HTTPException(status_code=500, detail="Internal error during agent execution.")
+ 
+-    # --- Handle Orchestrator Output ---
+-    # Process the *last* event from the agent OR the detected question
++    # --- Load final context state AFTER the run OR PAUSE ---
++    # The Runner should have updated the state via SessionService.append_event up to the pause/completion
++    final_session = session_service.get_session("ai_tutor", str(user.id), str(session_id))
++    if final_session and final_session.state:
++         final_context = TutorContext.model_validate(final_session.state)
++         # Store the paused tool call ID in the context if we paused
++         if paused_tool_call_id:
++             final_context.user_model_state.pending_interaction_type = 'checking_question' # Mark as pending
++             final_context.user_model_state.pending_interaction_details = {"paused_tool_call_id": paused_tool_call_id}
++             # Persist this update immediately so /answer can retrieve it
++             await _update_context_in_db(session_id, user.id, final_context, supabase)
++             logger.info(f"Stored paused_tool_call_id {paused_tool_call_id} in context for session {session_id}")
++    else:
++        # Should not happen if session exists, but handle gracefully
++        logger.error(f"ContextFetchAfterRun: Failed to fetch session state after run/pause for {session_id}")
++        final_context = tutor_context # Fallback to context before run (might be stale)
+ 
+     # --- Logic to handle the PAUSED state (if question_for_user was set) ---
+     if question_for_user:
+         # Teacher agent paused, waiting for user answer. Send the question back.
+         final_response_data = QuestionResponse(
+             response_type="question",
+@@ -392,12 +410,11 @@
+             topic=final_context.current_teaching_topic or "Current Focus" # Get topic from final context
+         )
+         print(f"[Interact] Responding with question. Session {session_id} is now paused waiting for answer.")
+-        # IMPORTANT: The session state (context) should have been implicitly saved by the Runner/SessionService *before* the pause signal.
+-        # No explicit save needed here unless the pause signal itself requires a state update.
+ 
+     # --- Logic to handle the COMPLETED state (no pause detected) ---
+     elif last_agent_event and last_agent_event.content:
+         # Agent run completed normally. Assume the last event's content is the response.
+-        # This might be a message from the Orchestrator, or the final TeacherTurnResult (needs parsing).
++        # This should ideally be the final output from the Orchestrator agent based on its output_schema.
+         # TODO: Adapt this based on Orchestrator's final output schema.
+         # For now, assume it's a text message.
+         response_text = last_agent_event.content.parts[0].text if last_agent_event.content.parts else "Interaction complete."
+@@ -405,11 +422,6 @@
+         )
+         print(f"[Interact] Orchestrator returned response of type: {final_response_data.response_type}")
+         # If orchestrator called quiz creator which returned a question, update pending state
+-        # This state update logic might now belong *inside* the Teacher agent's loop
+-        # if isinstance(final_response_data, QuestionResponse):
+-        #     tutor_context.user_model_state.pending_interaction_type = 'checking_question'
+-        #     tutor_context.user_model_state.pending_interaction_details = {
+-        #         'question': final_response_data.question.model_dump() # Store the question details
+-        #     }
+-        #     print(f"[Interact] Teacher asked checking question. Set pending_interaction_type='checking_question'")
+ 
+     else:
+         # No event received or last event had no content
+@@ -419,17 +431,7 @@
+             message="There was an internal error processing your request."
+         )
+ 
+-    # --- Load final context state AFTER the run OR PAUSE ---
+-    # The Runner should have updated the state via SessionService.append_event up to the pause/completion
+-    final_session = session_service.get_session("ai_tutor", str(user.id), str(session_id))
+-    if final_session and final_session.state:
+-         final_context = TutorContext.model_validate(final_session.state)
+-         # Store the paused tool call ID in the context if we paused
+-         if paused_tool_call_id:
+-             final_context.user_model_state.pending_interaction_type = 'checking_question' # Mark as pending
+-             final_context.user_model_state.pending_interaction_details = {"paused_tool_call_id": paused_tool_call_id}
+-             # Persist this update immediately so /answer can retrieve it
+-             await _update_context_in_db(session_id, user.id, final_context, supabase)
+-             logger.info(f"Stored paused_tool_call_id {paused_tool_call_id} in context for session {session_id}")
+     # --- Save Context AFTER determining the final response ---
+     print(f"[Interact] Saving final context state to Supabase for session {session_id}")
+     # Saving happens implicitly via SessionService.append_event during the run
+@@ -440,12 +442,71 @@
+         content_type=final_response_data.response_type,
+         data=final_response_data, # Send the response from the final agent run
+         user_model_state=final_context.user_model_state # Send final updated state
++    )
++
++# --- NEW Endpoint to handle user answers when Teacher Agent is paused ---
++@router.post(
++    "/sessions/{session_id}/answer",
++    response_model=InteractionResponseData, # Returns the next interaction
++    dependencies=[Depends(verify_token)],
++    summary="Submit Answer to Paused Question",
++    tags=["Tutoring Workflow"]
++)
++async def submit_answer_to_tutor(
++    session_id: UUID,
++    request: Request,
++    interaction_input: InteractionRequestData = Body(...), # Should have type 'answer'
++    supabase: Client = Depends(get_supabase_client), # Get supabase for context update helper
++    session_service: SupabaseSessionService = Depends(get_session_service),
++    tutor_context: TutorContext = Depends(get_tutor_context) # Get current context to find pause details
++):
++    logger = get_session_logger(session_id)
++    user: User = request.state.user
++    print(f"\n=== Received /answer for session {session_id} ===")
++    print(f"Input Type: {interaction_input.type}, Data: {interaction_input.data}")
++
++    if interaction_input.type != 'answer' or 'answer_index' not in interaction_input.data:
++        raise HTTPException(status_code=400, detail="Invalid input type or data for /answer endpoint. Expected type='answer' and data={'answer_index': number}.")
++
++    # --- Retrieve details about the paused interaction ---
++    if tutor_context.user_model_state.pending_interaction_type != 'checking_question' or \
++       not tutor_context.user_model_state.pending_interaction_details or \
++       'paused_tool_call_id' not in tutor_context.user_model_state.pending_interaction_details:
++        logger.warning(f"Received answer for session {session_id}, but no valid pending interaction found in context.")
++        raise HTTPException(status_code=400, detail="No pending question found for this session.")
++
++    paused_tool_call_id = tutor_context.user_model_state.pending_interaction_details['paused_tool_call_id']
++    user_answer_index = interaction_input.data['answer_index']
++    logger.info(f"Resuming tool call {paused_tool_call_id} with answer index {user_answer_index}")
++
++    # --- Create the FunctionResponse Event ---
++    answer_event = Event(
++        author="user", # Or system? Clarify ADK best practice
++        content=adk_types.Content(
++            role="tool", # Response is for a tool
++            parts=[
++                adk_types.Part.from_function_response(
++                    name="ask_user_question_and_get_answer", # Tool name
++                    id=paused_tool_call_id, # CRUCIAL: Match the original tool call ID
++                    response={"answer_index": user_answer_index} # The data the tool's caller expects
++                )
++            ]
++        ),
++        invocation_id=tutor_context.last_interaction_summary or f"resume_{session_id}", # Find appropriate invocation ID? Use last one?
++    )
++
++    # --- Clear pending state in context BEFORE resuming run ---
++    tutor_context.user_model_state.pending_interaction_type = None
++    tutor_context.user_model_state.pending_interaction_details = None
++    await _update_context_in_db(session_id, user.id, tutor_context, supabase) # Persist the cleared state
++
++    # --- Resume the ADK Runner ---
++    # Re-initialize runner and run_async, providing the answer event.
++    # ADK's Runner should handle routing this event correctly based on the function_call_id.
++    orchestrator_agent = create_orchestrator_agent() # Recreate agent instance
++    adk_runner = Runner("ai_tutor", orchestrator_agent, session_service)
++    run_config = RunConfig(workflow_name="Tutor_Interaction_Resume", group_id=str(session_id))
++
++    # Process the stream *after* resuming
++    try:
++        last_agent_event_after_resume: Optional[Event] = None
++        question_after_resume: Optional[QuizQuestion] = None
++        paused_id_after_resume: Optional[str] = None
++
++        async for event in adk_runner.run_async(
++            user_id=str(user.id),
++            session_id=str(session_id),
++            new_message=answer_event, # Provide the answer event as input
++            run_config=run_config
++        ):
++            print(f"[Answer] Received Event after resume: ID={event.id}, Author={event.author}")
++            logger.log_orchestrator_output(event.content)
++            last_agent_event_after_resume = event
++
++            # Check for ANOTHER pause signal immediately after resume
++            if event.actions and event.actions.custom_action:
++                 custom_action = event.actions.custom_action
++                 if custom_action.get("signal") == "request_user_input":
++                     question_data = custom_action.get("question_data")
++                     paused_id_after_resume = custom_action.get("tool_call_id")
++                     if question_data and paused_id_after_resume:
++                        try:
++                            question_after_resume = QuizQuestion.model_validate(question_data)
++                            logger.info(f"Detected another pause signal (ID: {paused_id_after_resume}) immediately after resuming.")
++                            break # Exit loop to send the new question
++                        except Exception as parse_err:
++                             logger.error(f"PauseSignalParse (Resume): Failed to parse question: {parse_err}")
++
++    except Exception as resume_err:
++         logger.log_error("ADKRunnerResume", f"Error during agent run after resume: {resume_err}")
++         print(f"[Answer] Error during ADK Runner execution after resume: {resume_err}\n{traceback.format_exc()}")
++         raise HTTPException(status_code=500, detail="Internal error resuming agent execution.")
++
++    # --- Load final context state AFTER the resume run ---
++    final_session_after_resume = session_service.get_session("ai_tutor", str(user.id), str(session_id))
++    if final_session_after_resume and final_session_after_resume.state:
++         final_context_after_resume = TutorContext.model_validate(final_session_after_resume.state)
++         # Store the new paused tool call ID if another pause occurred
++         if paused_id_after_resume:
++             final_context_after_resume.user_model_state.pending_interaction_type = 'checking_question'
++             final_context_after_resume.user_model_state.pending_interaction_details = {"paused_tool_call_id": paused_id_after_resume}
++             await _update_context_in_db(session_id, user.id, final_context_after_resume, supabase)
++             logger.info(f"Stored new paused_tool_call_id {paused_id_after_resume} after resume.")
++    else:
++        logger.error(f"ContextFetchAfterResume: Failed to fetch session state after resume for {session_id}")
++        final_context_after_resume = tutor_context # Fallback (stale)
++
++    # --- Format response based on whether it paused again or completed ---
++    if question_after_resume:
++        # Paused again immediately
++        final_response_data_after_resume = QuestionResponse(
++            response_type="question",
++            question=question_after_resume,
++            topic=final_context_after_resume.current_teaching_topic or "Current Focus"
++        )
++        print(f"[Answer] Responding with NEW question. Session {session_id} paused again.")
++    elif last_agent_event_after_resume and last_agent_event_after_resume.content:
++        # Completed after resume
++        response_text = last_agent_event_after_resume.content.parts[0].text if last_agent_event_after_resume.content.parts else "Processing complete."
++        final_response_data_after_resume = MessageResponse(response_type="message", text=response_text)
++        print(f"[Answer] Interaction completed after resume. Final response type: {final_response_data_after_resume.response_type}")
++    else:
++        # Error or unexpected state
++        error_msg = "Agent interaction finished unexpectedly after resuming."
++        print(f"[Answer] Error: {error_msg}")
++        final_response_data_after_resume = ErrorResponse(error=error_msg, message="Internal processing error after submitting answer.")
++
++    return InteractionResponseData(
++        content_type=final_response_data_after_resume.response_type,
++        data=final_response_data_after_resume,
++        user_model_state=final_context_after_resume.user_model_state
+     )
+ 
+-# --- Remove POST /quiz/submit (Legacy) ---
+-# Quiz answers are now handled via the /interact endpoint.
+-# An end-of-session quiz submission could potentially be added back later
+-# if needed, but the core loop uses /interact.
+-
+ # --- Helper to update context in DB (replace direct calls) ---
+ async def _update_context_in_db(session_id: UUID, user_id: UUID, context: TutorContext, supabase: Client): # Keep for explicit saves if needed
+     """Helper to persist context via SupabaseSessionService interface."""
+-    # This mimics how the SessionService's append_event would work
++    # This function provides a way to explicitly save the context outside the
++    # normal event flow handled by the Runner and SessionService.append_event.
++    # Use when immediate persistence of context state is needed before the next agent action.
++    logger.debug(f"Explicitly updating context in DB for session {session_id}")
+     try:
+         context_dict = context.model_dump(mode='json')
+         response: PostgrestAPIResponse = supabase.table("sessions").update(
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Diff
+IGNORE_WHEN_COPYING_END
+
+Key Implementation Notes and Considerations:
+
+AskUserQuestionTool Signaling: The yield pause_event mechanism is crucial. The structure of custom_action needs to be consistent between the tool yielding it and the /interact endpoint detecting it. Make sure to include the tool_context.function_call_id.
+
+/interact Pause Detection: The logic if event.actions and event.actions.custom_action: needs to accurately check for the specific signal structure you define in AskUserQuestionTool.
+
+State Persistence on Pause: Ensure the ADK Runner and your SupabaseSessionService correctly persist the session state up to the point where the tool yields the pause event. This is vital for resuming correctly. The diff includes an explicit save after detecting the pause and storing the paused_tool_call_id in the context, which might be necessary.
+
+/answer Resumption: The core assumption is that calling runner.run_async again with a new Event containing the FunctionResponse (keyed by the paused_tool_call_id) is the correct way to resume. Verify this with ADK documentation. The Runner instance used for resumption must be aware of the state of the paused execution for that session. Re-initializing it might lose the paused state unless ADK handles this implicitly via the SessionService. You might need a way to retrieve/reuse the specific Runner instance or its state.
+
+Teacher Agent Resume Logic: The TeacherAgent's instructions need to be clear that after calling ask_user_question_and_get_answer, its execution pauses. When it runs again (after the user answers), it should look for the FunctionResponse event in its input history, extract the answer, evaluate it, and continue its internal loop.
+
+Supabase Client in Tools: The get_document_content and potentially read_knowledge_base tools need access to the Supabase client. Passing it via ToolContext is not standard in ADK. Options:
+
+Make the Supabase client a global or singleton accessible by tools (simpler but less clean).
+
+Pass necessary connection info/client instance when creating the agent/tool instances if ADK allows tool configuration.
+
+Modify ToolContext (if ADK allows extension) or use a side channel (less ideal). For now, the diff uses get_supabase_client() directly, assuming it works in the execution context.
+
+Error Handling: Robust error handling is needed, especially around the pause/resume flow and agent tool calls.
+
+ADK Version: These diffs assume features available in a recent version of Google ADK supporting long-running tools and stateful sessions. Consult the specific ADK version's documentation.

@@ -1,10 +1,11 @@
 from __future__ import annotations
-from agents import function_tool, Runner, RunConfig
-from agents.run_context import RunContextWrapper
+from google.adk.tools import FunctionTool, ToolContext
+from google.adk.runners import Runner, RunConfig
 from typing import Any, Optional, Literal, Union, cast, Dict, List
 import os
 from datetime import datetime
 import traceback # Import traceback for error logging
+import logging # Add logging import
 
 # --- Import TutorContext directly ---
 # We need the actual class definition available for get_type_hints called by the decorator.
@@ -14,7 +15,7 @@ from ai_tutor.context import TutorContext, UserConceptMastery, UserModelState
 # --- Import necessary models ---
 #from ai_tutor.agents.models import LessonPlan, QuizQuestion, QuizFeedbackItem, LessonContent, Quiz, LessonSection, LearningObjective
 # Models needed by the tools themselves or for type hints
-from ai_tutor.agents.models import FocusObjective, QuizQuestion, QuizFeedbackItem, ExplanationResult, QuizCreationResult # Import new models
+from ai_tutor.agents.models import FocusObjective, QuizQuestion, QuizFeedbackItem, ExplanationResult, QuizCreationResult, TeacherTurnResult # Import new models
 # from ai_tutor.agents.models import LessonPlan, LessonContent, Quiz, LessonSection, LearningObjective # Remove unused models
 
 # Import API response models for potentially formatting tool output
@@ -22,18 +23,113 @@ from ai_tutor.api_models import (
     ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse
 )
 
+# --- Get Supabase client dependency (needed for the tool) ---
+from ai_tutor.dependencies import get_supabase_client
+
+# Setup module logger
+logger = logging.getLogger(__name__)
+
+# --- File Handling Tools ---
+
+@FunctionTool
+async def read_knowledge_base(tool_context: ToolContext) -> str:
+    """Reads the Knowledge Base content stored in the Supabase 'folders' table."""
+    try:
+        # --- Access state via ToolContext ---
+        # State contains the TutorContext dict
+        state_dict = tool_context.state
+        tutor_context_data = state_dict # Assuming state IS the TutorContext dict
+
+        folder_id_str = tutor_context_data.get("folder_id")
+        user_id_str = tutor_context_data.get("user_id")
+        analysis_result_data = tutor_context_data.get("analysis_result")
+
+        if not folder_id_str or not user_id_str:
+            logger.error("Tool read_knowledge_base: Missing folder_id or user_id in context state.")
+            return "Error: Folder ID or User ID not found in session context."
+
+        folder_id = UUID(folder_id_str)
+        user_id = UUID(user_id_str)
+
+        # Check context first
+        if analysis_result_data and analysis_result_data.get("analysis_text"):
+            logger.info("Tool read_knowledge_base: Found analysis text in context state.")
+            return analysis_result_data["analysis_text"]
+
+        # --- Query Supabase if not in context ---
+        logger.info(f"Tool read_knowledge_base: Querying Supabase for folder {folder_id}.")
+        supabase = await get_supabase_client() # Or get client via other means
+        response = supabase.table("folders").select("knowledge_base").eq("id", str(folder_id)).eq("user_id", str(user_id)).maybe_single().execute()
+
+        if response.data and response.data.get("knowledge_base"):
+            kb_content = response.data["knowledge_base"]
+            logger.info(f"Tool read_knowledge_base: Successfully read KB from Supabase for folder {folder_id}.")
+            # **Important**: This tool likely CANNOT update the context directly.
+            # The *calling agent* (Planner) needs to receive this content and potentially
+            # use another tool (like update_user_model) or rely on the framework
+            # to store relevant parts back into the state if needed later.
+            return kb_content
+        else:
+            logger.warning(f"Tool read_knowledge_base: KB not found for folder {folder_id}.")
+            return f"Error: Knowledge Base not found for folder {folder_id}."
+    except Exception as e:
+        logger.exception(f"Tool read_knowledge_base: Error accessing context or Supabase: {e}")
+        return f"Error reading Knowledge Base: {e}"
+
+@FunctionTool
+async def get_document_content(tool_context: ToolContext, file_path_in_storage: str) -> str:
+    """
+    Retrieves the text content of a document stored in Supabase Storage.
+    The 'file_path_in_storage' should be the full path used when uploading
+    (e.g., 'user_uuid/folder_uuid/filename.pdf').
+    """
+    logger.info(f"Tool get_document_content: Attempting to fetch '{file_path_in_storage}'")
+    try:
+        # Get Supabase client - This is tricky. Ideally, the client is passed
+        # via context or a singleton/dependency injection pattern compatible with ADK.
+        # Using the dependency function directly might work if called within FastAPI scope,
+        # but not guaranteed within agent execution.
+        # For now, assume get_supabase_client() works or adapt as needed.
+        supabase = await get_supabase_client() # Dependency might need context
+        bucket_name = "document_uploads" # TODO: Make configurable
+
+        response = supabase.storage.from_(bucket_name).download(file_path_in_storage)
+
+        # Check for errors (depends on Supabase client library specifics)
+        # Assuming response is bytes content on success, or raises error.
+        # Need robust error handling based on actual Supabase client behavior.
+
+        # Basic Text Extraction (Improve based on file type if needed)
+        # This example assumes simple text or attempts decoding.
+        # For complex types like PDF/DOCX, you'd need libraries like pypdf, python-docx.
+        try:
+            content = response.decode('utf-8')
+            logger.info(f"Tool get_document_content: Successfully fetched and decoded text for '{file_path_in_storage}'")
+            return content
+        except UnicodeDecodeError:
+            logger.warning(f"Tool get_document_content: Could not decode '{file_path_in_storage}' as UTF-8. Returning raw representation.")
+            return f"[Binary Content: {file_path_in_storage}]" # Placeholder for non-text
+        except Exception as decode_err:
+            logger.error(f"Tool get_document_content: Error decoding content for '{file_path_in_storage}': {decode_err}")
+            return f"[Error decoding content for {file_path_in_storage}]"
+
+    except Exception as e:
+        # Log Supabase client errors (check exception type for specifics)
+        logger.exception(f"Tool get_document_content: Failed to download '{file_path_in_storage}' from Supabase: {e}")
+        return f"[Error retrieving document content for {file_path_in_storage}]"
+
 # --- Orchestrator Tool Implementations ---
 
-@function_tool
+@FunctionTool
 async def call_quiz_creator_mini(
-    ctx: RunContextWrapper[TutorContext],
+    tool_context: google.adk.tools.ToolContext,
     topic: str
 ) -> Union[QuizQuestion, str]: # Return Question object or error string
     """DEPRECATED: Use call_quiz_creator_agent instead. Generates a single multiple-choice question."""
     return "Error: This tool is deprecated. Use call_quiz_creator_agent to invoke the quiz creator."
 
-@function_tool
-async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_answer_index: int) -> Union[QuizFeedbackItem, str]:
+@FunctionTool
+async def call_quiz_teacher_evaluate(ctx: google.adk.runners.RunContextWrapper[TutorContext], user_answer_index: int) -> Union[QuizFeedbackItem, str]:
     """Evaluates the user's answer to the current question using the Quiz Teacher logic (via helper function)."""
     print(f"[Tool call_quiz_teacher_evaluate] Evaluating user answer index '{user_answer_index}'.")
     
@@ -66,7 +162,7 @@ async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_
         else:
             # The evaluate_single_answer helper should ideally return feedback or raise
             error_msg = f"Error: Evaluation failed for question on topic '{getattr(question_to_evaluate, 'related_section', 'N/A')}'."
-            print(f"[Tool] {error_msg}")
+            print(f"[Tool call_quiz_teacher_evaluate] {error_msg}")
             return error_msg # Return error string
             
     except Exception as e:
@@ -76,14 +172,14 @@ async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_
         # ctx.context.user_model_state.pending_interaction_type = None 
         return error_msg # Return error string
 
-@function_tool
-def determine_next_learning_step(ctx: RunContextWrapper[TutorContext]) -> Dict[str, Any]:
+@FunctionTool
+def determine_next_learning_step(ctx: google.adk.runners.RunContextWrapper[TutorContext]) -> Dict[str, Any]:
     """DEPRECATED: The Planner agent now determines the next focus. Use call_planner_agent."""
     return {"error": "This tool is deprecated. Use call_planner_agent to get the next focus."}
 
-@function_tool
+@FunctionTool
 async def update_user_model(
-    ctx: RunContextWrapper[TutorContext],
+    ctx: google.adk.runners.RunContextWrapper[TutorContext],
     topic: str,
     outcome: Literal['correct', 'incorrect', 'mastered', 'struggled', 'explained'],
     confusion_point: Optional[str] = None,
@@ -138,15 +234,15 @@ async def update_user_model(
           f"Pace: {ctx.context.user_model_state.learning_pace_factor:.2f}")
     return f"User model updated for {topic}."
 
-@function_tool
-def update_explanation_progress(ctx: RunContextWrapper[TutorContext], segment_index: int) -> str:
+@FunctionTool
+def update_explanation_progress(ctx: google.adk.runners.RunContextWrapper[TutorContext], segment_index: int) -> str:
     """DEPRECATED: The Orchestrator manages micro-steps directly."""
     return "Error: This tool is deprecated. Orchestrator manages micro-steps."
 
-@function_tool
-async def get_user_model_status(ctx: RunContextWrapper[TutorContext], topic: Optional[str] = None) -> Dict[str, Any]:
+@FunctionTool
+async def get_user_model_status(ctx: google.adk.runners.RunContextWrapper[TutorContext], topic: Optional[str] = None) -> Dict[str, Any]:
     """Retrieves detailed user model state, optionally for a specific topic."""
-    print(f"[Tool] Retrieving user model status for topic '{topic}'")
+    print(f"[Tool get_user_model_status] Retrieving status for topic '{topic}'")
 
     if not ctx.context.user_model_state:
         return {"error": "No user model state found in context."}
@@ -176,9 +272,9 @@ async def get_user_model_status(ctx: RunContextWrapper[TutorContext], topic: Opt
     # Use model_dump for serializable output
     return state.model_dump(mode='json')
 
-@function_tool
+@FunctionTool
 async def reflect_on_interaction(
-    ctx: RunContextWrapper[TutorContext],
+    ctx: google.adk.runners.RunContextWrapper[TutorContext],
     topic: str,
     interaction_summary: str, # e.g., "User answered checking question incorrectly."
     user_response: Optional[str] = None, # The actual user answer/input
@@ -213,9 +309,9 @@ async def reflect_on_interaction(
 
 # --- NEW Tools to Call Other Agents ---
 
-@function_tool
+@FunctionTool
 async def call_planner_agent(
-    ctx: RunContextWrapper[TutorContext],
+    ctx: google.adk.runners.RunContextWrapper[TutorContext],
     user_state_summary: Optional[str] = None # Optional summary of user state
 ) -> Union[FocusObjective, str]:
     """Calls the Planner Agent to determine the next learning focus objective. Returns FocusObjective on success, or an error string on failure."""
@@ -267,11 +363,11 @@ async def call_planner_agent(
         # Return a different error string for exceptions vs. wrong output type
         return "PLANNER_EXECUTION_ERROR: An exception occurred while running the planner."
 
-@function_tool
+@FunctionTool
 async def call_teacher_agent(
-    ctx: RunContextWrapper[TutorContext],
+    ctx: google.adk.runners.RunContextWrapper[TutorContext],
     topic: str,
-    explanation_details: str # e.g., "Explain the concept generally", "Provide an example", "Focus on the difference between X and Y"
+    explanation_details: str # e.g., "Explain the concept generally", "Provide an example"
 ) -> Union[ExplanationResult, str]:
     """Calls the Teacher Agent to provide an explanation for a specific topic/detail."""
     print(f"[Tool call_teacher_agent] Requesting explanation for '{topic}': {explanation_details}")
@@ -333,9 +429,9 @@ async def call_teacher_agent(
         print(f"[Tool] {error_msg}")
         return error_msg
 
-@function_tool
+@FunctionTool
 async def call_quiz_creator_agent(
-    ctx: RunContextWrapper[TutorContext],
+    ctx: google.adk.runners.RunContextWrapper[TutorContext],
     topic: str,
     instructions: str # e.g., "Create one medium difficulty question", "Create a 3-question quiz covering key concepts"
 ) -> Union[QuizCreationResult, str]:

@@ -269,12 +269,19 @@ class FocusObjective(BaseModel):
     suggested_approach: Optional[str] = Field(None, description="Optional hint for the Orchestrator (e.g., 'Needs examples', 'Requires practice quiz').")
 
 # --- NEW: Potential Result Models for Agents as Tools ---
+class TeacherTurnResult(BaseModel):
+    """Output from the Teacher Agent after completing a focus objective."""
+    status: Literal['objective_complete', 'objective_failed', 'objective_in_progress'] # In progress might not be needed if it loops internally
+    summary: Optional[str] = Field(None, description="Summary of what was covered or why it failed.")
+    next_steps_hint: Optional[str] = Field(None, description="Hint for the orchestrator about next logical steps.")
+
+# --- Result Model for Teacher (called as Tool by Orchestrator) ---
 class ExplanationResult(BaseModel):
     """Result returned by the Teacher agent tool."""
     status: Literal["delivered", "failed", "skipped"]
     details: Optional[str] = None
 
-# --- NEW: Potential Result Models for Agents as Tools ---
+# --- Result Model for QuizCreator (called as Tool) ---
 class QuizCreationResult(BaseModel):
     """Result returned by the Quiz Creator agent tool."""
     status: Literal["created", "failed"]

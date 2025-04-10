@@ -2,7 +2,8 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from supabase import Client
-from agents import Agent, FileSearchTool, ModelProvider, function_tool
+from google.adk.agents import LLMAgent
+from google.adk.tools import BaseTool, FunctionTool, FilesRetrieval
 from agents.models.openai_provider import OpenAIProvider
 from agents.run_context import RunContextWrapper
 
@@ -15,7 +16,7 @@ import os
 from ai_tutor.dependencies import get_supabase_client
 
 # --- Define read_knowledge_base tool locally ---
-@function_tool
+@FunctionTool
 async def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
     """Reads the Knowledge Base content stored in the Supabase 'folders' table associated with the current session's folder_id."""
     folder_id = ctx.context.folder_id
@@ -55,7 +56,7 @@ async def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
 # -----------------------------------------------
 
 def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
-    """Creates a planner agent that can search through files and create a lesson plan."""
+    """Creates a planner agent that determines the next learning focus."""
     
     # Create a FileSearchTool that can search the vector store containing the uploaded documents
     file_search_tool = FileSearchTool(
@@ -74,8 +75,8 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
     base_model = provider.get_model("gpt-4o")
 
     # Create the planner agent specifying context type generically and output_type via parameter
-    planner_agent = Agent[TutorContext](
-        name="Focus Planner",
+    planner_agent = LLMAgent(
+        name="FocusPlanner",
         instructions="""You are an expert learning strategist. Your task is to determine the user's **next learning focus** based on the analyzed documents and potentially their current progress (provided in the prompt context).
 
         AVAILABLE INFORMATION:
@@ -91,7 +92,7 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
         5.  **Use `file_search` Sparingly:** If needed to clarify the goal or identify crucial related concepts for the chosen focus topic, use `file_search`.
 
         OUTPUT:
-        - Your output **MUST** be a single, valid JSON object matching the `FocusObjective` schema. Do NOT add any other text before or after the JSON object.
+        - Your output **MUST** be a single, valid JSON object matching the `FocusObjective` schema.
         - The `FocusObjective` object MUST contain:
             * `topic`: The main topic to focus on.
             * `learning_goal`: The specific objective for this topic.
@@ -101,10 +102,10 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
 
         CRITICAL REMINDERS:
         - **You MUST call `read_knowledge_base` only ONCE at the very start.**
-        - Your only output MUST be a single `FocusObjective` object. Do NOT create a full `LessonPlan`.
+        - Your only output MUST be a single `FocusObjective` object.
         """,
         tools=planner_tools,
-        output_type=FocusObjective,
+        output_schema=FocusObjective,
         model=base_model,
     )
     

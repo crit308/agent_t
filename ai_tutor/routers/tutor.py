@@ -1,38 +1,40 @@
 from __future__ import annotations
+import logging # Add logging import
 from typing import Optional, List, Dict, Any, Literal
 from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, BackgroundTasks, Form, Body, Request
 import os
 import shutil
 import time
 import json
-import traceback  # Add traceback import
-import logging  # Add logging import
+import traceback
 from supabase import Client
 from gotrue.types import User # To type hint the user object
 from uuid import UUID
 
-from ai_tutor.session_manager import SessionManager
+from ai_tutor.session_manager import SessionManager, SupabaseSessionService # Import ADK Session Service
 from ai_tutor.tools.file_upload import FileUploadManager
 from ai_tutor.agents.analyzer_agent import analyze_documents
 from ai_tutor.agents.session_analyzer_agent import analyze_teaching_session
 from ai_tutor.agents.orchestrator_agent import create_orchestrator_agent
-from ai_tutor.agents.teacher_agent import create_interactive_teacher_agent
 from ai_tutor.agents.analyzer_agent import AnalysisResult
 from ai_tutor.agents.models import (
     FocusObjective,
-    LessonPlan, LessonContent, Quiz, QuizUserAnswers, QuizFeedback, SessionAnalysis
+    LessonPlan, LessonContent, Quiz, QuizUserAnswers, QuizFeedback, SessionAnalysis, QuizQuestion, QuizFeedbackItem
 )
-from ai_tutor.api_models import (
+from ai_tutor.api_models import ( # Keep API models
     DocumentUploadResponse, AnalysisResponse, TutorInteractionResponse,
     ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse,
     InteractionRequestData, InteractionResponseData  # Add InteractionResponseData
 )
 from ai_tutor.context import TutorContext
 from ai_tutor.output_logger import get_logger, TutorOutputLogger
-from agents import Runner, RunConfig, Agent
+# Use ADK Runner and related components
+from google.adk.runners import Runner, RunConfig
+from google.adk.agents import LLMAgent, Event # Import ADK Event
+from google.adk.agents import types as adk_types # For content/parts
 from ai_tutor.manager import AITutorManager
 from pydantic import BaseModel
-from ai_tutor.dependencies import get_supabase_client # Get supabase client dependency
+from ai_tutor.dependencies import get_supabase_client, get_session_service # Get ADK service dependency
 from ai_tutor.auth import verify_token # Get auth dependency
 
 router = APIRouter()
@@ -42,17 +44,22 @@ session_manager = SessionManager()
 TEMP_UPLOAD_DIR = "temp_uploads"
 os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
 
+# Setup module logger
+logger = logging.getLogger(__name__)
+
 # --- Dependency to get TutorContext from DB ---
 async def get_tutor_context(
     session_id: UUID, # Expect UUID
     request: Request, # Access user from request state
-    supabase: Client = Depends(get_supabase_client)
+    session_service: SupabaseSessionService = Depends(get_session_service) # Use ADK Service
 ) -> TutorContext:
     user: User = request.state.user # Get authenticated user
-    context = await session_manager.get_session_context(supabase, session_id, user.id)
-    if not context:
+    # ADK session service expects string IDs
+    session = session_service.get_session(app_name="ai_tutor", user_id=str(user.id), session_id=str(session_id))
+    if not session or not session.state:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found or not authorized for user.")
-    return context
+    # Deserialize TutorContext from session state
+    return TutorContext.model_validate(session.state)
 
 # --- Helper to get logger ---
 def get_session_logger(session_id: UUID) -> TutorOutputLogger:
@@ -138,7 +145,7 @@ async def upload_session_documents(
             # Update context object and save it
             tutor_context.vector_store_id = vector_store_id
             tutor_context.uploaded_file_paths.extend(uploaded_filenames) # Append new files
-            await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
+            await _update_context_in_db(session_id, user.id, tutor_context, supabase)
             message += f"Vector Store ID: {vector_store_id}. "
         else:
             raise HTTPException(status_code=500, detail="Failed to create or retrieve vector store ID.")
@@ -169,7 +176,7 @@ async def upload_session_documents(
             analysis_status = "completed"
             # Store analysis result (as dict or object) - Keep storing the object
             tutor_context.analysis_result = analysis_result # Store the Pydantic object
-            await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
+            await _update_context_in_db(session_id, user.id, tutor_context, supabase)
             message += "Analysis completed."
 
         else:
@@ -208,104 +215,6 @@ async def get_session_analysis_results(
              return AnalysisResponse(status="error", error=f"Failed to parse analysis data: {e}")
     else:
         return AnalysisResponse(status="not_found", analysis=None)
-
-
-@router.post(
-    "/sessions/{session_id}/plan",
-    response_model=FocusObjective,
-    summary="Generate Lesson Plan",
-    dependencies=[Depends(verify_token)], # Add auth dependency
-    tags=["Tutoring Workflow"]
-)
-async def generate_session_lesson_plan(
-    session_id: UUID, # Expect UUID
-    request: Request, # Add request parameter
-    tutor_context: TutorContext = Depends(get_tutor_context) # Use parsed context
-):
-    """
-    DEPRECATED: Use /interact instead.
-    This endpoint triggers the Orchestrator to get the initial focus objective from the Planner.
-    The focus objective is stored in the session context and returned.
-    """
-    logger = get_session_logger(session_id)
-    # Get user from request state
-    user: User = request.state.user
-
-    # Get vector store ID and analysis result from context
-    vector_store_id = tutor_context.vector_store_id
-    # analysis_result = tutor_context.analysis_result # No longer directly needed by this endpoint
-    # folder_id = tutor_context.folder_id # No longer directly needed by this endpoint
-
-    # Initial checks are good to keep, ensure data looks okay before agent creation
-    if not vector_store_id:
-        raise HTTPException(status_code=400, detail="Documents must be uploaded first.")
-    # Remove KB check, planner tool handles reading it
-
-    # --- Wrap the main logic in a try...except block ---
-    try:
-        # --- Orchestrator now calls Planner via a tool ---
-        # print(f"[Debug /plan] Creating planner agent for vs_id: {vector_store_id}") # Add log
-        # planner_agent: Agent[TutorContext] = create_planner_agent(vector_store_id)
-
-        # Pass the full TutorContext to the Runner
-        run_config = RunConfig(
-            workflow_name="AI Tutor API - Get Initial Focus", # Name reflects new purpose
-            group_id=str(session_id)
-        )
-
-        # We need the orchestrator to call the planner tool
-        orchestrator_agent = create_orchestrator_agent() # Assuming it doesn't need vs_id directly anymore
-
-        # Prompt for orchestrator to get initial focus
-        orchestrator_prompt = "The session is starting. Call the `call_planner_agent` tool to determine the initial learning focus objective."
-
-        print(f"[Debug /plan] Running Orchestrator to get initial focus...") # Add log
-        print(f"[Debug /plan] Orchestrator prompt:\n{orchestrator_prompt}") # Log start of prompt
-
-        result = await Runner.run(
-            orchestrator_agent,
-            orchestrator_prompt,
-            run_config=run_config,
-            context=tutor_context # Pass the parsed TutorContext object
-        )
-        print(f"[Debug /plan] Orchestrator run completed. Result final_output type: {type(result.final_output)}") # Add log
-
-        # Check the context *after* the run to see if the focus objective was set
-        focus_objective = tutor_context.current_focus_objective
-        if not focus_objective:
-            # Orchestrator/Planner tool failed. Log the Orchestrator's actual output for debugging.
-            logger.log_error("GetInitialFocus", f"Orchestrator failed to set focus. Final output: {result.final_output}")
-            # It's possible the orchestrator returned an ErrorResponse, check that
-            error_detail = f"Orchestrator output: {result.final_output}"
-            raise HTTPException(status_code=500, detail=f"Failed to determine initial learning focus. {error_detail}")
-
-        # If focus_objective is set in context, log, save context, and return it
-        logger.log_planner_output(focus_objective) # Log the focus objective
-        supabase: Client = await get_supabase_client() # Get supabase client
-        success = await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
-        if not success:
-            logger.log_error("SessionUpdate", f"Failed to update session {session_id} with focus objective.")
-            # Don't fail the request just because saving failed, but log it.
-
-        print(f"[Debug /plan] FocusObjective stored in session.") # Add log
-        return focus_objective # Return the focus objective
-
-    except Exception as e:
-        # --- Explicit Exception Catching and Logging ---
-        logger.log_error("PlannerAgentRun", e)
-        error_type = type(e).__name__
-        error_details = str(e)
-        error_traceback = traceback.format_exc()
-
-        print("\n!!! EXCEPTION IN /plan Endpoint !!!") # Make log stand out
-        print(f"Error Type: {error_type}")
-        print(f"Error Details: {error_details}")
-        print("Full Traceback:")
-        print(error_traceback)
-        # -------------------------------------------------
-
-        # Raise a generic 500, but the logs now contain the details. The detail message could be improved.
-        raise HTTPException(status_code=500, detail=f"Failed to get initial focus due to internal error: {error_type}")
 
 @router.get(
     "/sessions/{session_id}/lesson",
@@ -428,108 +337,273 @@ async def log_user_summary_event(
 # --- New Interaction Endpoint ---
 @router.post(
     "/sessions/{session_id}/interact",
-    response_model=InteractionResponseData,  # Change response model
-    dependencies=[Depends(verify_token)], # Add auth dependency
+    response_model=InteractionResponseData,
+    dependencies=[Depends(verify_token)],
     summary="Interact with the AI Tutor",
     tags=["Tutoring Workflow"]
 )
 async def interact_with_tutor(
-    session_id: UUID, # Expect UUID
-    request: Request, # Get request directly
+    session_id: UUID,
+    request: Request,
     interaction_input: InteractionRequestData = Body(...),
-    supabase: Client = Depends(get_supabase_client), # To save context
+    supabase: Client = Depends(get_supabase_client),
+    session_service: SupabaseSessionService = Depends(get_session_service),
     tutor_context: TutorContext = Depends(get_tutor_context)
 ):
-    logger = get_session_logger(session_id)
-    print(f"\n=== Starting /interact for session {session_id} ===")
-    print(f"[Interact] Input Type: {interaction_input.type}, Data: {interaction_input.data}")
-    print(f"[Interact] Context BEFORE Orchestrator: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
-
+    """
+    Main interaction endpoint for the AI Tutor.
+    Handles both regular interactions and long-running tool pauses.
+    """
     user: User = request.state.user
-    # --- Agent Execution Logic ---
-    final_response_data: TutorInteractionResponse
+    logger = get_session_logger(session_id)
+    print(f"\n=== Received /interact for session {session_id} ===")
+    print(f"Input Type: {interaction_input.type}, Data: {interaction_input.data}")
 
-    print(f"[Interact] Fetching context for session {session_id}...") # Log context fetch
-    run_config = RunConfig(
-        workflow_name="Tutor_Interaction",
-        group_id=session_id
-    )
+    # Initialize ADK components
+    orchestrator_agent = create_orchestrator_agent()
+    adk_runner = Runner("ai_tutor", orchestrator_agent, session_service)
+    run_config = RunConfig(workflow_name="Tutor_Interaction", group_id=str(session_id))
 
-    # Always run the Orchestrator first to decide the next step or handle pending interactions.
-    orchestrator_agent = create_orchestrator_agent() # Doesn't need vs_id directly
-    print(f"[Interact] Orchestrator agent created.") # Log agent creation
+    last_agent_event: Optional[Event] = None
+    question_for_user: Optional[QuizQuestion] = None
+    paused_tool_call_id: Optional[str] = None
 
-    # Prepare input for the Orchestrator
-    if tutor_context.user_model_state.pending_interaction_type:
-        # If waiting for user input, provide it clearly
-        print("[Interact] Pending interaction detected. Running Orchestrator to evaluate.")
-        orchestrator_input = f"User Response to Pending Interaction '{tutor_context.user_model_state.pending_interaction_type}' | Type: {interaction_input.type} | Data: {json.dumps(interaction_input.data)}"
-        logger.log_user_input(f"User Response (Pending): {interaction_input.type} - {interaction_input.data}") # Log user input
+    try:
+        # Process events from the ADK Runner
+        async for event in adk_runner.run_async(
+            user_id=str(user.id),
+            session_id=str(session_id),
+            new_message=interaction_input.data.get("message", ""),
+            run_config=run_config
+        ):
+            print(f"[Interact] Received Event: ID={event.id}, Author={event.author}, Actions={event.actions}")
+            logger.log_orchestrator_output(event.content)
+            last_agent_event = event
+
+            # Check for pause/input request from long-running tool
+            if event.actions and event.actions.custom_action:
+                custom_action = event.actions.custom_action
+                if custom_action.get("signal") == "request_user_input":
+                    question_data = custom_action.get("question_data")
+                    paused_tool_call_id = custom_action.get("tool_call_id")
+                    if question_data and paused_tool_call_id:
+                        try:
+                            question_for_user = QuizQuestion.model_validate(question_data)
+                            logger.info(f"Detected pause signal from tool_call_id {paused_tool_call_id}.")
+                            print(f"[Interact] Detected pause request. Sending question to user: {question_for_user.question[:50]}...")
+                            break
+                        except Exception as parse_err:
+                            logger.error(f"PauseSignalParse: Failed to parse question from pause signal event {event.id}: {parse_err}")
+
+    except Exception as run_err:
+        error_msg = f"Error during ADK Runner execution: {run_err}"
+        logger.log_error("ADKRunnerExecution", error_msg)
+        print(f"[Interact] {error_msg}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Internal error during agent execution.")
+
+    # Load final context state after the run/pause
+    final_session = session_service.get_session("ai_tutor", str(user.id), str(session_id))
+    if final_session and final_session.state:
+        final_context = TutorContext.model_validate(final_session.state)
+        # Store paused tool call ID if we paused
+        if paused_tool_call_id:
+            final_context.user_model_state.pending_interaction_type = 'checking_question'
+            final_context.user_model_state.pending_interaction_details = {"paused_tool_call_id": paused_tool_call_id}
+            await _update_context_in_db(session_id, user.id, final_context, supabase)
+            logger.info(f"Stored paused_tool_call_id {paused_tool_call_id} in context for session {session_id}")
     else:
-        # No pending interaction. Check if focus objective exists.
-        if not tutor_context.current_focus_objective:
-            print("[Interact] No current focus. Instructing Orchestrator to call Planner.")
-            # If focus is missing, tell orchestrator to get it first.
-            orchestrator_input = "No current focus objective set. Call the `call_planner_agent` tool to determine the initial focus objective for the user."
-            # NOTE: This requires the orchestrator to handle this specific instruction.
-        else:
-            # Focus exists, proceed normally based on user input
-            print("[Interact] Focus exists. Running Orchestrator to decide next step based on user input.")
-            orchestrator_input = f"Current Focus: {tutor_context.current_focus_objective.topic} ({tutor_context.current_focus_objective.learning_goal}). User Action | Type: {interaction_input.type} | Data: {json.dumps(interaction_input.data)}"
-        logger.log_user_input(f"User Action: {interaction_input.type} - {interaction_input.data}") # Log user input
+        logger.error(f"ContextFetchAfterRun: Failed to fetch session state after run/pause for {session_id}")
+        final_context = tutor_context
 
-    print(f"[Interact] Running Agent: {orchestrator_agent.name}")
-    orchestrator_result = await Runner.run(
-        orchestrator_agent,
-        orchestrator_input,
-        context=tutor_context, # Context is mutable and modified by tools
-        run_config=run_config
-    )
-    orchestrator_output = orchestrator_result.final_output # This is TutorInteractionResponse type
-    # Log the raw output which might contain implicit reasoning before parsing
-    logger.log_orchestrator_output(orchestrator_output)
-    print(f"[Interact] Orchestrator Raw Output: {orchestrator_output}") # Log raw output first
-    print(f"[Interact] Orchestrator Output Type: {type(orchestrator_output)}")
+    # Handle paused state (if question_for_user was set)
+    if question_for_user:
+        final_response_data = QuestionResponse(
+            response_type="question",
+            question=question_for_user,
+            topic=final_context.current_teaching_topic or "Current Focus"
+        )
+        print(f"[Interact] Responding with question. Session {session_id} is now paused waiting for answer.")
 
-    # --- Handle Orchestrator Output ---
-    # The orchestrator's output *is* the final response for this turn,
-    # as it comes from the specialist agent tool call or a direct response.
-    if isinstance(orchestrator_output, TutorInteractionResponse):
-        final_response_data = orchestrator_output
+    # Handle completed state (no pause detected)
+    elif last_agent_event and last_agent_event.content:
+        response_text = last_agent_event.content.parts[0].text if last_agent_event.content.parts else "Interaction complete."
+        final_response_data = MessageResponse(response_type="message", text=response_text)
         print(f"[Interact] Orchestrator returned response of type: {final_response_data.response_type}")
-        # If orchestrator called quiz creator which returned a question, update pending state
-        if isinstance(final_response_data, QuestionResponse):
-            tutor_context.user_model_state.pending_interaction_type = 'checking_question'
-            tutor_context.user_model_state.pending_interaction_details = {
-                'question': final_response_data.question.model_dump() # Store the question details
-            }
-            print(f"[Interact] Teacher asked checking question. Set pending_interaction_type='checking_question'")
 
     else:
-        # Unexpected output type - return error
-        error_msg = f"Unexpected output type from Orchestrator: {type(orchestrator_output)}"
-        print(f"[Interact] Error: {error_msg}")
+        error_msg = "No response received from agent."
+        logger.log_error("NoAgentResponse", error_msg)
         final_response_data = ErrorResponse(
+            response_type="error",
             error=error_msg,
             message="There was an internal error processing your request."
         )
 
-    # --- Save Context AFTER determining the final response ---
-    print(f"[Interact] Saving final context state to Supabase for session {session_id}")
-    await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
-    print(f"[Interact] Context saved AFTER run: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
-
-    # Return the structured response
     return InteractionResponseData(
         content_type=final_response_data.response_type,
-        data=final_response_data, # Send the response from the final agent run
-        user_model_state=tutor_context.user_model_state # Send updated state
+        data=final_response_data,
+        user_model_state=final_context.user_model_state
     )
 
-# --- Remove POST /quiz/submit (Legacy) ---
-# Quiz answers are now handled via the /interact endpoint.
-# An end-of-session quiz submission could potentially be added back later
-# if needed, but the core loop uses /interact.
+@router.post(
+    "/sessions/{session_id}/answer",
+    response_model=InteractionResponseData,
+    dependencies=[Depends(verify_token)],
+    summary="Submit Answer to Paused Question",
+    tags=["Tutoring Workflow"]
+)
+async def submit_answer_to_tutor(
+    session_id: UUID,
+    request: Request,
+    interaction_input: InteractionRequestData = Body(...),
+    supabase: Client = Depends(get_supabase_client),
+    session_service: SupabaseSessionService = Depends(get_session_service),
+    tutor_context: TutorContext = Depends(get_tutor_context)
+):
+    """
+    Handles submitting an answer when the tutor is paused waiting for user input.
+    Creates a FunctionResponse event to resume the paused tool execution.
+    """
+    user: User = request.state.user
+    logger = get_session_logger(session_id)
+    print(f"\n=== Received /answer for session {session_id} ===")
+    print(f"Input Type: {interaction_input.type}, Data: {interaction_input.data}")
+
+    if interaction_input.type != 'answer' or 'answer_index' not in interaction_input.data:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid input type or data for /answer endpoint. Expected type='answer' and data={'answer_index': number}."
+        )
+
+    # Retrieve details about the paused interaction
+    if (tutor_context.user_model_state.pending_interaction_type != 'checking_question' or
+        not tutor_context.user_model_state.pending_interaction_details or
+        'paused_tool_call_id' not in tutor_context.user_model_state.pending_interaction_details):
+        logger.warning(f"Received answer for session {session_id}, but no valid pending interaction found in context.")
+        raise HTTPException(status_code=400, detail="No pending question found for this session.")
+
+    paused_tool_call_id = tutor_context.user_model_state.pending_interaction_details['paused_tool_call_id']
+    user_answer_index = interaction_input.data['answer_index']
+    logger.info(f"Resuming tool call {paused_tool_call_id} with answer index {user_answer_index}")
+
+    # Create the FunctionResponse event
+    answer_event = Event(
+        author="user",
+        content=adk_types.Content(
+            role="tool",
+            parts=[
+                adk_types.Part.from_function_response(
+                    name="ask_user_question_and_get_answer",
+                    id=paused_tool_call_id,
+                    response={"answer_index": user_answer_index}
+                )
+            ]
+        ),
+        invocation_id=tutor_context.last_interaction_summary or f"resume_{session_id}"
+    )
+
+    # Clear pending state in context BEFORE resuming run
+    tutor_context.user_model_state.pending_interaction_type = None
+    tutor_context.user_model_state.pending_interaction_details = None
+    await _update_context_in_db(session_id, user.id, tutor_context, supabase)
+
+    # Resume the ADK Runner
+    orchestrator_agent = create_orchestrator_agent()
+    adk_runner = Runner("ai_tutor", orchestrator_agent, session_service)
+    run_config = RunConfig(workflow_name="Tutor_Interaction_Resume", group_id=str(session_id))
+
+    try:
+        last_agent_event_after_resume: Optional[Event] = None
+        question_after_resume: Optional[QuizQuestion] = None
+        paused_id_after_resume: Optional[str] = None
+
+        async for event in adk_runner.run_async(
+            user_id=str(user.id),
+            session_id=str(session_id),
+            new_message=answer_event,
+            run_config=run_config
+        ):
+            print(f"[Answer] Received Event after resume: ID={event.id}, Author={event.author}")
+            logger.log_orchestrator_output(event.content)
+            last_agent_event_after_resume = event
+
+            # Check for another pause signal immediately after resume
+            if event.actions and event.actions.custom_action:
+                custom_action = event.actions.custom_action
+                if custom_action.get("signal") == "request_user_input":
+                    question_data = custom_action.get("question_data")
+                    paused_id_after_resume = custom_action.get("tool_call_id")
+                    if question_data and paused_id_after_resume:
+                        try:
+                            question_after_resume = QuizQuestion.model_validate(question_data)
+                            logger.info(f"Detected another pause signal (ID: {paused_id_after_resume}) immediately after resuming.")
+                            break
+                        except Exception as parse_err:
+                            logger.error(f"PauseSignalParse (Resume): Failed to parse question: {parse_err}")
+
+    except Exception as resume_err:
+        error_msg = f"Error during agent run after resume: {resume_err}"
+        logger.log_error("ADKRunnerResume", error_msg)
+        print(f"[Answer] {error_msg}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Internal error resuming agent execution.")
+
+    # Load final context state after the resume
+    final_session_after_resume = session_service.get_session("ai_tutor", str(user.id), str(session_id))
+    if final_session_after_resume and final_session_after_resume.state:
+        final_context_after_resume = TutorContext.model_validate(final_session_after_resume.state)
+        # Store new paused tool call ID if another pause occurred
+        if paused_id_after_resume:
+            final_context_after_resume.user_model_state.pending_interaction_type = 'checking_question'
+            final_context_after_resume.user_model_state.pending_interaction_details = {"paused_tool_call_id": paused_id_after_resume}
+            await _update_context_in_db(session_id, user.id, final_context_after_resume, supabase)
+            logger.info(f"Stored new paused_tool_call_id {paused_id_after_resume} after resume.")
+    else:
+        logger.error(f"ContextFetchAfterResume: Failed to fetch session state after resume for {session_id}")
+        final_context_after_resume = tutor_context
+
+    # Format response based on whether it paused again or completed
+    if question_after_resume:
+        final_response_data_after_resume = QuestionResponse(
+            response_type="question",
+            question=question_after_resume,
+            topic=final_context_after_resume.current_teaching_topic or "Current Focus"
+        )
+        print(f"[Answer] Responding with NEW question. Session {session_id} paused again.")
+    elif last_agent_event_after_resume and last_agent_event_after_resume.content:
+        response_text = last_agent_event_after_resume.content.parts[0].text if last_agent_event_after_resume.content.parts else "Processing complete."
+        final_response_data_after_resume = MessageResponse(response_type="message", text=response_text)
+        print(f"[Answer] Interaction completed after resume. Final response type: {final_response_data_after_resume.response_type}")
+    else:
+        error_msg = "Agent interaction finished unexpectedly after resuming."
+        print(f"[Answer] Error: {error_msg}")
+        final_response_data_after_resume = ErrorResponse(
+            response_type="error",
+            error=error_msg,
+            message="Internal processing error after submitting answer."
+        )
+
+    return InteractionResponseData(
+        content_type=final_response_data_after_resume.response_type,
+        data=final_response_data_after_resume,
+        user_model_state=final_context_after_resume.user_model_state
+    )
+
+# --- Helper to update context in DB (replace direct calls) ---
+async def _update_context_in_db(session_id: UUID, user_id: UUID, context: TutorContext, supabase: Client):
+    """Helper to persist context via SupabaseSessionService interface."""
+    # This mimics how the SessionService's append_event would work
+    try:
+        context_dict = context.model_dump(mode='json')
+        response: PostgrestAPIResponse = supabase.table("sessions").update(
+            {"context_data": context_dict}
+        ).eq("id", str(session_id)).eq("user_id", str(user_id)).execute()
+        if response.error:
+            print(f"Error updating context in DB for session {session_id}: {response.error}")
+            return False
+        return True
+    except Exception as e:
+        print(f"Exception updating context in DB for session {session_id}: {e}")
+        return False
 
 # TODO: Implement endpoint for session analysis if needed:
 # POST /sessions/{session_id}/analyze-session (Full Session Analysis) 

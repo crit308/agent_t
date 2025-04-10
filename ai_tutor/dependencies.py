@@ -3,6 +3,8 @@ import os
 from fastapi import HTTPException, status
 from supabase import create_client, Client
 from dotenv import load_dotenv
+from typing import Optional
+from fastapi import Depends
 
 # Load environment variables specifically for dependencies if needed,
 # though they should be loaded by the main app process already.
@@ -18,7 +20,7 @@ if supabase_url and supabase_key:
         SUPABASE_CLIENT = create_client(supabase_url, supabase_key)
         print("Supabase client initialized successfully in dependencies module.")
     except Exception as e:
-        print(f"ERROR: Failed to initialize Supabase client in dependencies module: {e}")
+        print(f"ERROR: Failed to initialize Supabase client: {e}") # Simplified log
         # Depending on severity, you might want to prevent app startup
 else:
     print("ERROR: SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables must be set for Supabase client.")
@@ -35,4 +37,26 @@ async def get_supabase_client() -> Client:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Supabase client is not available. Check backend configuration and logs."
         )
-    return SUPABASE_CLIENT 
+    # Simple check if the client seems initialized - replace with a proper health check if needed
+    # if not hasattr(SUPABASE_CLIENT, 'table'): # Example basic check
+    #    raise HTTPException(
+    #        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+    #        detail="Supabase client appears uninitialized."
+    #    )
+    return SUPABASE_CLIENT
+
+# --- NEW: Dependency for SupabaseSessionService ---
+from ai_tutor.session_manager import SupabaseSessionService # Adjust import path if needed
+
+_supabase_session_service_instance: Optional[SupabaseSessionService] = None
+
+async def get_session_service(supabase: Client = Depends(get_supabase_client)) -> SupabaseSessionService:
+    """FastAPI dependency to get the SupabaseSessionService instance."""
+    global _supabase_session_service_instance
+    if _supabase_session_service_instance is None:
+        if supabase:
+            _supabase_session_service_instance = SupabaseSessionService(supabase_client=supabase)
+        else:
+            # This should not happen if get_supabase_client works
+            raise HTTPException(status_code=503, detail="Supabase client unavailable for SessionService.")
+    return _supabase_session_service_instance 

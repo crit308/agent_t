@@ -1,8 +1,15 @@
-openai>=1.0.0
+# openai>=1.0.0 # Keep if Analyzer still uses it directly, otherwise remove
 pydantic>=2.0.0
 requests>=2.25.0
 python-dotenv>=0.19.0
 rich>=10.0.0
 fastapi>=0.100.0
 uvicorn[standard]>=0.20.0
-python-multipart>=0.0.6 # For file uploads 
+python-multipart>=0.0.6 # For file uploads
+
+supabase>=2.0.0 # Assuming you have this already
+google-adk>=0.1.0 # Add Google ADK
+google-cloud-aiplatform>=1.87.0 # Dependency for ADK
+sqlalchemy>=2.0 # Dependency for ADK DatabaseSessionService (even if we use custom Supabase one)
+psycopg2-binary # Or appropriate driver for Supabase connection with SQLAlchemy interface if used by BaseSessionService impl.
+google-cloud-storage # If using GCS ArtifactService (optional) 

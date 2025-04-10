@@ -1,0 +1,1154 @@
+# Refactoring AI Tutor to Google ADK - Phase 4 & 5 Diffs
+
+This diff applies the changes for Phase 4 (API Layer & File Handling) and Phase 5 (Refinement & Key Areas) based on the plan.
+
+---
+
+## Phase 4: API Layer and Integration
+
+**1. Refactor `routers/tutor.py` (API Endpoints)**
+
+```diff
+--- a/ai_tutor/routers/tutor.py
++++ b/ai_tutor/routers/tutor.py
+@@ -1,4 +1,5 @@
+ from __future__ import annotations
++import logging # Add logging import
+ from typing import Optional, List, Dict, Any, Literal
+ from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, BackgroundTasks, Form, Body, Request
+ import os
+@@ -10,7 +11,7 @@
+ from gotrue.types import User # To type hint the user object
+ from uuid import UUID
+ 
+-from ai_tutor.session_manager import SessionManager
++from ai_tutor.session_manager import SessionManager, SupabaseSessionService # Import ADK Session Service
+ from ai_tutor.tools.file_upload import FileUploadManager
+ from ai_tutor.agents.analyzer_agent import analyze_documents
+ from ai_tutor.agents.session_analyzer_agent import analyze_teaching_session
+@@ -23,17 +24,20 @@
+     FocusObjective,
+     LessonPlan, LessonContent, Quiz, QuizUserAnswers, QuizFeedback, SessionAnalysis, QuizQuestion, QuizFeedbackItem
+ )
+-from ai_tutor.api_models import (
++from ai_tutor.api_models import ( # Keep API models
+     DocumentUploadResponse, AnalysisResponse, TutorInteractionResponse,
+     ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse,
+     InteractionRequestData, InteractionResponseData  # Add InteractionResponseData
+ )
+ from ai_tutor.context import TutorContext
+ from ai_tutor.output_logger import get_logger, TutorOutputLogger
+-from agents import Runner, RunConfig, Agent
++# Use ADK Runner and related components
++from google.adk.runners import Runner, RunConfig
++from google.adk.agents import LLMAgent, Event # Import ADK Event
++from google.adk.agents import types as adk_types # For content/parts
+ from ai_tutor.manager import AITutorManager
+ from pydantic import BaseModel
+-from ai_tutor.dependencies import get_supabase_client # Get supabase client dependency
++from ai_tutor.dependencies import get_supabase_client, get_session_service # Get ADK service dependency
+ from ai_tutor.auth import verify_token # Get auth dependency
+ 
+ router = APIRouter()
+@@ -43,19 +47,23 @@
+ TEMP_UPLOAD_DIR = "temp_uploads"
+ os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
+ 
++# Setup module logger
++logger = logging.getLogger(__name__)
++
+ # --- Dependency to get TutorContext from DB ---
+ # Modified to use ADK SessionService
+ async def get_tutor_context(
+     session_id: UUID, # Expect UUID
+     request: Request, # Access user from request state
+-    supabase: Client = Depends(get_supabase_client)
++    session_service: SupabaseSessionService = Depends(get_session_service) # Use ADK Service
+ ) -> TutorContext:
+     user: User = request.state.user # Get authenticated user
+-    context = await session_manager.get_session_context(supabase, session_id, user.id)
+-    if not context:
++    # ADK session service expects string IDs
++    session = session_service.get_session(app_name="ai_tutor", user_id=str(user.id), session_id=str(session_id))
++    if not session or not session.state:
+         raise HTTPException(status_code=404, detail=f"Session {session_id} not found or not authorized for user.")
+-    return context
+-
++    # Deserialize TutorContext from session state
++    return TutorContext.model_validate(session.state)
+ # --- Helper to get logger ---
+ def get_session_logger(session_id: UUID) -> TutorOutputLogger:
+     # Customize logger per session if needed, e.g., different file path
+@@ -127,7 +135,8 @@
+             tutor_context.vector_store_id = vector_store_id
+             tutor_context.uploaded_file_paths.extend(uploaded_filenames) # Append new files
+             # --- Persist context via SessionService ---
+-            await _update_context_in_db(session_id, user.id, tutor_context, supabase)
++            # Update happens implicitly when events with state_delta are appended via Runner
++            # await _update_context_in_db(session_id, user.id, tutor_context, supabase) # Explicit update might still be needed here
+             message += f"Vector Store ID: {vector_store_id}. "
+         else:
+             raise HTTPException(status_code=500, detail="Failed to create or retrieve vector store ID.")
+@@ -164,7 +173,8 @@
+             analysis_status = "completed"
+             # Store analysis result (as dict or object) - Keep storing the object
+             tutor_context.analysis_result = analysis_result # Store the Pydantic object
+-            await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
++            # --- Persist context via SessionService ---
++            await _update_context_in_db(session_id, user.id, tutor_context, supabase) # Persist after analysis
+             message += "Analysis completed."
+ 
+         else:
+@@ -203,85 +213,10 @@
+         return AnalysisResponse(status="error", error=f"Failed to parse analysis data: {e}")
+     else:
+         return AnalysisResponse(status="not_found", analysis=None)
+-
++# --- DEPRECATE /plan Endpoint ---
+ '''
+ @router.post(
+     "/sessions/{session_id}/plan",
+-    response_model=FocusObjective,
+-    summary="Generate Lesson Plan",
+-    dependencies=[Depends(verify_token)], # Add auth dependency
+-    tags=["Tutoring Workflow"]
+-)
+-async def generate_session_lesson_plan(
+-    session_id: UUID, # Expect UUID
+-    request: Request, # Add request parameter
+-    tutor_context: TutorContext = Depends(get_tutor_context) # Use parsed context
+-):
+-    """
+-    DEPRECATED: Use /interact instead.
+-    This endpoint triggers the Orchestrator to get the initial focus objective from the Planner.
+-    The focus objective is stored in the session context and returned.
+-    """
+-    logger = get_session_logger(session_id)
+-    # Get user from request state
+-    user: User = request.state.user
+-
+-    # Get vector store ID and analysis result from context
+-    vector_store_id = tutor_context.vector_store_id
+-    # analysis_result = tutor_context.analysis_result # No longer directly needed by this endpoint
+-    # folder_id = tutor_context.folder_id # No longer directly needed by this endpoint
+-
+-    # Initial checks are good to keep, ensure data looks okay before agent creation
+-    if not vector_store_id:
+-        raise HTTPException(status_code=400, detail="Documents must be uploaded first.")
+-    # Remove KB check, planner tool handles reading it
+-
+-    # --- Wrap the main logic in a try...except block ---
+-    try:
+-        # --- Orchestrator now calls Planner via a tool ---
+-        # print(f"[Debug /plan] Creating planner agent for vs_id: {vector_store_id}") # Add log
+-        # planner_agent: Agent[TutorContext] = create_planner_agent(vector_store_id)
+-
+-        # Pass the full TutorContext to the Runner
+-        run_config = RunConfig(
+-            workflow_name="AI Tutor API - Get Initial Focus", # Name reflects new purpose
+-            group_id=str(session_id)
+-        )
+-
+-        # We need the orchestrator to call the planner tool
+-        orchestrator_agent = create_orchestrator_agent() # Assuming it doesn't need vs_id directly anymore
+-
+-        # Prompt for orchestrator to get initial focus
+-        orchestrator_prompt = "The session is starting. Call the `call_planner_agent` tool to determine the initial learning focus objective."
+-
+-        print(f"[Debug /plan] Running Orchestrator to get initial focus...") # Add log
+-        print(f"[Debug /plan] Orchestrator prompt:\n{orchestrator_prompt}") # Log start of prompt
+-
+-        result = await Runner.run(
+-            orchestrator_agent,
+-            orchestrator_prompt,
+-            run_config=run_config,
+-            context=tutor_context # Pass the parsed TutorContext object
+-        )
+-        print(f"[Debug /plan] Orchestrator run completed. Result final_output type: {type(result.final_output)}") # Add log
+-
+-        # Check the context *after* the run to see if the focus objective was set
+-        focus_objective = tutor_context.current_focus_objective
+-        if not focus_objective:
+-            # Orchestrator/Planner tool failed. Log the Orchestrator's actual output for debugging.
+-            logger.log_error("GetInitialFocus", f"Orchestrator failed to set focus. Final output: {result.final_output}")
+-            # It's possible the orchestrator returned an ErrorResponse, check that
+-            error_detail = f"Orchestrator output: {result.final_output}"
+-            raise HTTPException(status_code=500, detail=f"Failed to determine initial learning focus. {error_detail}")
+-
+-        # If focus_objective is set in context, log, save context, and return it
+-        logger.log_planner_output(focus_objective) # Log the focus objective
+-        supabase: Client = await get_supabase_client() # Get supabase client
+-        success = await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
+-        if not success:
+-            logger.log_error("SessionUpdate", f"Failed to update session {session_id} with focus objective.")
+-            # Don't fail the request just because saving failed, but log it.
+-
+-        print(f"[Debug /plan] FocusObjective stored in session.") # Add log
+-        return focus_objective # Return the focus objective
+-
+-    except Exception as e:
+-        # --- Explicit Exception Catching and Logging ---
+-        logger.log_error("PlannerAgentRun", e)
+-        error_type = type(e).__name__
+-        error_details = str(e)
+-        error_traceback = traceback.format_exc()
+-
+-        print("\n!!! EXCEPTION IN /plan Endpoint !!!") # Make log stand out
+-        print(f"Error Type: {error_type}")
+-        print(f"Error Details: {error_details}")
+-        print("Full Traceback:")
+-        print(error_traceback)
+-        # -------------------------------------------------
+-
+-        # Raise a generic 500, but the logs now contain the details. The detail message could be improved.
+-        raise HTTPException(status_code=500, detail=f"Failed to get initial focus due to internal error: {error_type}")
++    ...
++)
++'''
+ # --- Keep /lesson and /quiz GET endpoints (they read from context) ---
+ @router.get(
+     "/sessions/{session_id}/lesson",
+@@ -362,7 +327,7 @@
+     request: Request, # Get request directly
+     interaction_input: InteractionRequestData = Body(...),
+     supabase: Client = Depends(get_supabase_client), # To save context
+-    supabase: Client = Depends(get_supabase_client), # To save context
++    session_service: SupabaseSessionService = Depends(get_session_service), # Inject ADK Session Service
+     tutor_context: TutorContext = Depends(get_tutor_context)
+ ):
+     logger = get_session_logger(session_id)
+@@ -370,14 +335,27 @@
+     print(f"[Interact] Input Type: {interaction_input.type}, Data: {interaction_input.data}")
+     print(f"[Interact] Context BEFORE Orchestrator: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
+ 
+-    user: User = request.state.user
++    user: User = request.state.user # Get user from request state populated by verify_token dependency
+     # --- Agent Execution Logic ---
+     final_response_data: TutorInteractionResponse
+ 
+-    print(f"[Interact] Fetching context for session {session_id}...") # Log context fetch
++    # --- Initialize ADK Runner ---
++    # The orchestrator agent needs to be created *here* or retrieved if cached
++    # Need to handle potential context dependency (like vs_id) during agent creation
++    # For now, assume create_orchestrator_agent can be called without context-specific args
++    # or adapt it to accept them.
++    try:
++        orchestrator_agent = create_orchestrator_agent()
++    except Exception as agent_create_e:
++        logger.log_error("AgentCreation", f"Failed to create orchestrator: {agent_create_e}")
++        raise HTTPException(status_code=500, detail="Internal server error: Could not initialize agent.")
++
++    adk_runner = Runner(
++        app_name="ai_tutor", # Consistent app name
++        agent=orchestrator_agent,
++        session_service=session_service,
++        # Add artifact_service/memory_service if needed
++    )
++
+     run_config = RunConfig(
+         workflow_name="Tutor_Interaction",
+-        group_id=session_id
++        group_id=str(session_id) # ADK expects string
+     )
+ 
+     # Always run the Orchestrator first to decide the next step or handle pending interactions.
+@@ -385,54 +363,57 @@
+     print(f"[Interact] Orchestrator agent created.") # Log agent creation
+ 
+     # Prepare input for the Orchestrator
+-    if tutor_context.user_model_state.pending_interaction_type:
+-        # If waiting for user input, provide it clearly
+-        print("[Interact] Pending interaction detected. Running Orchestrator to evaluate.")
+-        orchestrator_input = f"User Response to Pending Interaction '{tutor_context.user_model_state.pending_interaction_type}' | Type: {interaction_input.type} | Data: {json.dumps(interaction_input.data)}"
+-        logger.log_user_input(f"User Response (Pending): {interaction_input.type} - {interaction_input.data}") # Log user input
++    # ** ADK handles interaction implicitly. The prompt to the Orchestrator
++    # ** should just contain the latest user input/action. The Orchestrator's
++    # ** instructions tell it how to use tools based on the state.
++    user_input_text = f"User Action Type: {interaction_input.type}. Data: {json.dumps(interaction_input.data)}"
++    user_event_content = adk_types.Content(role="user", parts=[adk_types.Part(text=user_input_text)])
++    logger.log_user_input(user_input_text) # Log user input
++    print(f"[Interact] Running Agent: {orchestrator_agent.name}")
++
++    last_agent_event: Optional[Event] = None
++    question_for_user: Optional[QuizQuestion] = None
++
++    try:
++        # Use run_async and process events
++        async for event in adk_runner.run_async(
++            user_id=str(user.id),
++            session_id=str(session_id),
++            new_message=user_event_content,
++            run_config=run_config
++        ):
++            print(f"[Interact] Received Event: ID={event.id}, Author={event.author}, Actions={event.actions}")
++            logger.log_orchestrator_output(event.content) # Log content
++            last_agent_event = event # Keep track of the last agent event
++
++            # --- Check for Pause/Input Request ---
++            # TODO: Implement actual ADK mechanism detection for long-running tool pause.
++            # This is a placeholder based on a hypothetical signal.
++            # ADK might require checking event.actions or specific content structures.
++            if event.author != 'user' and event.content and event.content.parts:
++                 part = event.content.parts[0]
++                 # Hypothetical check: Does the function response indicate a pause?
++                 if hasattr(part, 'function_response') and part.function_response:
++                     resp_data = part.function_response.response
++                     if isinstance(resp_data, dict) and resp_data.get("action") == "request_user_input":
++                         question_data = resp_data.get("question_data")
++                         if question_data:
++                             try:
++                                 question_for_user = QuizQuestion.model_validate(question_data)
++                                 print(f"[Interact] Detected pause request. Sending question to user: {question_for_user.question[:50]}...")
++                                 # Break the loop to return the question to the frontend
++                                 break
++                             except Exception as parse_err:
++                                 logger.log_error("PauseSignalParse", f"Failed to parse question from pause signal: {parse_err}")
++                                 # Continue processing other events or raise error? For now, continue.
+     else:
+-        # No pending interaction. Check if focus objective exists.
+-        if not tutor_context.current_focus_objective:
+-            print("[Interact] No current focus. Instructing Orchestrator to call Planner.")
+-            # If focus is missing, tell orchestrator to get it first.
+-            orchestrator_input = "No current focus objective set. Call the `call_planner_agent` tool to determine the initial learning focus objective for the user."
+-            # NOTE: This requires the orchestrator to handle this specific instruction.
+-        else:
+-            # Focus exists, proceed normally based on user input
+-            print("[Interact] Focus exists. Running Orchestrator to decide next step based on user input.")
+-            orchestrator_input = f"Current Focus: {tutor_context.current_focus_objective.topic} ({tutor_context.current_focus_objective.learning_goal}). User Action | Type: {interaction_input.type} | Data: {json.dumps(interaction_input.data)}"
+-        logger.log_user_input(f"User Action: {interaction_input.type} - {interaction_input.data}") # Log user input
+-
+-    print(f"[Interact] Running Agent: {orchestrator_agent.name}")
+-    orchestrator_result = await Runner.run(
+-        orchestrator_agent,
+-        orchestrator_input,
+-        context=tutor_context, # Context is mutable and modified by tools
+-        run_config=run_config
+-    )
+-    orchestrator_output = orchestrator_result.final_output # This is TutorInteractionResponse type
+-    # Log the raw output which might contain implicit reasoning before parsing
+-    logger.log_orchestrator_output(orchestrator_output)
+-    print(f"[Interact] Orchestrator Raw Output: {orchestrator_output}") # Log raw output first
+-    print(f"[Interact] Orchestrator Output Type: {type(orchestrator_output)}")
++        # Catch case where loop finishes without yielding any agent events
++        if not last_agent_event:
++             print("[Interact] Warning: ADK run completed without yielding any agent events.")
++
++    except Exception as run_err:
++        logger.log_error("ADKRunner", f"Error during agent run: {run_err}")
++        print(f"[Interact] Error during ADK Runner execution: {run_err}\n{traceback.format_exc()}")
++        raise HTTPException(status_code=500, detail="Internal error during agent execution.")
+ 
+     # --- Handle Orchestrator Output ---
+-    # The orchestrator's output *is* the final response for this turn,
+-    # as it comes from the specialist agent tool call or a direct response.
+-    if isinstance(orchestrator_output, TutorInteractionResponse):
+-        final_response_data = orchestrator_output
++    # Process the *last* event from the agent OR the detected question
++
++    # --- Logic to handle the PAUSED state (if question_for_user was set) ---
++    if question_for_user:
++        # Teacher agent paused, waiting for user answer. Send the question back.
++        final_response_data = QuestionResponse(
++            response_type="question",
++            question=question_for_user,
++            topic=tutor_context.current_teaching_topic or "Current Focus" # Get topic from context
++        )
++        print(f"[Interact] Responding with question. Session {session_id} is now paused waiting for answer.")
++        # IMPORTANT: The session state (context) should have been implicitly saved by the Runner/SessionService *before* the pause signal.
++        # No explicit save needed here unless the pause signal itself requires a state update.
++
++    # --- Logic to handle the COMPLETED state (no pause detected) ---
++    elif last_agent_event and last_agent_event.content:
++        # Agent run completed normally. Assume the last event's content is the response.
++        # This might be a message from the Orchestrator, or the final TeacherTurnResult (needs parsing).
++        # TODO: Adapt this based on Orchestrator's final output schema.
++        # For now, assume it's a text message.
++        response_text = last_agent_event.content.parts[0].text if last_agent_event.content.parts else "Interaction complete."
++        final_response_data = MessageResponse(response_type="message", text=response_text)
+         print(f"[Interact] Orchestrator returned response of type: {final_response_data.response_type}")
+         # If orchestrator called quiz creator which returned a question, update pending state
+-        if isinstance(final_response_data, QuestionResponse):
+-            tutor_context.user_model_state.pending_interaction_type = 'checking_question'
+-            tutor_context.user_model_state.pending_interaction_details = {
+-                'question': final_response_data.question.model_dump() # Store the question details
+-            }
+-            print(f"[Interact] Teacher asked checking question. Set pending_interaction_type='checking_question'")
++        # This state update logic might now belong *inside* the Teacher agent's loop
++        # if isinstance(final_response_data, QuestionResponse): ... (remove this block)
+ 
+     else:
+-        # Unexpected output type - return error
+-        error_msg = f"Unexpected output type from Orchestrator: {type(orchestrator_output)}"
++        # No event received or last event had no content
++        error_msg = f"Agent interaction finished without a final response event."
+         print(f"[Interact] Error: {error_msg}")
+         final_response_data = ErrorResponse(
+             error=error_msg,
+             message="There was an internal error processing your request."
+         )
+ 
+-    # --- Save Context AFTER determining the final response ---
++    # --- Load final context state AFTER the run ---
++    # The Runner should have updated the state via SessionService.append_event
++    final_session = session_service.get_session("ai_tutor", str(user.id), str(session_id))
++    if final_session and final_session.state:
++         final_context = TutorContext.model_validate(final_session.state)
++    else:
++        # Should not happen if session exists, but handle gracefully
++        logger.log_error("ContextFetchAfterRun", f"Failed to fetch session state after run for {session_id}")
++        final_context = tutor_context # Fallback to context before run (might be stale)
++
+     print(f"[Interact] Saving final context state to Supabase for session {session_id}")
+-    await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
+-    print(f"[Interact] Context saved AFTER run: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
++    # Saving happens implicitly via SessionService.append_event during the run
++    print(f"[Interact] Final Context State: pending={final_context.user_model_state.pending_interaction_type}, topic='{final_context.current_teaching_topic}', segment={final_context.user_model_state.current_topic_segment_index}")
+ 
+     # Return the structured response
+     return InteractionResponseData(
+         content_type=final_response_data.response_type,
+         data=final_response_data, # Send the response from the final agent run
+-        user_model_state=tutor_context.user_model_state # Send updated state
++        user_model_state=final_context.user_model_state # Send final updated state
+     )
+ 
+ # --- Remove POST /quiz/submit (Legacy) ---
+@@ -443,24 +464,38 @@
+ # An end-of-session quiz submission could potentially be added back later
+ # if needed, but the core loop uses /interact.
+ 
++# --- Endpoint to handle user answers when Teacher Agent is paused ---
++@router.post(
++    "/sessions/{session_id}/answer",
++    response_model=InteractionResponseData, # Returns the next interaction
++    dependencies=[Depends(verify_token)],
++    summary="Submit Answer to Paused Question",
++    tags=["Tutoring Workflow"]
++)
++async def submit_answer_to_tutor(
++    session_id: UUID,
++    request: Request,
++    interaction_input: InteractionRequestData = Body(...), # Should have type 'answer'
++    session_service: SupabaseSessionService = Depends(get_session_service),
++    # No TutorContext dependency needed here, we resume the existing run
++):
++    logger = get_session_logger(session_id)
++    user: User = request.state.user
++    print(f"\n=== Received /answer for session {session_id} ===")
++    print(f"Input Type: {interaction_input.type}, Data: {interaction_input.data}")
++
++    if interaction_input.type != 'answer' or 'answer_index' not in interaction_input.data:
++        raise HTTPException(status_code=400, detail="Invalid input type or data for /answer endpoint.")
++
++    # TODO: Implement ADK mechanism to resume the long-running tool.
++    # This requires knowing how ADK handles identifying and resuming paused runs/tools.
++    # Conceptual steps:
++    # 1. Find the paused runner/tool instance associated with session_id.
++    # 2. Call the ADK function to provide the answer data (interaction_input.data) to the paused tool.
++    # 3. Continue processing the event stream yielded by the runner *after* resumption.
++    # 4. Handle the final output or next pause signal similar to the /interact endpoint.
++
++    logger.log_error("ResumeNotImplemented", "ADK resume mechanism for long-running tool is not implemented yet.")
++    raise HTTPException(status_code=501, detail="Resuming paused agent interaction is not yet implemented.")
++
++
+ # --- Helper to update context in DB (replace direct calls) ---
+-async def _update_context_in_db(session_id: UUID, user_id: UUID, context: TutorContext, supabase: Client):
++async def _update_context_in_db(session_id: UUID, user_id: UUID, context: TutorContext, supabase: Client): # Keep for explicit saves if needed
+     """Helper to persist context via SupabaseSessionService interface."""
+     # This mimics how the SessionService's append_event would work
+     try:
+
+
+2. Refactor File Handling (tools/orchestrator_tools.py, agents/planner_agent.py, agents/teacher_agent.py)
+
+Add the following tool definition, potentially in a new tools/common_tools.py or within orchestrator_tools.py.
+
+# In ai_tutor/tools/common_tools.py (or orchestrator_tools.py)
+from google.adk.tools import FunctionTool, ToolContext
+from ai_tutor.dependencies import get_supabase_client # Assuming this can provide the client
+from uuid import UUID
+import logging
+
+logger = logging.getLogger(__name__)
+
+@FunctionTool
+async def get_document_content(tool_context: ToolContext, file_path_in_storage: str) -> str:
+    """
+    Retrieves the text content of a document stored in Supabase Storage.
+    The 'file_path_in_storage' should be the full path used when uploading
+    (e.g., 'user_uuid/folder_uuid/filename.pdf').
+    """
+    logger.info(f"Tool get_document_content: Attempting to fetch '{file_path_in_storage}'")
+    try:
+        # Get Supabase client - This is tricky. Ideally, the client is passed
+        # via context or a singleton/dependency injection pattern compatible with ADK.
+        # Using the dependency function directly might work if called within FastAPI scope,
+        # but not guaranteed within agent execution.
+        # For now, assume get_supabase_client() works or adapt as needed.
+        supabase = await get_supabase_client() # Dependency might need context
+        bucket_name = "document_uploads" # TODO: Make configurable
+
+        response = supabase.storage.from_(bucket_name).download(file_path_in_storage)
+
+        # Check for errors (depends on Supabase client library specifics)
+        # Assuming response is bytes content on success, or raises error.
+        # Need robust error handling based on actual Supabase client behavior.
+
+        # Basic Text Extraction (Improve based on file type if needed)
+        # This example assumes simple text or attempts decoding.
+        # For complex types like PDF/DOCX, you'd need libraries like pypdf, python-docx.
+        try:
+            content = response.decode('utf-8')
+            logger.info(f"Tool get_document_content: Successfully fetched and decoded text for '{file_path_in_storage}'")
+            return content
+        except UnicodeDecodeError:
+            logger.warning(f"Tool get_document_content: Could not decode '{file_path_in_storage}' as UTF-8. Returning raw representation.")
+            return f"[Binary Content: {file_path_in_storage}]" # Placeholder for non-text
+        except Exception as decode_err:
+            logger.error(f"Tool get_document_content: Error decoding content for '{file_path_in_storage}': {decode_err}")
+            return f"[Error decoding content for {file_path_in_storage}]"
+
+    except Exception as e:
+        # Log Supabase client errors (check exception type for specifics)
+        logger.exception(f"Tool get_document_content: Failed to download '{file_path_in_storage}' from Supabase: {e}")
+        return f"[Error retrieving document content for {file_path_in_storage}]"
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Python
+IGNORE_WHEN_COPYING_END
+
+Modify read_knowledge_base in tools/orchestrator_tools.py (or common tools):
+
+--- a/ai_tutor/tools/orchestrator_tools.py
++++ b/ai_tutor/tools/orchestrator_tools.py
+@@ -11,14 +11,16 @@
+ from ai_tutor.agents.models import FocusObjective, QuizQuestion, QuizFeedbackItem, ExplanationResult, QuizCreationResult # Import new models
+ # from ai_tutor.agents.models import LessonPlan, LessonContent, Quiz, LessonSection, LearningObjective # Remove unused models
+ 
++# Import the ToolContext type from ADK
++from google.adk.tools import ToolContext
++
+ # Import API response models for potentially formatting tool output
+ from ai_tutor.api_models import (
+     ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse
+ )
+-
+ # --- Get Supabase client dependency (needed for the tool) ---
+ from ai_tutor.dependencies import get_supabase_client
+ 
+ # --- Define read_knowledge_base tool locally ---
+-@function_tool
++@FunctionTool # Use ADK Decorator
+ async def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
+     """Reads the Knowledge Base content stored in the Supabase 'folders' table associated with the current session's folder_id."""
+     folder_id = ctx.context.folder_id
+@@ -30,10 +32,13 @@
+         return "Error: Folder ID not found in context."
+ 
+     # --- ADD CHECK HERE ---
+-    # Check if analysis result with text is already in context from SessionManager loading
++    # Check context provided by ADK Runner (ctx is ToolContext now)
+     if ctx.context.analysis_result and ctx.context.analysis_result.analysis_text:
+         print(f"Tool: read_knowledge_base - Found analysis text in context. Returning cached text.")
+         return ctx.context.analysis_result.analysis_text
+ 
++    # --- Query Supabase if not in context ---
+     try:
+         supabase = await get_supabase_client()
+         response = supabase.table("folders").select("knowledge_base").eq("id", str(folder_id)).eq("user_id", user_id).maybe_single().execute()
+@@ -41,14 +46,16 @@
+         if response.data and response.data.get("knowledge_base"):
+             kb_content = response.data["knowledge_base"]
+             print(f"Tool: read_knowledge_base successful from Supabase. Content length: {len(kb_content)}")
++
+             # Store it back into context in case it wasn't there (though SessionManager should handle this on load)
+             if not ctx.context.analysis_result:
+                  # Assuming AnalysisResult model exists and can be instantiated like this
+                  from ai_tutor.agents.analyzer_agent import AnalysisResult
+                  ctx.context.analysis_result = AnalysisResult(analysis_text=kb_content, vector_store_id=ctx.context.vector_store_id or "", key_concepts=[], key_terms={}, file_names=[])
+             elif not ctx.context.analysis_result.analysis_text:
+-                 ctx.context.analysis_result.analysis_text = kb_content
++                 ctx.context.analysis_result.analysis_text = kb_content # Update existing object
++            # **Important**: How to signal context update back to ADK?
++            # The tool might need to return the updated context or rely on event actions.
++            # For now, assume context modification here is reflected if ctx.context is mutable.
+             return kb_content
+         else:
+             return f"Error: Knowledge Base not found for folder {folder_id} or query failed: {response.error}"
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Diff
+IGNORE_WHEN_COPYING_END
+
+Update agents/planner_agent.py and agents/teacher_agent.py to use the new tools:
+
+--- a/ai_tutor/agents/planner_agent.py
++++ b/ai_tutor/agents/planner_agent.py
+@@ -1,6 +1,6 @@
+ from __future__ import annotations
+ from typing import Optional, List, Dict, Any
+-from uuid import UUID
++from uuid import UUID # Keep UUID if used internally
+ from supabase import Client
+ from google.adk.agents import LLMAgent # Use ADK Agent
+ from google.adk.tools import BaseTool, FunctionTool, FilesRetrieval # Use ADK Tools
+@@ -9,13 +9,16 @@
+ from ai_tutor.agents.utils import RoundingModelWrapper
+ from ai_tutor.context import TutorContext
+ import os
+-
+ # --- Get Supabase client dependency (needed for the tool) ---
+ from ai_tutor.dependencies import get_supabase_client
+ 
+ # --- Define read_knowledge_base tool locally ---
+ # --- Import the common/orchestrator tools ---
++# (Assuming read_knowledge_base and get_document_content are defined elsewhere now)
++from ai_tutor.tools.orchestrator_tools import read_knowledge_base
++# from ai_tutor.tools.common_tools import get_document_content # Import if created
++
+ @FunctionTool # Use ADK decorator
+ async def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
+     """Reads the Knowledge Base content stored in the Supabase 'folders' table associated with the current session's folder_id."""
+@@ -46,7 +49,7 @@
+ # -----------------------------------------------
+ 
+ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
+-    """Creates a planner agent that determines the next learning focus."""
++    """Creates a planner agent that determines the next learning focus using ADK."""
+ 
+     # --- ADK Tool Setup ---
+     # Replace FileSearchTool with ADK's retrieval or a custom tool to fetch full content
+@@ -60,13 +63,16 @@
+     # For now, we will rely on the read_knowledge_base tool. Add more specific tools if needed.
+ 
+     # Include the read_knowledge_base tool
+-    planner_tools = [file_search_tool, read_knowledge_base]
++    # Also add get_document_content if needed
++    planner_tools = [
++        read_knowledge_base,
++        # get_document_content, # Add if implemented and needed
++    ]
+ 
+     # --- ADK Model Setup ---
+     # Instantiate the base model provider and get the base model
+     provider: OpenAIProvider = OpenAIProvider()
+     base_model = provider.get_model("gpt-4o")
+-
+     # Create the planner agent focusing on identifying the next focus
+     planner_agent = LLMAgent( # Change agent generic type
+         name="FocusPlanner",
+@@ -75,8 +81,8 @@
+ 
+         AVAILABLE INFORMATION:
+         - You have a `read_knowledge_base` tool to get the document analysis summary stored in the database.
+-        - You have a `file_search` tool to look up specific details within the source documents (vector store).
+         - The prompt may contain information about the user's current state (`UserModelState` summary).
++        - You might have a `get_document_content` tool to fetch full text if needed (provide file identifier from KB analysis).
+ 
+         YOUR WORKFLOW **MUST** BE:
+         1.  **Read Knowledge Base ONCE:** Call the `read_knowledge_base` tool *exactly one time* at the beginning to get the document analysis summary (key concepts, terms, etc.).
+@@ -84,7 +90,7 @@
+         3.  **Identify Next Focus:** Determine the single most important topic or concept the user should learn next. Consider prerequisites implied by the KB structure and the user's current state (e.g., last completed topic, identified struggles).
+         4.  **Define Learning Goal:** Formulate a clear, specific learning goal for this focus topic.
+         5.  **Use `file_search` Sparingly:** If needed to clarify the goal or identify crucial related concepts for the chosen focus topic, use `file_search`.
++        6.  **Use `get_document_content` Sparingly:** If the KB summary lacks detail for the chosen focus, use this tool with a file identifier found in the KB analysis.
+ 
+         OUTPUT:
+         - Your output **MUST** be a single, valid JSON object matching the `FocusObjective` schema.
+@@ -97,7 +103,7 @@
+ 
+         CRITICAL REMINDERS:
+         - **You MUST call `read_knowledge_base` only ONCE at the very start.**
+-        - Your only output MUST be a single `FocusObjective` object. Do NOT create a full `LessonPlan`.
++        - Your only output MUST be a single `FocusObjective` object.
+         """,
+         tools=planner_tools,
+         output_schema=FocusObjective, # Use ADK's output_schema
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Diff
+IGNORE_WHEN_COPYING_END
+--- a/ai_tutor/agents/teacher_agent.py
++++ b/ai_tutor/agents/teacher_agent.py
+@@ -1,9 +1,9 @@
+ from __future__ import annotations
+ 
+ import os
+-import json
+ 
++# Use ADK imports
+ from google.adk.agents import LLMAgent # Use ADK Agent
+ from google.adk.tools import BaseTool, FunctionTool, FilesRetrieval, ToolContext, LongRunningFunctionTool # ADK Tools
+ from google.adk.agents import types as adk_types # ADK types
+@@ -11,34 +11,28 @@
+ from google.adk.models import Gemini # Example using ADK's Gemini model
+ from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
+ from agents.run_context import RunContextWrapper
+-
+ from ai_tutor.agents.models import FocusObjective, QuizQuestion, ExplanationResult, TeacherTurnResult # Input/Output models
+ from typing import List, Callable, Optional, Any, Dict, TYPE_CHECKING, Union, AsyncGenerator
+ from ai_tutor.agents.utils import RoundingModelWrapper # Keep if rounding is needed for Gemini
+ 
+-# Import the new tools
++# Import the long-running tool and potentially QuizCreator tool
+ from ai_tutor.tools.teacher_tools import ask_user_question_and_get_answer # Import the long-running tool
++# from ai_tutor.tools.orchestrator_tools import call_quiz_creator_agent # If Teacher calls Quiz Creator
++# Import common tools if needed
++from ai_tutor.tools.orchestrator_tools import read_knowledge_base
++# from ai_tutor.tools.common_tools import get_document_content # Import if created
+ 
+ if TYPE_CHECKING:
+     from ai_tutor.context import TutorContext
+ 
+ 
+-# Define the output type for the Teacher Agent (after completing an objective)
+ # Output type for the Agent when called *as a tool* by Orchestrator
+ TeacherAgentToolOutput = TeacherTurnResult
+ 
+ def create_interactive_teacher_agent(vector_store_id: str) -> LLMAgent:
+     """Creates an INTERACTIVE Teacher Agent using Google ADK."""
+ 
+-    # provider: OpenAIProvider = OpenAIProvider() # Use ADK models
+     # Maybe use a slightly more capable model for interactive logic
+-    # base_model = provider.get_model("gpt-4o-2024-08-06")
+     model_name = "gemini-1.5-flash" # Or other ADK supported model
+ 
+-    # ADK Tool Setup - Similar to Planner, replace FileSearchTool if needed
+-    file_search_tool = FileSearchTool(
+-        vector_store_ids=[vector_store_id],
+-        max_num_results=3 # Fewer results might be needed for focused segment explanation
+-    )
+ 
+     # Define the tools the *teacher itself* can use
+     # Crucially, add the custom long-running tool
+     teacher_tools = [
+-        file_search_tool, # Or replacement like get_document_content
++        read_knowledge_base, # Tool to get KB summary
++        # get_document_content, # Tool to get full document text
+         ask_user_question_and_get_answer, # The interactive tool
+         # Potentially add call_quiz_creator_agent if teacher generates its own checks
+     ]
+@@ -51,11 +45,11 @@
+ 
+         CONTEXT:
+         - You receive a `FocusObjective` detailing the `topic`, `learning_goal`, and `relevant_concepts`.
+-        - You maintain your own internal state/progress for this objective during your execution loop.
+-        - You use `file_search` (or similar) to get content details if needed.
++        - You maintain your own internal state/progress for this objective during your execution loop (implicitly via conversation history or explicit state management if needed).
++        - You use `read_knowledge_base` or `get_document_content` tools to get content details if needed.
+         - You use `ask_user_question_and_get_answer` to pause your execution, ask the user a question, and wait for their answer.
+ 
+-        YOUR TASK:
++        YOUR AUTONOMOUS TASK:
+         1.  **Plan Micro-steps:** Based on the `FocusObjective`, plan a sequence of micro-steps (e.g., Explain concept -> Provide Example -> Ask Check Question -> Explain related concept -> Ask Check Question).
+         2.  **Execute Loop:** Iterate through your micro-plan:
+             *   **Explain:** Generate a concise explanation for the current micro-step (using content tools if needed). Store this explanation.
+@@ -72,8 +66,8 @@
+         - Use the `ask_user_question_and_get_answer` tool when you need user input.
+         - Your final output MUST be a single `TeacherTurnResult` JSON object when the objective is finished (or failed).
+         """,
+-        tools=teacher_tools,
+-        input_schema=FocusObjective, # Define input schema
++        tools=teacher_tools, # Pass the list of ADK tools
++        input_schema=FocusObjective, # Define input schema (Pydantic model)
+         output_schema=TeacherTurnResult, # Define output schema (Pydantic model)
+         model=model_name, # Use model name string for ADK
+         # No handoffs needed FROM the teacher in this model
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Diff
+IGNORE_WHEN_COPYING_END
+
+3. Refactor agents/quiz_creator_agent.py (as a Tool)
+
+--- a/ai_tutor/agents/quiz_creator_agent.py
++++ b/ai_tutor/agents/quiz_creator_agent.py
+@@ -1,14 +1,14 @@
+ import os
+-import openai
+ import json
+ from typing import Any
+ 
+-from agents import Agent, Runner, handoff, HandoffInputData, ModelProvider
++# Use ADK imports
++from google.adk.agents import LLMAgent
+ from agents.models.openai_provider import OpenAIProvider
+ from agents.run_context import RunContextWrapper
+ from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
+ 
+-from ai_tutor.agents.models import LessonContent, Quiz
++# Import new result model and QuizQuestion if needed for single question output
+ from ai_tutor.agents.models import QuizCreationResult, QuizQuestion
+ from ai_tutor.agents.utils import process_handoff_data, RoundingModelWrapper
+-from ai_tutor.agents.quiz_teacher_agent import create_quiz_teacher_agent
+ 
+ 
+ # Remove handoff filter if no longer used
+@@ -22,8 +22,9 @@
+         print(f"ERROR in quiz_to_teacher_handoff_filter: {e}")
+         return handoff_data  # Fallback
+ '''
+-
+ # This function now defines the AGENT used AS A TOOL
++# Define input schema if called as tool
++# class QuizCreationRequest(BaseModel): topic: str, instructions: str, ...
++
+ def create_quiz_creator_agent(api_key: str = None):
+     """Create a basic quiz creator agent without handoff capability."""
+ 
+@@ -37,11 +38,11 @@
+     else:
+         print(f"Using OPENAI_API_KEY from environment for quiz creator agent")
+ 
+-    # Instantiate the base model provider and get the base model
+-    provider: ModelProvider = OpenAIProvider()
+-    base_model = provider.get_model("gpt-4o") # Use gpt-4o for potentially better structured output
++    # --- ADK Model Setup ---
++    model_name = "gemini-1.5-flash" # Or other ADK supported model
+ 
+-    quiz_creator_agent = Agent[Any, QuizCreationResult]( # Agent now returns QuizCreationResult
++    # Create the quiz creator agent
++    quiz_creator_agent = LLMAgent( # Use ADK LLMAgent
+         name="QuizCreatorToolAgent", # Name reflects tool usage
+         instructions="""
+         You are an expert educational assessment designer. Your task is to create quiz questions based on the specific instructions provided in the prompt (e.g., topic, number of questions, difficulty).
+@@ -53,7 +54,7 @@
+         4. Include detailed explanations for the correct answers that reinforce learning
+         5. Distribute questions across all sections of the lesson to ensure comprehensive coverage
+         6. Target approximately 2-3 questions per lesson section
+-        
++
+         CRITICAL REQUIREMENTS:
+         1. Follow the instructions in the prompt regarding the number of questions requested.
+         2. Each multiple-choice question MUST have exactly 4 options unless specified otherwise.
+@@ -61,35 +62,17 @@
+         4. Ensure total_points equals the number of questions
+         5. Set a reasonable estimated_completion_time_minutes (typically 1-2 minutes per question)
+ 
+-        # Handoff instructions removed
+-        # After generating the quiz, use the transfer_to_quiz_teacher tool to hand off to the Quiz Teacher agent
+-        # which will evaluate user responses and provide feedback.
+-
+         FORMAT REQUIREMENTS FOR YOUR OUTPUT:
+         - Your final output MUST be a single, valid `QuizCreationResult` JSON object.
+         - If successful, set `status` to "created".
+         - If you created a single question, put the `QuizQuestion` object in the `question` field.
+         - If you created multiple questions, put the full `Quiz` object in the `quiz` field.
+         - If failed, set `status` to "failed" and provide details.
+-
+-        Do NOT ask follow-up questions or manage conversation flow. Just create the requested quiz/question(s).
++        
++        Focus ONLY on generating the requested question(s) based on the input instructions.
+         """),
+-        handoffs=[
+-            # Remove handoff - Orchestrator calls Quiz Teacher tool directly if needed
+-        ],
+-        output_type=QuizCreationResult, # Change output type
+-        model=base_model, # Use the base model directly
+-        # model=RoundingModelWrapper(base_model), # Use wrapper if needed
++        # Define input schema if this agent is called as a tool with structured input
++        # input_schema=QuizCreationRequest, # Example - Define this Pydantic model
++        output_schema=QuizCreationResult, # Use ADK output_schema
++        model=model_name,
+     )
+-    
++
+     return quiz_creator_agent
+-
+-
+-# Remove create_quiz_creator_agent_with_teacher_handoff and generate_quiz
+-# as quiz creation is now handled by calling this agent as a tool.
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Diff
+IGNORE_WHEN_COPYING_END
+
+4. Refactor agents/orchestrator_agent.py (Tools and Instructions)
+
+--- a/ai_tutor/agents/orchestrator_agent.py
++++ b/ai_tutor/agents/orchestrator_agent.py
+@@ -3,19 +3,19 @@
+ import os
+ from typing import List, Optional, TYPE_CHECKING, Union, cast
+ 
+-from agents import Agent, Runner, RunConfig, ModelProvider
++# Use ADK imports
++from google.adk.agents import LLMAgent, BaseAgent # Use ADK Agent
++from google.adk.runners import Runner, RunConfig # Use ADK Runner/Config
+ from agents.models.openai_provider import OpenAIProvider
+ from agents.run_context import RunContextWrapper
+-
+ # Use TYPE_CHECKING for TutorContext import
+ if TYPE_CHECKING:
+     from ai_tutor.context import TutorContext # Use the enhanced context
+ # Import tool functions (assuming they will exist in a separate file)
+-# ADK AgentTool needs the actual agent instance to wrap
+-from ai_tutor.agents.planner_agent import create_planner_agent
+-from ai_tutor.agents.teacher_agent import create_interactive_teacher_agent
++# Import the *tools* the orchestrator calls
+ from ai_tutor.tools.orchestrator_tools import (
+-    call_quiz_creator_agent, # Keep if needed, but Teacher might call it now
++    # These are now implemented as AgentTools below
++    # call_planner_agent, call_teacher_agent, call_quiz_creator_agent,
+     call_quiz_teacher_evaluate,
+     update_user_model,
+     get_user_model_status,
+@@ -23,7 +23,7 @@
+ )
+ from google.adk.tools import AgentTool # Import AgentTool wrapper
+ # Import models needed for type hints if tools return them
+-# Also import models needed for the output Union type
++# Also import models needed for the output schema
+ from ai_tutor.agents.models import QuizQuestion, QuizFeedbackItem, LessonContent
+ from ai_tutor.api_models import (
+     TutorInteractionResponse, ExplanationResponse, QuestionResponse,
+@@ -37,19 +37,23 @@
+     if api_key:
+         os.environ["OPENAI_API_KEY"] = api_key
+         
+-    # --- ADK Setup ---
+-    # model_name = "gemini-1.5-pro" # Or another capable model
++    # --- ADK Model Setup ---
+     model_name = "gemini-1.5-flash" # Use flash for now
+     
+     # Create instances of the agents to be wrapped as tools
+     # We need vector_store_id here if the agents need it during creation.
+     # This implies Orchestrator needs access to vs_id, maybe via context/state.
+     # For simplicity, assume it's available or passed differently. A better way
+-    # might be to configure tools externally and pass them in.
++    # might be to configure tools externally and pass them in, or have agents
++    # fetch it from context when needed.
+     # Placeholder: Assume vs_id is accessible. This needs refinement.
+     placeholder_vs_id = "dummy-vs-id" # ** Replace with actual mechanism to get vs_id **
+-    planner_agent_instance = create_planner_agent(placeholder_vs_id)
+-    teacher_agent_instance = create_interactive_teacher_agent(placeholder_vs_id)
++    # --- Lazily create agents or pass required args ---
++    # Option: Pass factory functions or create agents inside tools if they need dynamic context
++    # For now, create dummy instances; real creation might need context/vs_id
++    from ai_tutor.agents.planner_agent import create_planner_agent
++    from ai_tutor.agents.teacher_agent import create_interactive_teacher_agent
++    planner_agent_instance: BaseAgent = create_planner_agent(placeholder_vs_id) # Type hint
++    teacher_agent_instance: BaseAgent = create_interactive_teacher_agent(placeholder_vs_id)
+     
+     orchestrator_tools = [
+         AgentTool(planner_agent_instance), # Wrap planner agent
+@@ -61,19 +65,19 @@
+         reflect_on_interaction,
+     ]
+ 
+-    orchestrator_agent = Agent['TutorContext'](
++    orchestrator_agent = LLMAgent( # Use ADK LLMAgent
+         name="TutorOrchestrator",
+         instructions="""
+-        You are the central conductor of an AI tutoring session. Your primary goal is to guide the user towards mastering specific learning objectives identified by the Planner Agent.
++        You are the high-level conductor of an AI tutoring session. Your primary goal is to sequence learning objectives.
+ 
+         CONTEXT:
+-        - You operate based on the `current_focus_objective` provided in the `TutorContext`. This objective (topic, goal) is set by the Planner Agent.
+-        - If `current_focus_objective` is missing, your FIRST action MUST be to call `call_planner_agent` to get the initial focus.
+-        - You manage the user's learning state via `UserModelState` using tools like `get_user_model_status` and `update_user_model`.
+-        - You interact with specialist agents (Teacher, Quiz Creator) using the `call_teacher_agent` and `call_quiz_creator_agent` tools.
++        - You access the session state (including `current_focus_objective` and `UserModelState`) via the `ToolContext`.
++        - If `current_focus_objective` is missing in the state, your FIRST action MUST be to call the `focus_planner` tool to get the initial focus.
++        - You delegate the teaching of the `current_focus_objective` to the `interactive_lesson_teacher` tool.
++        - The `interactive_lesson_teacher` tool runs autonomously and returns a `TeacherTurnResult` (indicating objective completion status) when finished.
+         - You evaluate user answers to checking questions using `call_quiz_teacher_evaluate`.
+-        - `reflect_on_interaction` helps you analyze difficulties and adapt your strategy.
+-        - User's last input/action is provided in the prompt.
++        - The `reflect_on_interaction` tool helps analyze difficulties if the Teacher tool reports failure.
++        - The user's latest input is provided in the conversation history.
+         - `tutor_context.user_model_state.pending_interaction_type` indicates if you are waiting for a user response (e.g., to a 'checking_question').
+ 
+         **Core Responsibilities:**
+@@ -81,60 +85,22 @@
+         2.  **Delegate Teaching:** If `current_focus_objective` exists, call the `interactive_lesson_teacher` tool, passing the objective details (topic, goal, concepts) as arguments. -> END TURN.
+         3.  **Process Teacher Result:** The `interactive_lesson_teacher` tool will run until the objective is complete or failed. You will receive its final `TeacherTurnResult`.
+         4.  **Update State:** Based on `TeacherTurnResult`, update the overall session state using `update_user_model` (e.g., mark concepts as mastered/struggled based on teacher's summary).
+-        5.  **Evaluate Objective:** Assess if the `current_focus_objective`'s `learning_goal` has been met based on interactions and mastery levels. Use `reflect_on_interaction` if the user struggles.
+-        6.  **Loop or Advance:**
+-            *   If the objective is NOT met, determine the next micro-step (re-explain, different example, different question) and go back to step 3.
+-            *   If the objective IS met, call `call_planner_agent` to get the *next* focus objective. If the planner indicates completion, end the session.
++        5.  **Loop:**
++            *   If the Teacher reported success (`objective_complete`), call the `focus_planner` tool again to get the *next* focus objective. Store it in state. -> END TURN.
++            *   If the Planner indicates no more objectives (e.g., returns a specific signal or empty objective), the session is complete. Respond with a concluding message. -> END TURN.
++            *   If the Teacher reported failure (`objective_failed`), decide how to proceed. Maybe call `reflect_on_interaction` or try the `focus_planner` again for a different approach, or end the session. -> END TURN.
+ 
+         CORE WORKFLOW:
+-        1.  **Check Focus:** Is `tutor_context.current_focus_objective` set?
+-            *   **NO:** Call `call_planner_agent`. **END TURN** (The context will be updated, next interaction will proceed).
+-            *   **YES:** Proceed to step 2.
+-        2.  **Assess Interaction State:** Check `UserModelState` (`pending_interaction_type`).
+-        3.  **Handle Pending Interaction:**
+-            *   If `pending_interaction_type` is 'checking_question':
+-                - Use `call_quiz_teacher_evaluate` with the user's answer and details from `pending_interaction_details`.
+-                - Update state via `update_user_model` based on feedback (correct/incorrect).
+-                - If incorrect, call `reflect_on_interaction`.
+-                -> **END TURN**
+-        4.  **Handle New User Input / Decide Next Micro-Step (No Pending Interaction):**
+-            *   Analyze user input (question, request, feedback).
+-            *   If user asked a complex question or made a request requiring multiple steps (e.g., "Compare X and Y", "Give me a harder problem"):
+-                - **Decompose the request:** Plan the micro-steps needed.
+-                - Execute the *first step* by calling the appropriate agent tool (e.g., `call_teacher_agent` to explain X).
+-                -> **END TURN**
+-            *   If user asked a simple clarification related to the current focus: Call `call_teacher_agent` with specific instructions.
+-                -> **END TURN**
+-        5.  **Execute Micro-Step:**
+-            *   Execute the chosen micro-step by calling the appropriate agent tool.
+-            -> **END TURN**
+-
+-        OBJECTIVE EVALUATION:
+-        - After each relevant interaction (e.g., correct answer to checking question, successful completion of an exercise if implemented), evaluate if the `current_focus_objective.learning_goal` seems to be met. Check `UserModelState.concepts[topic].mastery_level`.
+-        - If met: Call `call_planner_agent` to get the next focus. If the planner returns a completion signal, output a final success message.
+-        - If not met: Continue the micro-step loop (Step 4).
++        1. Check session state (via `ToolContext`) for `current_focus_objective`.
++        2. If NONE -> Call `focus_planner` tool -> Update state -> END TURN.
++        3. If EXISTS -> Call `interactive_lesson_teacher` tool with objective details -> END TURN.
++        4. When `interactive_lesson_teacher` returns `TeacherTurnResult`: Process result -> Update state -> Go back to step 1 (to get next objective from planner).
+ 
+         PRINCIPLES:
+-        - **Focus-Driven:** Always work towards the `current_focus_objective`.
+-        - **Adaptive & Reflective:** Use user state and reflection to adjust micro-steps.
+-        - **Agent Orchestration:** You call other agents (Planner, Teacher, Quiz Creator) as tools to perform specific tasks.
++        - **High-Level Orchestration:** Your job is to get the objective and delegate it.
++        - **Delegate Autonomy:** Trust the specialist agent tools (Planner, Teacher) to manage their own internal processes.
+         - **State Management:** Keep `UserModelState` updated via tools.
+         - Ensure your final output strictly adheres to the required JSON format (`TutorInteractionResponse`).
+-
+-        Your final output for each turn will typically be the direct result passed back from the tool you called (e.g., the feedback item from `call_quiz_teacher_evaluate`, or potentially a message you construct if signaling completion).
+         """,
+         tools=orchestrator_tools,
+-        output_type=TutorInteractionResponse,
+-        model=base_model,
++        output_schema=TutorInteractionResponse, # Or a simpler status model
++        model=model_name,
+     )
+ 
+     return orchestrator_agent
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Diff
+IGNORE_WHEN_COPYING_END
+Phase 5: Refinement and Key Areas
+
+1. Refine SupabaseSessionService (ai_tutor/session_manager.py)
+
+--- a/ai_tutor/session_manager.py
++++ b/ai_tutor/session_manager.py
+@@ -111,7 +111,7 @@
+             logger.exception(f"Error fetching session {session_uuid} context: {e}")
+             # Don't raise HTTPException here, return None as per BaseSessionService expectation
+             return None
+-
++            
+     def list_sessions(
+         self,
+         app_name: str,
+@@ -157,7 +157,8 @@
+         # ADK Runner handles merging state delta into session.state dictionary internally.
+         # We just need to persist the updated session.state back to Supabase.
+         updated_context_dict = session.state # Get the already updated state dict
+-
++        
++        # Ensure state is JSON serializable (handle UUIDs, datetimes if not done by Pydantic model_dump)
+         logger.debug(f"Persisting updated context for session {session_id}")
+         try:
+             response: PostgrestAPIResponse = self.supabase.table("sessions").update({
+@@ -172,15 +173,16 @@
+                  # Raising might stop the agent run, logging might lead to state divergence.
+                  # For now, log and continue, but this needs careful consideration.
+                  # raise HTTPException(status_code=500, detail=error_msg)
+-
++                 # Return the original event maybe? Or raise a specific exception?
++                 # For now, log the error and return the original event.
++                 return event 
++                 
+             # Update the timestamp on the in-memory event object (optional, depends if caller uses it)
+             # Fetching the actual update_time from DB would require another query.
+             # Using current time is a reasonable approximation.
+             event.timestamp = time.time()
+             session.last_update_time = event.timestamp # Also update session timestamp
+-
+             return event # Return the event (potentially updated)
+-
+         except Exception as e:
+             logger.exception(f"Error persisting event/state for session {session_id}: {e}")
+             # Handle error appropriately
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Diff
+IGNORE_WHEN_COPYING_END
+
+2. Adapt File Handling Tools (tools/orchestrator_tools.py or tools/common_tools.py)
+
+Ensure read_knowledge_base and get_document_content use ToolContext correctly and handle Supabase client access (potentially via context or a passed-in instance if needed).
+
+# Example adaptation for read_knowledge_base (in orchestrator_tools.py or common_tools.py)
+# Assuming Supabase client can be retrieved via a helper or is passed differently
+
+@FunctionTool
+async def read_knowledge_base(tool_context: ToolContext) -> str:
+    """Reads the Knowledge Base content stored in the Supabase 'folders' table."""
+    try:
+        # --- Access state via ToolContext ---
+        # State contains the TutorContext dict
+        state_dict = tool_context.state
+        tutor_context_data = state_dict # Assuming state IS the TutorContext dict
+
+        folder_id_str = tutor_context_data.get("folder_id")
+        user_id_str = tutor_context_data.get("user_id")
+        analysis_result_data = tutor_context_data.get("analysis_result")
+
+        if not folder_id_str or not user_id_str:
+            logger.error("Tool read_knowledge_base: Missing folder_id or user_id in context state.")
+            return "Error: Folder ID or User ID not found in session context."
+
+        folder_id = UUID(folder_id_str)
+        user_id = UUID(user_id_str)
+
+        # Check context first
+        if analysis_result_data and analysis_result_data.get("analysis_text"):
+            logger.info("Tool read_knowledge_base: Found analysis text in context state.")
+            return analysis_result_data["analysis_text"]
+
+        # --- Query Supabase if not in context ---
+        logger.info(f"Tool read_knowledge_base: Querying Supabase for folder {folder_id}.")
+        supabase = await get_supabase_client() # Or get client via other means
+        response = supabase.table("folders").select("knowledge_base").eq("id", str(folder_id)).eq("user_id", str(user_id)).maybe_single().execute()
+
+        if response.data and response.data.get("knowledge_base"):
+            kb_content = response.data["knowledge_base"]
+            logger.info(f"Tool read_knowledge_base: Successfully read KB from Supabase for folder {folder_id}.")
+            # **Important**: This tool likely CANNOT update the context directly.
+            # The *calling agent* (Planner) needs to receive this content and potentially
+            # use another tool (like update_user_model) or rely on the framework
+            # to store relevant parts back into the state if needed later.
+            return kb_content
+        else:
+            logger.warning(f"Tool read_knowledge_base: KB not found for folder {folder_id}.")
+            return f"Error: Knowledge Base not found for folder {folder_id}."
+    except Exception as e:
+        logger.exception(f"Tool read_knowledge_base: Error accessing context or Supabase: {e}")
+        return f"Error reading Knowledge Base: {e}"
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Python
+IGNORE_WHEN_COPYING_END
+
+(Implement get_document_content similarly, accessing uploaded_file_paths from the state, getting the Supabase client, and downloading the content.)

@@ -13,6 +13,7 @@ from ai_tutor.routers import sessions, tutor, folders # Import folders router
 from ai_tutor.dependencies import get_supabase_client # Import dependency from new location
 from agents import set_default_openai_key, set_default_openai_api, Agent # Import Agent
 from ai_tutor.auth import verify_token # Assume auth.py exists for JWT verification
+from google.adk.agents import LLMAgent # Import ADK Agent
 
 # Import models needed for resolving forward references in TutorContext and other API models
 from ai_tutor.agents.models import (
@@ -24,13 +25,15 @@ from ai_tutor.api_models import TutorInteractionResponse, InteractionResponseDat
 # --- SDK Configuration ---
 api_key = os.environ.get("OPENAI_API_KEY")
 if not api_key:
-    print("ERROR: OPENAI_API_KEY environment variable not set.")
+    print("WARNING: OPENAI_API_KEY environment variable not set. Some functionalities might be limited.")
     # Decide if the app should exit or continue with limited functionality
     # exit(1) # Or raise an exception
 else:
-    set_default_openai_key(api_key)
-    set_default_openai_api("responses") # Ensure using API needed for models like o3-mini
-    print("OpenAI API key configured for agents SDK.")
+    # set_default_openai_key(api_key) # ADK uses Google Cloud auth by default
+    # set_default_openai_api("responses")
+    # Set Google Cloud Credentials (e.g., via environment variable GOOGLE_APPLICATION_CREDENTIALS)
+    # Or ensure `gcloud auth application-default login` has been run.
+    print("Google ADK configured. Ensure Google Cloud authentication is set up.")
 
 # --- Supabase Client Initialization is now handled in dependencies.py ---
 # You might still want a check here to ensure it *was* initialized successfully if critical
@@ -63,6 +66,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- Initialize ADK Runner (conceptually here, might move) ---
+# from google.adk.runners import Runner
+# session_service = get_session_service() # Need to manage instance lifecycle
+# adk_runner = Runner(app_name="ai_tutor", agent=orchestrator_agent, session_service=session_service)
 
 # --- Mount Routers ---
 # Add dependency for authentication to all routers needing it

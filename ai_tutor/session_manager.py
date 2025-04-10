@@ -8,6 +8,8 @@ from pathlib import Path
 from supabase import Client, PostgrestAPIResponse
 from fastapi import HTTPException # For raising errors
 from uuid import UUID # Import UUID
+import logging
+from datetime import datetime
 
 from ai_tutor.context import TutorContext # Import the main context model
 
@@ -18,6 +20,8 @@ from ai_tutor.context import UserModelState
 from ai_tutor.agents.models import LessonPlan, LessonContent, Quiz, QuizFeedback, SessionAnalysis
 from ai_tutor.agents.analyzer_agent import AnalysisResult # Import AnalysisResult from its correct location
 
+from google.adk.sessions import BaseSessionService, Session, Event, ListSessionsResponse, GetSessionConfig, ListEventsResponse
+
 if TYPE_CHECKING:
     from supabase import Client
 
@@ -25,6 +29,317 @@ if TYPE_CHECKING:
 # WARNING: This will lose state on server restart and doesn't scale horizontally.
 # Consider using Redis or a database for production.
 _sessions: Dict[str, Dict[str, Any]] = {}
+
+logger = logging.getLogger(__name__)
+
+class SupabaseSessionService(BaseSessionService):
+    """A session service that uses Supabase for storage."""
+
+    def __init__(self, supabase_client: Client):
+        """Initializes the SupabaseSessionService.
+
+        Args:
+            supabase_client: An initialized Supabase client instance.
+        """
+        self.supabase = supabase_client
+        logger.info("SupabaseSessionService initialized.")
+
+    def create_session(
+        self,
+        app_name: str,
+        user_id: str, # ADK expects str, convert UUID in API layer if needed
+        state: Optional[Dict[str, Any]] = None, # Initial state (TutorContext dict)
+        session_id: Optional[str] = None # ADK expects str
+    ) -> Session:
+        """Creates a new session in Supabase."""
+        try:
+            session_uuid = UUID(session_id) if session_id else uuid.uuid4()
+            user_uuid = UUID(user_id)
+
+            # Validate and prepare initial state
+            if not state:
+                logger.error("Initial state is required to create a session.")
+                raise ValueError("Initial state (with folder_id) is required to create a session.")
+
+            # Ensure folder_id exists and is valid
+            try:
+                folder_uuid = UUID(state.get('folder_id', ''))
+            except (ValueError, TypeError, AttributeError):
+                logger.error(f"Invalid or missing folder_id in initial state for user {user_id}")
+                raise ValueError("Valid folder_id is required in initial state.")
+
+            # Validate state structure matches TutorContext
+            try:
+                # This validates the structure but we keep the dict form
+                _ = TutorContext.model_validate(state)
+                logger.debug(f"Initial state validated successfully for session {session_uuid}")
+            except Exception as e:
+                logger.error(f"Invalid initial state structure: {e}")
+                raise ValueError(f"Initial state does not match TutorContext structure: {e}")
+
+            # Initialize UserModelState if not present
+            if 'user_model_state' not in state:
+                state['user_model_state'] = UserModelState().model_dump()
+
+            logger.info(f"Creating session {session_uuid} for user {user_id}, folder {folder_uuid}")
+
+            # Create session record with validated data
+            try:
+                response: PostgrestAPIResponse = self.supabase.table("sessions").insert({
+                    "id": str(session_uuid),
+                    "folder_id": str(folder_uuid),
+                    "user_id": str(user_uuid),
+                    "context_data": state,
+                    "created_at": datetime.now().isoformat(),
+                    "updated_at": datetime.now().isoformat()
+                }).execute()
+
+                if not response.data:
+                    error_msg = f"Failed to create session record: {response.error.message if response.error else 'Unknown error'}"
+                    logger.error(error_msg)
+                    raise HTTPException(status_code=500, detail=error_msg)
+
+                logger.info(f"Session {session_uuid} created successfully in Supabase.")
+
+                # Return ADK Session object with validated state
+                return Session(
+                    id=str(session_uuid),
+                    app_name=app_name,
+                    user_id=user_id,
+                    state=state,
+                    events=[],
+                    last_update_time=time.time()
+                )
+
+            except Exception as db_error:
+                error_msg = f"Database error during session creation: {db_error}"
+                logger.exception(error_msg)
+                raise HTTPException(status_code=500, detail=error_msg)
+
+        except ValueError as ve:
+            # Re-raise validation errors with clear messages
+            logger.error(f"Validation error during session creation: {ve}")
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as e:
+            # Handle unexpected errors
+            error_msg = f"Unexpected error during session creation: {e}"
+            logger.exception(error_msg)
+            raise HTTPException(status_code=500, detail=error_msg)
+
+    def get_session(
+        self,
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        config: Optional[GetSessionConfig] = None
+    ) -> Optional[Session]:
+        """Gets a session from Supabase."""
+        session_uuid = UUID(session_id)
+        user_uuid = UUID(user_id)
+        logger.debug(f"Attempting to get session {session_uuid} for user {user_uuid}")
+
+        try:
+            # Select all necessary fields for session reconstruction
+            response: PostgrestAPIResponse = self.supabase.table("sessions").select(
+                "context_data, updated_at, folder_id"
+            ).eq("id", str(session_uuid)).eq("user_id", str(user_uuid)).maybe_single().execute()
+
+            if response.data:
+                logger.debug(f"Session {session_uuid} found.")
+                context_data = response.data.get("context_data", {})
+                updated_at_str = response.data.get("updated_at")
+                folder_id = response.data.get("folder_id")
+
+                # Validate required fields
+                if not folder_id:
+                    logger.error(f"Session {session_uuid} missing folder_id.")
+                    return None
+
+                # Ensure context_data has minimum required fields
+                if not isinstance(context_data, dict):
+                    logger.error(f"Session {session_uuid} has invalid context_data type: {type(context_data)}")
+                    return None
+
+                # Ensure folder_id is in context
+                if "folder_id" not in context_data:
+                    context_data["folder_id"] = folder_id
+
+                # Parse timestamp
+                try:
+                    last_update_time = datetime.fromisoformat(updated_at_str).timestamp() if updated_at_str else time.time()
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid timestamp format for session {session_uuid}: {e}. Using current time.")
+                    last_update_time = time.time()
+
+                # Optional: Validate context structure matches TutorContext
+                try:
+                    # This validates the structure but we keep the dict form
+                    _ = TutorContext.model_validate(context_data)
+                    logger.debug(f"Session {session_uuid} context validated successfully.")
+                except Exception as e:
+                    logger.error(f"Session {session_uuid} has invalid context structure: {e}")
+                    # Consider whether to return None or continue with partial data
+                    # For now, continue but log the error
+                    logger.warning("Continuing with potentially invalid context data.")
+
+                # Return ADK Session object
+                return Session(
+                    id=session_id,
+                    app_name=app_name,
+                    user_id=user_id,
+                    state=context_data, # Store validated context dict in state
+                    events=[], # Events not persisted in this simple version
+                    last_update_time=last_update_time
+                )
+            else:
+                logger.warning(f"Session {session_uuid} not found for user {user_uuid}.")
+                return None
+
+        except Exception as e:
+            logger.exception(f"Error fetching session {session_uuid}: {e}")
+            # Don't raise HTTPException here, return None as per BaseSessionService expectation
+            return None
+
+    def list_sessions(
+        self,
+        app_name: str,
+        user_id: str,
+        config: Optional[GetSessionConfig] = None
+    ) -> ListSessionsResponse:
+        """Lists sessions for a user from Supabase."""
+        user_uuid = UUID(user_id)
+        logger.debug(f"Listing sessions for user {user_uuid}")
+        try:
+            # Fetch only necessary fields for listing
+            response: PostgrestAPIResponse = self.supabase.table("sessions").select("id, updated_at").eq("user_id", str(user_uuid)).order("updated_at", desc=True).execute()
+
+            if response.data:
+                sessions = []
+                for item in response.data:
+                    updated_at_str = item.get("updated_at")
+                    last_update_time = datetime.fromisoformat(updated_at_str).timestamp() if updated_at_str else time.time()
+                    sessions.append(Session(
+                        id=item['id'],
+                        app_name=app_name,
+                        user_id=user_id,
+                        state={}, # Don't load full state for listing
+                        events=[],
+                        last_update_time=last_update_time
+                    ))
+                return ListSessionsResponse(sessions=sessions)
+            else:
+                return ListSessionsResponse(sessions=[]) # Return empty list if none found
+        except Exception as e:
+            logger.exception(f"Error listing sessions for user {user_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Database error listing sessions: {e}")
+
+    def delete_session(self, session_id: str) -> None:
+        """Deletes a session and its associated data from Supabase.
+        
+        Args:
+            session_id: String representation of session UUID
+            
+        Raises:
+            HTTPException: If session deletion fails or session not found
+        """
+        try:
+            session_uuid = UUID(session_id)
+            logger.info(f"Attempting to delete session {session_uuid}")
+
+            # First verify session exists and get folder_id
+            response = self.supabase.table("sessions").select("folder_id").eq("id", str(session_uuid)).execute()
+            
+            if not response.data:
+                error_msg = f"Session {session_uuid} not found"
+                logger.warning(error_msg)
+                raise HTTPException(status_code=404, detail=error_msg)
+
+            folder_id = response.data[0].get('folder_id')
+            if not folder_id:
+                logger.error(f"Session {session_uuid} found but missing folder_id")
+                
+            # Delete session record
+            delete_response = self.supabase.table("sessions").delete().eq("id", str(session_uuid)).execute()
+            
+            if not delete_response.data:
+                error_msg = f"Failed to delete session {session_uuid}: {delete_response.error.message if delete_response.error else 'Unknown error'}"
+                logger.error(error_msg)
+                raise HTTPException(status_code=500, detail=error_msg)
+
+            logger.info(f"Successfully deleted session {session_uuid}")
+
+            # Attempt to cleanup associated storage files if folder_id exists
+            if folder_id:
+                try:
+                    storage_path = f"sessions/{folder_id}"
+                    self.supabase.storage.from_("tutoring").remove([storage_path])
+                    logger.info(f"Cleaned up storage for session {session_uuid} at path {storage_path}")
+                except Exception as storage_error:
+                    # Log but don't fail if storage cleanup fails
+                    logger.warning(f"Failed to cleanup storage for session {session_uuid}: {storage_error}")
+
+        except ValueError as ve:
+            # Invalid UUID format
+            error_msg = f"Invalid session ID format: {ve}"
+            logger.error(error_msg)
+            raise HTTPException(status_code=400, detail=error_msg)
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
+        except Exception as e:
+            # Handle unexpected errors
+            error_msg = f"Unexpected error deleting session {session_id}: {e}"
+            logger.exception(error_msg)
+            raise HTTPException(status_code=500, detail=error_msg)
+
+    def append_event(self, session: Session, event: Event) -> Event:
+        """Appends an event's state delta to the session's context_data in Supabase."""
+        session_id = UUID(session.id)
+        user_id = UUID(session.user_id)
+        
+        # ADK Runner handles merging state delta into session.state dictionary internally.
+        # We just need to persist the updated session.state back to Supabase.
+        updated_context_dict = session.state # Get the already updated state dict
+        
+        # Ensure state is JSON serializable (handle UUIDs, datetimes if not done by Pydantic model_dump)
+        logger.debug(f"Persisting updated context for session {session_id}")
+        try:
+            response: PostgrestAPIResponse = self.supabase.table("sessions").update({
+                "context_data": updated_context_dict,
+                "updated_at": datetime.now().isoformat()
+            }).eq("id", str(session_id)).eq("user_id", str(user_id)).execute()
+
+            if response.error:
+                 error_msg = f"Failed to persist event/state for session {session_id}: {response.error}"
+                 logger.error(error_msg)
+                 # Raising might stop the agent run, logging might lead to state divergence.
+                 # For now, log and continue, but this needs careful consideration.
+                 # Return the original event maybe? Or raise a specific exception?
+                 # For now, log the error and return the original event.
+                 return event
+                 
+            # Update the timestamp on the in-memory event object (optional, depends if caller uses it)
+            # Fetching the actual update_time from DB would require another query.
+            # Using current time is a reasonable approximation.
+            event.timestamp = time.time()
+            session.last_update_time = event.timestamp # Also update session timestamp
+            return event # Return the event (potentially updated)
+        except Exception as e:
+            logger.exception(f"Error persisting event/state for session {session_id}: {e}")
+            # Handle error appropriately
+            return event # Return original event on error
+
+    # --- Methods below are not strictly required if events aren't persisted ---
+    # --- Implement if full event history storage in DB is needed           ---
+
+    def list_events(self, session: Session, config: Optional[GetSessionConfig] = None) -> ListEventsResponse:
+        """Lists events for a session (Not implemented for Supabase persistence)."""
+        logger.warning("list_events not implemented for SupabaseSessionService (events not persisted). Returning empty.")
+        return ListEventsResponse(events=[])
+
+    # def close_session(self, *, session: Session): # Optional implementation
+    #     logger.info(f"Closing session {session.id} (no specific action in SupabaseSessionService).")
+    #     pass
 
 class SessionManager:
     """Manages session state for AI Tutor sessions."""

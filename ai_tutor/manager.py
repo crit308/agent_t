@@ -8,7 +8,9 @@ import time
 from collections import defaultdict # Added import
 import re # Added import
 
-from agents import Runner, trace, gen_trace_id, set_tracing_export_api_key, RunConfig
+from google.adk.runners import Runner # Use ADK Runner
+from google.adk.agents import Agent, LLMAgent # Use ADK Agents
+from google.adk.agents.run_config import RunConfig # Use ADK RunConfig
 
 from ai_tutor.tools.file_upload import FileUploadManager, upload_document
 from ai_tutor.agents.planner_agent import create_planner_agent

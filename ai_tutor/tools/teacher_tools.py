@@ -2,11 +2,20 @@ from agents import function_tool
 from agents.run_context import RunContextWrapper
 from typing import List, Dict, Any, Literal, cast
 import uuid
+from __future__ import annotations
+import logging
+from uuid import UUID
 
 # Import necessary response models from api_models.py
 from ai_tutor.api_models import ExplanationResponse, QuestionResponse, MessageResponse # Add others if needed
 from ai_tutor.agents.models import QuizQuestion # If asking structured questions
 from ai_tutor.context import TutorContext # Import TutorContext for type hint
+
+from google.adk.tools import LongRunningFunctionTool, ToolContext
+from google.adk.agents import types as adk_types
+from google.adk.events import Event, EventActions # Import Event classes
+
+logger = logging.getLogger(__name__)
 
 # Tool implementations now return the data structure the API needs
 
@@ -70,3 +79,73 @@ async def ask_checking_question(
 # Add a tool for prompting summary if desired:
 # @function_tool
 # async def prompt_for_summary(ctx: RunContextWrapper[TutorContext], topic: str) -> MessageResponse: ... 
+
+class AskUserQuestionTool(LongRunningFunctionTool):
+    """
+    A long-running tool used by the Teacher Agent to ask the user a question
+    and wait for their answer.
+    """
+    def __init__(self, name: str = "ask_user_question_and_get_answer"):
+        # The actual function logic is within run_async_stream
+        super().__init__(func=self._placeholder_func_for_schema)
+        self.name = name
+        self.description = "Asks the user a multiple-choice question and waits for their answer index."
+        self.input_schema = QuizQuestion # Use QuizQuestion model for input validation
+
+    def _placeholder_func_for_schema(self, question: QuizQuestion) -> Dict[str, Any]:
+        """Placeholder for schema generation. Actual logic is in run_async_stream."""
+        pass
+
+    async def run_async_stream(
+        self, *, args: Dict[str, Any], tool_context: ToolContext
+    ) -> AsyncGenerator[Event, None]:
+        """
+        The core logic: signal pause, wait for resume, return answer.
+        This implementation yields a specific Event to signal the pause.
+        """
+        try:
+            # Validate input using Pydantic
+            question_obj = QuizQuestion.model_validate(args)
+            logger.info(f"AskUserQuestionTool: Asking question - '{question_obj.question[:50]}...'")
+
+            # Create and yield the pause event with question data
+            pause_event = Event(
+                author=tool_context.agent_name,
+                content=adk_types.Content(
+                    role="tool",
+                    parts=[adk_types.Part(text=f"Waiting for user answer to question about: {question_obj.related_section}")]
+                ),
+                actions=EventActions(
+                    custom_action={
+                        "signal": "request_user_input",
+                        "tool_call_id": tool_context.function_call_id,
+                        "question_data": question_obj.model_dump()
+                    }
+                ),
+                invocation_id=tool_context.invocation_id
+            )
+            yield pause_event
+            logger.info(f"AskUserQuestionTool: Yielded pause signal event for tool_call_id {tool_context.function_call_id}.")
+
+            # Execution pauses here until the Runner receives a FunctionResponse event
+            # with matching tool_call_id and feeds it back into this session's execution
+
+        except Exception as e:
+            error_msg = f"Error in AskUserQuestionTool: {e}"
+            logger.exception(error_msg)
+            # Yield an error event
+            error_event = Event(
+                author=tool_context.agent_name,
+                content=adk_types.Content(
+                    role="tool",
+                    parts=[adk_types.Part(text=error_msg)]
+                ),
+                actions=EventActions(
+                    custom_action={"error": error_msg}
+                ),
+                invocation_id=tool_context.invocation_id
+            )
+            yield error_event
+
+# Instantiate the tool for export
+ask_user_question_and_get_answer_tool = AskUserQuestionTool() 
