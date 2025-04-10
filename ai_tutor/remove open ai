@@ -1,0 +1,603 @@
+Okay, let's remove all OpenAI dependencies and rely solely on passing the full document content when needed. This simplifies the architecture significantly for now, removing the need for vector stores and OpenAI-specific tools.
+
+**Plan:**
+
+1.  **Remove OpenAI Dependencies:** Uninstall `openai` and remove it from `requirements.txt`. Remove `agents` (the old SDK) if it's truly no longer needed.
+2.  **Modify File Upload:** Remove the OpenAI file upload and vector store creation logic from `FileUploadManager` and the `/documents` endpoint. We only need to upload to Supabase Storage and store the path.
+3.  **Refactor Analyzer Agent:**
+    *   Remove `FileSearchTool`.
+    *   Use the `get_document_content` tool (that fetches from Supabase) instead.
+    *   Adapt instructions to analyze the provided full text content.
+    *   Change model to ADK/Gemini.
+4.  **Refactor Planner & Teacher Agents:**
+    *   Remove `FileSearchTool`.
+    *   Ensure they use `read_knowledge_base` (from Analyzer) and `get_document_content` (for full text) when needed, passing the correct file paths stored in the context.
+5.  **Cleanup:** Remove unused OpenAI imports (`OpenAIProvider`, etc.) and the `RoundingModelWrapper` if it was specifically for OpenAI precision issues.
+
+---
+
+**Code Diffs:**
+
+**1. Update `requirements.txt`**
+
+```diff
+--- a/ai_tutor/requirements.txt
++++ b/ai_tutor/requirements.txt
+@@ -1,4 +1,4 @@
+-# openai>=1.0.0 # Keep if Analyzer still uses it directly, otherwise remove
++# openai>=1.0.0 # REMOVE
+ pydantic>=2.0.0
+ requests>=2.25.0
+ python-dotenv>=0.19.0
+@@ -10,7 +10,7 @@
+ google-cloud-aiplatform>=1.87.0 # Dependency for ADK
+ sqlalchemy>=2.0 # Dependency for ADK DatabaseSessionService (even if we use custom Supabase one)
+ google-generativeai>=0.5.0 # Explicitly add the dependency for ADK types
+-psycopg2-binary # Or appropriate driver for Supabase connection with SQLAlchemy interface if used by BaseSessionService impl.
++psycopg2-binary # Or appropriate driver if using DatabaseSessionService backend
+ google-cloud-storage # If using GCS ArtifactService (optional)
+ # Optional dependencies needed for certain ADK tools
+-llama-index-core>=0.10.0 # Or appropriate version
+-llama-index-readers-file>=0.1.0 # Or appropriate version
++# llama-index-core>=0.10.0 # REMOVE - No longer using FilesRetrieval
++# llama-index-readers-file>=0.1.0 # REMOVE
+
+
+After saving, run pip install -r requirements.txt and potentially pip uninstall openai.
+
+2. Modify tools/file_upload.py
+
+--- a/ai_tutor/tools/file_upload.py
++++ b/ai_tutor/tools/file_upload.py
+@@ -2,7 +2,7 @@
+ import base64
+ from typing import List, Optional, TYPE_CHECKING
+ import openai
+-from pydantic import BaseModel
++from pydantic import BaseModel, Field
+ from supabase import Client
+ from uuid import UUID
+ 
+@@ -14,9 +14,9 @@
+ class UploadedFile(BaseModel):
+     """Represents an uploaded file that has been processed."""
+     supabase_path: str
+-    file_id: str
++    file_id: Optional[str] = Field(None, description="OpenAI File ID (if used)") # Make optional
+     filename: str
+-    vector_store_id: str
++    vector_store_id: Optional[str] = Field(None, description="OpenAI Vector Store ID (if used)") # Make optional
+ 
+ 
+ class FileUploadManager:
+@@ -25,7 +25,7 @@
+     def __init__(self, supabase: Client, vector_store_id: Optional[str] = None):
+         """Initialize the FileUploadManager."""
+         # API key is handled globally by the SDK setup
+-        self.client = openai.Client() # Relies on globally configured key/client
++        # self.client = openai.Client() # REMOVE OpenAI client dependency
+         self.uploaded_files = []
+         self.vector_store_id = vector_store_id # Initialize with passed ID
+         self.supabase = supabase
+@@ -34,13 +34,12 @@
+     async def upload_and_process_file(self, file_path: str, user_id: UUID, folder_id: UUID, existing_vector_store_id: Optional[str] = None) -> UploadedFile:
+         """
+         Upload a file to Supabase Storage, then to OpenAI, and add to Vector Store.
+-        Uses existing_vector_store_id if provided, otherwise creates a new one.
+-        Updates the corresponding folder record with the vector store ID.
++        REMOVED OpenAI upload and vector store logic. Only uploads to Supabase.
++        Updates the corresponding folder record with a placeholder or removes VS ID field.
+         """
+-        # Use provided existing ID or the manager's stored ID
++        # Vector store logic removed
+         self.vector_store_id = existing_vector_store_id or self.vector_store_id
+ 
+         filename = os.path.basename(file_path)
+         supabase_path = f"{user_id}/{folder_id}/{filename}"
+@@ -55,67 +54,27 @@
+                     file=file,
+                     file_options={"content-type": "application/octet-stream"}
+                 )
+-            print(f"Successfully uploaded {filename} to Supabase Storage at {supabase_path}")
++            logger.info(f"Successfully uploaded {filename} to Supabase Storage at {supabase_path}")
+         except Exception as e:
+             raise Exception(f"Failed to upload {filename} to Supabase Storage: {e}")
+ 
+-        # 2. Upload the file content to OpenAI for assistants
+-        with open(file_path, "rb") as file:
+-            response = self.client.files.create(
+-                file=file,
+-                purpose="assistants"
+-            )
+-            
+-            file_id = response.id
+-            
+-            print(f"Successfully uploaded file content: {filename}, OpenAI File ID: {file_id}")
+-            
+-            # Create a vector store if one doesn't exist *or wasn't provided*
+-            vector_store_created_now = False
+-            if not self.vector_store_id:
+-                # Create a vector store with a meaningful name
+-                vs_response = self.client.vector_stores.create(
+-                    name=f"AI Tutor Vector Store - {filename}"
+-                )
+-                self.vector_store_id = vs_response.id
+-                vector_store_created_now = True
+-                print(f"Created NEW vector store: {self.vector_store_id}")
+-            else:
+-                print(f"Using EXISTING vector store: {self.vector_store_id}")
++        # --- REMOVED OpenAI File Upload and Vector Store Logic ---
+ 
+-            # Add the file to the vector store
+-            self.client.vector_stores.files.create(
+-                vector_store_id=self.vector_store_id,
+-                file_id=file_id
+-            )
+-            
+-            print(f"Added file {file_id} to vector store {self.vector_store_id}")
+-            
+-            # Check status of the file in vector store
+-            files_status = self.client.vector_stores.files.list(
+-                vector_store_id=self.vector_store_id
+-            )
+-            print(f"Vector store files status: {files_status}")
+-            
+-            # Update the folder record with the vector_store_id (if newly created or maybe always to be safe)
+-            try:
+-                update_resp = self.supabase.table("folders").update(
+-                    {"vector_store_id": self.vector_store_id}
+-                ).eq("id", str(folder_id)).eq("user_id", user_id).execute()
+-                if update_resp.data:
+-                    print(f"Updated folder {folder_id} with vector_store_id {self.vector_store_id}")
+-                else: print(f"Warning: Failed to update folder {folder_id} with vector_store_id: {update_resp.error}")
+-            except Exception as upd_e:
+-                print(f"Error updating folder {folder_id} with vector_store_id: {upd_e}")
+-            
+-            # Create and return an uploaded file
+-            uploaded_file = UploadedFile(
+-                supabase_path=supabase_path,
+-                file_id=file_id,
+-                filename=filename,
+-                vector_store_id=self.vector_store_id
+-            )
+-            
+-            self.uploaded_files.append(uploaded_file)
+-            return uploaded_file
++        # Update folder record (optional, remove vector_store_id field if no longer needed)
++        # If keeping the field, maybe store Supabase path or a flag?
++        try:
++            # Option: Remove vector_store_id update or set it to null/placeholder
++            update_data = {"updated_at": datetime.now().isoformat()} # Just update timestamp
++            # update_data = {"vector_store_id": None} # Or set to None
++            update_resp = self.supabase.table("folders").update(update_data).eq("id", str(folder_id)).eq("user_id", user_id).execute()
++            if not update_resp.data:
++                 logger.warning(f"Failed to update folder {folder_id} after Supabase upload: {update_resp.error}")
++        except Exception as upd_e:
++            logger.error(f"Error updating folder {folder_id} after Supabase upload: {upd_e}")
++
++        # Return info about the Supabase upload
++        uploaded_file = UploadedFile(
++            supabase_path=supabase_path,
++            filename=filename,
++            # file_id and vector_store_id are now None
++        )
++        self.uploaded_files.append(uploaded_file)
++        return uploaded_file
+ 
+     def get_vector_store_id(self) -> str:
+         """Get the vector store ID. Returns None if no files have been uploaded."""
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Diff
+IGNORE_WHEN_COPYING_END
+
+3. Refactor routers/tutor.py (/documents endpoint)
+
+--- a/ai_tutor/routers/tutor.py
++++ b/ai_tutor/routers/tutor.py
+@@ -110,7 +110,7 @@
+ 
+     # Upload to OpenAI and add to Vector Store - Modified Logic
+     message = ""
+-    vector_store_id = tutor_context.vector_store_id # Get existing VS ID if any
++    vector_store_id = None # Reset as we are not using OpenAI VS
+     try:
+         for i, temp_path in enumerate(temp_file_paths):
+             # Pass user_id and folder_id to file upload manager
+@@ -119,16 +119,11 @@
+                 file_path=temp_path,
+                 user_id=user.id,
+                 folder_id=folder_id,
+-                existing_vector_store_id=vector_store_id # Pass current VS ID
++                # existing_vector_store_id=vector_store_id # No longer needed
+             )
+-            if not vector_store_id:
+-                vector_store_id = uploaded_file.vector_store_id
+-            message += f"Uploaded {uploaded_filenames[i]} (Supabase: {uploaded_file.supabase_path}, OpenAI ID: {uploaded_file.file_id}). "
++            message += f"Uploaded {uploaded_filenames[i]} to Supabase at {uploaded_file.supabase_path}. "
+ 
+-        if vector_store_id:
+-            # Update context object and save it
+-            tutor_context.vector_store_id = vector_store_id
+-            tutor_context.uploaded_file_paths.extend(uploaded_filenames) # Append new files
++        # Update context with file paths and save
++        if uploaded_filenames:
++            tutor_context.uploaded_file_paths.extend(uploaded_filenames) # Keep track of names
+             await _update_context_in_db(session_id, user.id, tutor_context, supabase)
+-            message += f"Vector Store ID: {vector_store_id}. "
+-        else:
+-            raise HTTPException(status_code=500, detail="Failed to create or retrieve vector store ID.")
++            # message += f"Vector Store ID: {vector_store_id}. " # Remove VS ID message
+ 
+     except Exception as e:
+         logger.log_error("VectorStoreUpload", e)
+@@ -136,12 +131,13 @@
+         for temp_path in temp_file_paths:
+             if os.path.exists(temp_path):
+                 os.remove(temp_path)
+-        raise HTTPException(status_code=500, detail=f"Failed to upload files to OpenAI: {e}")
++        # Update error message
++        raise HTTPException(status_code=500, detail=f"Failed to upload files to Supabase: {e}")
+ 
+     # Trigger analysis synchronously
+     analysis_status = "failed"
+     try:
+-        print(f"Starting synchronous analysis for session {session_id}, vs_id {vector_store_id}")
++        print(f"Starting synchronous analysis for session {session_id}...") # Remove vs_id reference
+         # Create context for analysis call (might be simpler than full TutorContext)
+         # context already fetched via Depends
+         user: User = request.state.user
+         analysis_result: Optional[AnalysisResult] = await analyze_documents(
+-            vector_store_id, # Pass VS ID
++            # vector_store_id, # Analyzer no longer needs VS ID
+             context=tutor_context, # Pass context containing file paths
+             supabase=supabase # Pass supabase client to save KB
+         )
+@@ -163,7 +159,7 @@
+         analysis_status = "failed"
+ 
+     return DocumentUploadResponse(
+-        vector_store_id=vector_store_id,
++        # vector_store_id=vector_store_id, # Remove VS ID from response
+         files_received=uploaded_filenames,
+         analysis_status=analysis_status,
+         message=message
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Diff
+IGNORE_WHEN_COPYING_END
+
+4. Refactor agents/analyzer_agent.py
+
+--- a/ai_tutor/agents/analyzer_agent.py
++++ b/ai_tutor/agents/analyzer_agent.py
+@@ -5,10 +5,12 @@
+ from uuid import UUID
+ from supabase import Client
+ 
+-from agents import Agent, FileSearchTool, Runner, trace, gen_trace_id, set_tracing_export_api_key, RunConfig, ModelProvider
+-from agents.models.openai_provider import OpenAIProvider
++# Use ADK imports
++from google.adk.agents import LlmAgent, BaseAgent
++from google.adk.runners import Runner, RunConfig
++from google.adk.tools import FunctionTool, ToolContext # Keep FunctionTool
++from google.adk.models import Gemini # Use ADK/Gemini model
+ from ai_tutor.agents.utils import RoundingModelWrapper
+-
+ 
+ class FileMetadata(BaseModel):
+     """Metadata for a single file."""
+@@ -70,37 +72,27 @@
+     vector_store_id: str
+ 
+ 
+-def create_analyzer_agent(vector_store_id: str, api_key: str = None):
+-    """Create an analyzer agent with access to the provided vector store."""
++def create_analyzer_agent(api_key: str = None) -> LlmAgent:
++    """Create an analyzer agent that reads full document content."""
+     
+     # If API key is provided, ensure it's set in environment
+-    if api_key:
+-        os.environ["OPENAI_API_KEY"] = api_key
+-    
+-    # Ensure OPENAI_API_KEY is set in the environment
+-    api_key = os.environ.get("OPENAI_API_KEY")
+-    if not api_key:
+-        print("WARNING: OPENAI_API_KEY environment variable is not set for analyzer agent!")
+-    else:
+-        print(f"Using OPENAI_API_KEY from environment for analyzer agent")
++    # ADK uses Google Cloud auth, API key less relevant unless using specific models
+     
+-    # Create a FileSearchTool that can search the vector store containing the uploaded documents
+-    file_search_tool = FileSearchTool(
+-        vector_store_ids=[vector_store_id],
+-        max_num_results=10,  # Increase max results to get more comprehensive analysis
+-        include_search_results=True,
+-    )
++    # --- Define Tool to Get Content ---
++    # Assuming get_document_content tool is defined elsewhere and imported
++    from ai_tutor.tools.orchestrator_tools import get_document_content # Adjust import if needed
+     
+-    print(f"Created FileSearchTool for analyzer agent using vector store: {vector_store_id}")
++    analyzer_tools = [get_document_content]
+     
+     # Instantiate the base model provider and get the base model
+-    provider = OpenAIProvider()
+-    base_model = provider.get_model("o3-mini")
++    # provider = OpenAIProvider() # Remove OpenAI provider
++    # base_model = provider.get_model("o3-mini")
++    model_name = "gemini-1.5-flash" # Use Gemini via ADK
+     
+     # Create the analyzer agent with access to the file search tool
+-    analyzer_agent = Agent(
++    analyzer_agent = LlmAgent( # Use ADK LlmAgent
+         name="Document Analyzer",
+         instructions="""
+         You are an expert document analyzer. Your task is to analyze the documents whose content will be provided by tools.
+@@ -113,20 +105,18 @@
+         4. Key terms and their definitions
+         
+         ANALYSIS PROCESS:
+-        1. Use the file_search tool with broad queries to understand what documents are available
+-        2. Conduct systematic searches for common document metadata fields
+-        3. Extract key concepts by analyzing document content and structure
+-        4. Identify and record vector store reference IDs
+-        5. Extract important terminology and their definitions
+-        6. Organize all findings into a comprehensive analysis
++        1. You will receive the full text content of one or more documents via the `get_document_content` tool results when requested by you or provided in the prompt.
++        2. If not all document content is provided initially, use the `get_document_content` tool, providing the necessary file path (e.g., from the user prompt or context). Request content for each document needed.
++        3. Analyze the FULL TEXT content provided for each document.
++        4. Extract file names (from tool arguments or context), metadata (if found within text), key concepts, and key terms/definitions.
++        5. Organize all findings into a comprehensive analysis.
+         
+-        SEARCH STRATEGY:
+-        - Start with general searches like "document", "overview", "introduction"
+-        - Search for specific metadata terms like "author", "date", "title", "version" 
++        ANALYSIS STRATEGY:
++        - Read through the provided text content for each document.
++        - Look for document headers, introductions, conclusions, summaries, and definition sections.
++        - Identify recurring themes, topics, and specialized vocabulary.
+         - Look for key section headers and topics
+-        - Extract unique identifiers and reference numbers
+         - Search for defined terms, glossary sections, or key terminology with explanations
+-        
+         FORMAT INSTRUCTIONS:
+         - Present your analysis in a clear, structured text format
+         - Include the following sections:
+@@ -135,42 +125,46 @@
+           * FILE METADATA: Any metadata you find for each file
+           * KEY CONCEPTS: List of main topics/concepts found across all documents
+           * CONCEPT DETAILS: Examples or details for each key concept
+-          * KEY TERMS GLOSSARY: List of important terminology with their definitions
+-          * FILE IDS: Any reference IDs you discover
++          * KEY TERMS GLOSSARY: List of important terminology with their definitions extracted from the text
+         
+         DO NOT:
+         - Do not reference vector stores or file IDs unless they are explicitly mentioned *within the document text itself*.
+-        - Do not return incomplete analysis
++        - Do not stop until you have analyzed the content from all relevant documents requested.
+         """,
+-        tools=[file_search_tool],
++        tools=analyzer_tools, # Use the get_document_content tool
+         # No specific output type - will return plain text
+-        model=RoundingModelWrapper(base_model),
++        model=model_name, # Use ADK model name
+     )
+     
+     return analyzer_agent
+ 
+ 
+ async def analyze_documents(vector_store_id: str, api_key: str = None, context=None, supabase: Client = None) -> Optional[AnalysisResult]:
+-    """Analyze documents in the provided vector store.
++    """Analyze documents based on file paths stored in the context.
+     
+     Args:
+-        vector_store_id: ID of the vector store containing documents to analyze
++        # vector_store_id: ID of the vector store containing documents to analyze (REMOVED)
+         api_key: Optional OpenAI API key
+         context: Optional context object with session_id for tracing
+         supabase: Optional Supabase client instance for saving KB.
+         
+     Returns:
+-        An AnalysisResult object containing the text and extracted metadata, or None on failure.
++        An AnalysisResult object containing the analysis text and extracted metadata, or None on failure.
+     """
++    if not context or not hasattr(context, 'uploaded_file_paths') or not context.uploaded_file_paths:
++        logger.error("analyze_documents: No uploaded file paths found in context.")
++        return None
++
++    file_paths_in_storage = context.uploaded_file_paths # Get paths from context
++    if not file_paths_in_storage:
++        logger.warning("analyze_documents: File paths list in context is empty.")
++        return None
++
+     # Create the analyzer agent
+-    agent = create_analyzer_agent(vector_store_id, api_key)
++    # Agent creation no longer needs vector_store_id directly
++    analyzer_agent = create_analyzer_agent() # Removed vs_id and api_key if not needed
+     
+     # Setup RunConfig for tracing
+     run_config = None
+@@ -180,28 +174,22 @@
+             workflow_name="AI Tutor - Document Analysis",
+             group_id=str(context.session_id) # Convert UUID to string
+         )
+-    elif api_key:
+-        # If no context provided but we have API key, create a basic RunConfig
+-        run_config = RunConfig(
+-            workflow_name="AI Tutor - Document Analysis"
+-        )
+     
+-    # Create a prompt that instructs the agent to perform comprehensive analysis
++    # Prompt the agent to use the tool to get content for each file
++    file_list_str = "\n - ".join(file_paths_in_storage)
+     prompt = f"""
+-    Analyze all documents in the vector store thoroughly.
+-    
+-    Search across the entire content of all documents to:
+-    1. Identify all file names and their metadata
+-    2. Extract key concepts, topics, and themes
+-    3. Find and record any vector store reference IDs
+-    4. Extract important terminology and provide clear definitions
++    Please analyze the content of the following documents. Use the `get_document_content` tool for each file path listed below to retrieve its full text content first:
++    - {file_list_str}
+     
+-    Be methodical and comprehensive in your analysis. Start with broad searches 
+-    and then focus on specific areas. Present your findings in a clear, structured format.
+-    
+-    The vector store ID you are analyzing is: {0}
+-    """.format(vector_store_id)
++    After retrieving the content for all files, perform a comprehensive analysis based on your instructions, extracting:
++    - File names (use the paths provided) and any metadata found *within the text*.
++    - Key concepts/topics across all documents.
++    - Key terms and their definitions found *within the text*.
++    
++    Present your combined findings in the specified structured format.
++    """
+     
+     # Run the analyzer agent to perform document analysis
+     result = await Runner.run(
+         agent, 
+         prompt,
+         run_config=run_config,
+-        context=context
++        # context=context # ADK runner uses session_service to get context implicitly via session_id
+     )
+     
+     # Get the text output directly
+@@ -258,7 +246,7 @@
+         key_concepts=key_concepts,
+         key_terms=key_terms,
+         file_names=file_names,
+-        vector_store_id=vector_store_id
++        # vector_store_id=vector_store_id # Remove VS ID if not needed
+     )
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Diff
+IGNORE_WHEN_COPYING_END
+
+5. Refactor agents/planner_agent.py & agents/teacher_agent.py
+
+Remove FileSearchTool imports and usage.
+
+Update instructions to rely on read_knowledge_base and get_document_content tools, providing file paths from context.
+
+(Example diff for planner_agent.py - apply similar logic to teacher_agent.py)
+
+--- a/ai_tutor/agents/planner_agent.py
++++ b/ai_tutor/agents/planner_agent.py
+@@ -4,7 +4,7 @@
+ from uuid import UUID # Keep UUID if used internally
+ from supabase import Client
+ from google.adk.agents import LLMAgent # Use ADK Agent
+-from google.adk.tools import BaseTool, FunctionTool, FilesRetrieval # Use ADK Tools
++from google.adk.tools import BaseTool, FunctionTool # Use ADK Tools
+ from agents.models.openai_provider import OpenAIProvider
+ from agents.run_context import RunContextWrapper
+ 
+@@ -14,8 +14,8 @@
+ # --- Get Supabase client dependency (needed for the tool) ---
+ from ai_tutor.dependencies import get_supabase_client
+ 
+-from google.adk.tools.retrieval import FilesRetrieval # Correct import path
+ # --- Define read_knowledge_base tool locally ---
++# --- Import the common/orchestrator tools ---
+ # --- Import the common/orchestrator tools ---
+ # (Assuming read_knowledge_base and get_document_content are defined elsewhere now)
+ from ai_tutor.tools.orchestrator_tools import read_knowledge_base
+@@ -46,22 +46,13 @@
+ # -----------------------------------------------
+ 
+ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
+-    """Creates a planner agent that determines the next learning focus using ADK."""
++    """Creates a planner agent that determines the next learning focus using ADK, reading full content."""
+ 
+     # --- ADK Tool Setup ---
+-    # Replace FileSearchTool with ADK's retrieval or a custom tool to fetch full content
+-    # Option 1: Custom Tool (Recommended if NOT using RAG)
+-    # @FunctionTool
+-    # async def get_document_content(tool_context: google.adk.tools.ToolContext, file_id: str) -> str:
+-    #    # Implementation using tool_context.state (containing TutorContext)
+-    #    # and Supabase client to download file content based on file_id/path stored in state.
+-    #    pass
+-    # Option 2: FilesRetrieval (If files are local, which they aren't in this setup)
+-    # file_retrieval_tool = FilesRetrieval(...)
+-    # Option 3: Keep using a custom tool that potentially calls OpenAI directly for search (less ideal for full migration)
+-    # For now, we will rely on the read_knowledge_base tool. Add more specific tools if needed.
+-
+     # Include the read_knowledge_base tool
++    # Also add get_document_content if needed
++    # Assuming 'get_document_content' is imported correctly now
++    from ai_tutor.tools.orchestrator_tools import get_document_content # Adjust import if needed
+     planner_tools = [
+         read_knowledge_base,
+         # get_document_content, # Add if implemented and needed
+@@ -69,8 +60,8 @@
+ 
+     # --- ADK Model Setup ---
+     # Instantiate the base model provider and get the base model
+-    provider: OpenAIProvider = OpenAIProvider()
+-    base_model = provider.get_model("gpt-4o")
++    # provider: OpenAIProvider = OpenAIProvider() # Removed
++    model_name = "gemini-1.5-flash" # Use ADK model
+ 
+     # Create the planner agent focusing on identifying the next focus
+     planner_agent = LLMAgent( # Change agent generic type
+@@ -80,14 +71,13 @@
+ 
+         AVAILABLE INFORMATION:
+         - You have a `read_knowledge_base` tool to get the document analysis summary stored in the database.
+-        - You have a `file_search` tool to look up specific details within the source documents (vector store).
+         - The prompt may contain information about the user's current state (`UserModelState` summary).
+-        - You might have a `get_document_content` tool to fetch full text if needed (provide file identifier from KB analysis).
++        - You have a `get_document_content` tool to fetch full text if needed (provide the file path from the context/KB analysis).
+ 
+         YOUR WORKFLOW **MUST** BE:
+         1.  **Read Knowledge Base ONCE:** Call the `read_knowledge_base` tool *exactly one time* at the beginning to get the document analysis summary (key concepts, terms, etc.).
+         2.  **Confirm KB Received & Analyze Summary:** Once you have the Knowledge Base summary from the tool, **DO NOT call `read_knowledge_base` again**. Analyze the KB and any provided user state summary.
+         3.  **Identify Next Focus:** Determine the single most important topic or concept the user should learn next. Consider prerequisites implied by the KB structure and the user's current state (e.g., last completed topic, identified struggles).
+-        4.  **Define Learning Goal:** Formulate a clear, specific learning goal for this focus topic.
+-        5.  **Use `file_search` Sparingly:** If needed to clarify the goal or identify crucial related concepts for the chosen focus topic, use `file_search`.
+-        6.  **Use `get_document_content` Sparingly:** If the KB summary lacks detail for the chosen focus, use this tool with a file identifier found in the KB analysis.
++        4.  **Define Learning Goal:** Formulate a clear, specific learning goal for this focus topic. Use `get_document_content` sparingly if the KB summary lacks sufficient detail to define the goal or identify prerequisites for the chosen topic. Provide the file path found in the KB analysis to the tool.
+ 
+         OUTPUT:
+         - Your output **MUST** be a single, valid JSON object matching the `FocusObjective` schema.
+@@ -104,7 +94,7 @@
+         """,
+         tools=planner_tools,
+         output_schema=FocusObjective, # Use ADK's output_schema
+-        model=RoundingModelWrapper(base_model),
++        model=model_name, # Use ADK model name
+     )
+     
+     return planner_agent
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Diff
+IGNORE_WHEN_COPYING_END
+
+(Apply similar changes to teacher_agent.py: remove FileSearchTool, update instructions to use get_document_content with file paths from context if needed).
+
+6. Cleanup (agents/utils.py, etc.)
+
+Remove the RoundingModelWrapper class from utils.py if it's no longer needed (it was primarily for OpenAI float precision).
+
+Remove any other unused imports related to OpenAI or the old SDK throughout the project.
+
+After applying these changes:
+
+Ensure all dependencies are correct (pip install -r requirements.txt).
+
+Restart Uvicorn.
+
+Test the workflow. The Analyzer, Planner, and Teacher should now function without relying on OpenAI vector stores or file search, instead fetching full content via Supabase when necessary.

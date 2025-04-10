@@ -11,10 +11,14 @@ from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
 # Use TYPE_CHECKING for TutorContext import
 if TYPE_CHECKING:
     from ai_tutor.context import TutorContext # Use the enhanced context
-# Import tool functions (assuming they will exist in a separate file)
+# Import the agent creation functions needed
+from ai_tutor.agents.planner_agent import create_planner_agent
+from ai_tutor.agents.teacher_agent import create_teacher_agent
+# Import the *tools* the orchestrator calls
+# --- Import UTILITY tools ---
 from ai_tutor.tools.orchestrator_tools import (
-    call_quiz_creator_agent,
-    call_quiz_teacher_evaluate,
+    # These are now implemented as AgentTools below
+    # call_planner_agent, call_teacher_agent, call_quiz_creator_agent,
     update_user_model,
     get_user_model_status,
     reflect_on_interaction,
@@ -29,7 +33,8 @@ from ai_tutor.api_models import (
 )
 
 from google.adk.tools.agent_tool import AgentTool # Import AgentTool from its specific module
-from google.adk.agents import LlmAgent # Use ADK Agent
+from google.adk.agents import BaseAgent # Import BaseAgent if needed elsewhere
+from google.adk.agents.llm_agent import LlmAgent # Correct casing
 from google.adk.runners import Runner, RunConfig # Use ADK Runner/Config
 
 def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
@@ -42,19 +47,15 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
     # model_name = "gemini-1.5-pro" # Or another capable model
     model_name = "gemini-1.5-flash" # Use flash for now
     
-    # Create instances of the agents to be wrapped as tools
-    # We need vector_store_id here if the agents need it during creation.
-    # This implies Orchestrator needs access to vs_id, maybe via context/state.
-    # For simplicity, assume it's available or passed differently. A better way
-    # might be to configure tools externally and pass them in.
-    # Placeholder: Assume vs_id is accessible. This needs refinement.
-    placeholder_vs_id = "dummy-vs-id" # Replace with actual mechanism to get vs_id
-    planner_agent_instance = create_planner_agent(placeholder_vs_id)
-    teacher_agent_instance = create_interactive_teacher_agent(placeholder_vs_id)
+    # --- Create Agent Instances for AgentTool ---
+    # For now, create dummy instances; real creation might need context/vs_id
+    # Agent creation no longer needs VS ID directly
+    planner_agent_instance: BaseAgent = create_planner_agent() # Type hint
+    teacher_agent_instance: BaseAgent = create_teacher_agent()
     
     orchestrator_tools = [
-        AgentTool(planner_agent_instance), # Wrap planner agent
-        AgentTool(teacher_agent_instance), # Wrap teacher agent
+        AgentTool(planner_agent_instance, name="focus_planner"), # Wrap planner agent with specific name
+        AgentTool(teacher_agent_instance, name="call_teacher_agent", description="Delegates teaching tasks (leading the interactive lesson for the current objective) to the Teacher Agent."), # Wrap teacher agent
         # Keep utility tools if Orchestrator still uses them directly
         update_user_model,
         get_user_model_status,
@@ -67,11 +68,12 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
         You are the central conductor of an AI tutoring session. Your primary goal is to guide the user towards mastering specific learning objectives identified by the Planner Agent.
 
         CONTEXT:
-        - You operate based on the `current_focus_objective` provided in the `TutorContext`. This objective (topic, goal) is set by the Planner Agent.
-        - If `current_focus_objective` is missing, your FIRST action MUST be to call `call_planner_agent` to get the initial focus.
+        - You access the session state (including `current_focus_objective` and `UserModelState`) via the `ToolContext`.
+        - If `current_focus_objective` is missing in the state, your FIRST action MUST be to call the `call_planner_agent` tool to get the initial focus.
         - You delegate the teaching of the `current_focus_objective` to the `call_teacher_agent` tool.
         - The `call_teacher_agent` tool runs autonomously and returns a `TeacherTurnResult` (indicating objective completion status) when finished.
-        - `reflect_on_interaction` helps you analyze difficulties and adapt your strategy.
+        - You evaluate user answers to checking questions using `call_quiz_teacher_evaluate`.
+        - The `reflect_on_interaction` tool helps analyze difficulties if the Teacher tool reports failure.
         - User's last input/action is provided in the prompt.
 
         **Core Responsibilities:**
@@ -80,9 +82,9 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
         3.  **Process Teacher Result:** The `call_teacher_agent` tool will run until the objective is complete or failed. You will receive its final `TeacherTurnResult`.
         4.  **Update State:** Based on `TeacherTurnResult`, update the overall session state using `update_user_model` (e.g., mark concepts as mastered/struggled based on teacher's summary).
         5.  **Loop:**
-            *   If the Teacher reported success (`objective_complete`), call `call_planner_agent` again to get the *next* focus objective. Store it. -> END TURN.
-            *   If the Planner indicates no more objectives, the session is complete. Respond with a concluding message. -> END TURN.
-            *   If the Teacher reported failure (`objective_failed`), decide how to proceed. Maybe call `reflect_on_interaction` or try the Planner again for a different approach, or end the session. -> END TURN.
+            *   If the Teacher reported success (`objective_complete`), call the `call_planner_agent` tool again to get the *next* focus objective. Store it in state. -> END TURN.
+            *   If the Planner indicates no more objectives (e.g., returns a specific signal or empty objective), the session is complete. Respond with a concluding message. -> END TURN.
+            *   If the Teacher reported failure (`objective_failed`), decide how to proceed. Maybe call `reflect_on_interaction` or try the `call_planner_agent` again for a different approach, or end the session. -> END TURN.
 
         CORE WORKFLOW:
         1. Check session state for `current_focus_objective`.

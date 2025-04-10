@@ -81,118 +81,96 @@ class MiniQuizLogData(BaseModel):
 
 # --- Endpoints ---
 
-@router.post(
-    "/sessions/{session_id}/documents",
-    response_model=DocumentUploadResponse,
-    summary="Upload Documents and Trigger Analysis",
-    tags=["Tutoring Workflow"]
-)
-async def upload_session_documents(
-    session_id: UUID, # Expect UUID
-    request: Request, # Get request object directly
-    files: List[UploadFile] = File(...),
-    supabase: Client = Depends(get_supabase_client),
-    tutor_context: TutorContext = Depends(get_tutor_context) # Fetch current context
-):
+@router.post("/documents", response_model=DocumentUploadResponse)
+async def upload_documents(
+    request: Request,
+    files: List[UploadFile],
+    folder_id: UUID,
+    session_id: UUID,
+    background_tasks: BackgroundTasks,
+    supabase: Client = Depends(get_supabase_client)
+) -> DocumentUploadResponse:
     """
-    Uploads one or more documents to the specified session.
-    Stores files temporarily, uploads them to Supabase Storage & OpenAI, adds to vector store,
-    and synchronously triggers document analysis.
+    Upload documents to Supabase Storage and trigger analysis.
     """
-    user: User = request.state.user # Get user from request state populated by verify_token dependency
-    logger = get_session_logger(session_id)
-    folder_id = tutor_context.folder_id
-    if not folder_id:
-        logger.log_error("UploadError", "Session context is missing folder_id.")
-        raise HTTPException(status_code=400, detail="Session context is missing folder information.")
-    file_upload_manager = FileUploadManager(supabase) # Pass Supabase client
-    uploaded_filenames = []
+    # Get user from request state
+    user: User = request.state.user
+    if not user:
+        raise HTTPException(status_code=401, detail="User not authenticated")
+
+    # Get or create tutor context
+    tutor_context = await _get_or_create_context(session_id, user.id, supabase)
+    
+    # Create temporary files and upload
     temp_file_paths = []
-    vector_store_id = tutor_context.vector_store_id
-    existing_files = tutor_context.uploaded_file_paths
-
-    for file in files:
-        filename = file.filename
-        temp_file_path = os.path.join(TEMP_UPLOAD_DIR, f"{session_id}_{filename}")
-        try:
-            with open(temp_file_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-            temp_file_paths.append(temp_file_path)
-            uploaded_filenames.append(filename)
-        except Exception as e:
-            logger.log_error("FileUpload", e)
-            raise HTTPException(status_code=500, detail=f"Failed to save file {filename}: {e}")
-        finally:
-            file.file.close()
-
-    if not temp_file_paths:
-        raise HTTPException(status_code=400, detail="No files were successfully saved.")
-
-    # Upload to OpenAI and add to Vector Store
+    uploaded_filenames = []
     message = ""
+
     try:
-        for i, temp_path in enumerate(temp_file_paths):
-            # Pass user_id and folder_id to file upload manager
-            uploaded_file = await file_upload_manager.upload_and_process_file(
-                file_path=temp_path,
-                user_id=user.id,
-                folder_id=folder_id,
-                existing_vector_store_id=vector_store_id # Pass current VS ID
-            )
-            if not vector_store_id:
-                vector_store_id = uploaded_file.vector_store_id
-            message += f"Uploaded {uploaded_filenames[i]} (Supabase: {uploaded_file.supabase_path}, OpenAI ID: {uploaded_file.file_id}). "
+        # Save uploaded files temporarily
+        for file in files:
+            temp_path = f"/tmp/{file.filename}"
+            with open(temp_path, "wb") as temp_file:
+                content = await file.read()
+                temp_file.write(content)
+            temp_file_paths.append(temp_path)
+            uploaded_filenames.append(file.filename)
 
-        if vector_store_id:
-            # Update context object and save it
-            tutor_context.vector_store_id = vector_store_id
-            tutor_context.uploaded_file_paths.extend(uploaded_filenames) # Append new files
-            await _update_context_in_db(session_id, user.id, tutor_context, supabase)
-            message += f"Vector Store ID: {vector_store_id}. "
-        else:
-            raise HTTPException(status_code=500, detail="Failed to create or retrieve vector store ID.")
+        # Upload to Supabase Storage
+        file_upload_manager = FileUploadManager(supabase=supabase)
+        
+        try:
+            for temp_path in temp_file_paths:
+                uploaded_file = await file_upload_manager.upload_and_process_file(
+                    file_path=temp_path,
+                    user_id=user.id,
+                    folder_id=folder_id
+                )
+                message += f"Uploaded {uploaded_file.filename} to Supabase at {uploaded_file.supabase_path}. "
 
-    except Exception as e:
-        logger.log_error("VectorStoreUpload", e)
-        # Clean up any temp files on failure
+            # Update context with file paths and save
+            if uploaded_filenames:
+                tutor_context.uploaded_file_paths.extend(uploaded_filenames)
+                await _update_context_in_db(session_id, user.id, tutor_context, supabase)
+
+        except Exception as e:
+            logger.error("FileUpload", e)
+            raise HTTPException(status_code=500, detail=f"Failed to upload files to Supabase: {e}")
+
+    finally:
+        # Cleanup temporary files
         for temp_path in temp_file_paths:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
-        raise HTTPException(status_code=500, detail=f"Failed to upload files to OpenAI: {e}")
 
     # Trigger analysis synchronously
     analysis_status = "failed"
     try:
-        print(f"Starting synchronous analysis for session {session_id}, vs_id {vector_store_id}")
-        # Create context for analysis call (might be simpler than full TutorContext)
-        # context already fetched via Depends
-        user: User = request.state.user
-
+        logger.info(f"Starting synchronous analysis for session {session_id}")
         analysis_result: Optional[AnalysisResult] = await analyze_documents(
-            vector_store_id,
             context=tutor_context,
-            supabase=supabase # Pass supabase client to save KB
+            supabase=supabase
         )
-
+        
         if analysis_result:
+            # Store analysis result in knowledge base
+            kb_id = await save_to_knowledge_base(
+                session_id=session_id,
+                user_id=user.id,
+                analysis_result=analysis_result,
+                supabase=supabase
+            )
             analysis_status = "completed"
-            # Store analysis result (as dict or object) - Keep storing the object
-            tutor_context.analysis_result = analysis_result # Store the Pydantic object
-            await _update_context_in_db(session_id, user.id, tutor_context, supabase)
-            message += "Analysis completed."
-
+            message += f"Analysis completed and saved to knowledge base {kb_id}."
         else:
-            message += "Analysis finished but produced no result."
-            analysis_status = "completed_empty" # Or "failed" depending on expectation
-
+            message += "Analysis failed or returned no results."
+            
     except Exception as e:
-        logger.log_error("AnalysisTrigger", e)
-        message += f"Analysis trigger failed: {e}"
+        logger.error("Analysis", e)
+        message += f"Analysis failed: {str(e)}"
         analysis_status = "failed"
-        # Don't raise HTTPException here, report status in response
 
     return DocumentUploadResponse(
-        vector_store_id=vector_store_id,
         files_received=uploaded_filenames,
         analysis_status=analysis_status,
         message=message
@@ -599,7 +577,8 @@ async def _update_context_in_db(session_id: UUID, user_id: UUID, context: TutorC
         response: PostgrestAPIResponse = supabase.table("sessions").update(
             {"context_data": context_dict}
         ).eq("id", str(session_id)).eq("user_id", str(user_id)).execute()
-        if response.error:
+        # Check for data presence instead of response.error for success
+        if not response.data:
             print(f"Error updating context in DB for session {session_id}: {response.error}")
             return False
         return True

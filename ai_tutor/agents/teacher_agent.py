@@ -1,93 +1,189 @@
 from __future__ import annotations
+from typing import Optional, List, Dict
+from uuid import UUID
+from pydantic import BaseModel, Field
+from supabase import Client
+import logging
 
-import os
-import json
+from google.adk.agents import LlmAgent
+from google.adk.runners import Runner, RunConfig
+from google.adk.tools import FunctionTool, ToolContext
 
-from google.adk.agents import LlmAgent # Use ADK Agent
-from google.adk.tools import BaseTool, FunctionTool, FilesRetrieval, ToolContext, LongRunningFunctionTool # ADK Tools
-from google.adk.agents import types as adk_types # ADK types
+from ai_tutor.agents.planner_agent import FocusObjective
+from ai_tutor.context import TutorContext
 
-from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
-from agents.run_context import RunContextWrapper
+logger = logging.getLogger(__name__)
 
-from ai_tutor.agents.models import FocusObjective, QuizQuestion, ExplanationResult, TeacherTurnResult # Input/Output models
-from typing import List, Callable, Optional, Any, Dict, TYPE_CHECKING, Union, AsyncGenerator
-from ai_tutor.agents.utils import RoundingModelWrapper # Keep if rounding is needed for Gemini
+class TeachingResponse(BaseModel):
+    """Structured response from the teaching agent."""
+    explanation: str
+    examples: List[str] = Field(default_factory=list)
+    practice_exercises: List[str] = Field(default_factory=list)
+    additional_resources: List[str] = Field(default_factory=list)
+    key_points: List[str] = Field(default_factory=list)
+    next_steps: List[str] = Field(default_factory=list)
 
-# Import the new tools
-# from ai_tutor.tools.teacher_tools import ask_user_question_and_get_answer # Import the long-running tool
+def create_teacher_agent() -> LlmAgent:
+    """Creates a teacher agent that explains concepts using ADK."""
 
-if TYPE_CHECKING:
-    from ai_tutor.context import TutorContext
+    # Import the common tools
+    from ai_tutor.tools.orchestrator_tools import read_knowledge_base, get_document_content
 
-
-# Define the output type for the Teacher Agent (after completing an objective)
-# Output type for the Agent when called *as a tool* by Orchestrator
-TeacherAgentToolOutput = TeacherTurnResult
-
-def create_interactive_teacher_agent(vector_store_id: str) -> LlmAgent:
-    """Creates an INTERACTIVE Teacher Agent."""
-
-    # provider: OpenAIProvider = OpenAIProvider() # Use ADK models
-    # Maybe use a slightly more capable model for interactive logic
-    # base_model = provider.get_model("gpt-4o-2024-08-06")
-    model_name = "gemini-1.5-flash" # Or other ADK supported model
-
-    # ADK Tool Setup - Similar to Planner, replace FileSearchTool if needed
-    file_search_tool = BaseTool(
-        name="file_search",
-        description="Use this tool to search for documents related to a topic",
-        func=FilesRetrieval(vector_store_ids=[vector_store_id], max_num_results=3)
-    )
-
-    # Define the tools the *teacher itself* can use
-    # Crucially, add the custom long-running tool
     teacher_tools = [
-        file_search_tool, # Or replacement like get_document_content
-        ask_user_question_and_get_answer, # The interactive tool
-        # Potentially add call_quiz_creator_agent if teacher generates its own checks
+        read_knowledge_base,
+        get_document_content
     ]
 
-    # Use LLMAgent, define input/output schemas
+    # Use Gemini model via ADK
+    model_name = "gemini-1.5-pro"  # Using Pro for better teaching capabilities
+
+    # Create the teacher agent
     teacher_agent = LlmAgent(
-        name="InteractiveLessonTeacher",
-        # Instructions now describe the internal autonomous loop
+        name="Expert Teacher",
         instructions="""
-        You are an autonomous AI Teacher responsible for guiding a student through a specific `FocusObjective` provided as input.
+        You are an expert teacher. Your task is to explain concepts clearly and effectively, 
+        providing examples and practice exercises based on the focus objective and available content.
 
-        YOUR CONTEXT:
-        - You receive a `FocusObjective` detailing the `topic`, `learning_goal`, and `relevant_concepts`.
-        - You maintain your own internal state/progress for this objective during your execution loop.
-        - You use `file_search` (or similar) to get content details if needed.
-        - You use `ask_user_question_and_get_answer` to pause your execution, ask the user a question, and wait for their answer.
+        AVAILABLE INFORMATION:
+        - You have a `read_knowledge_base` tool to get the document analysis summary.
+        - You have a `get_document_content` tool to fetch full text if needed (provide file path from KB).
+        - The prompt will contain a FocusObjective with the topic to teach.
+        - The prompt may contain information about the user's current understanding.
 
-        YOUR TASK:
-        1.  **Plan Micro-steps:** Based on the `FocusObjective`, plan a sequence of micro-steps (e.g., Explain concept -> Provide Example -> Ask Check Question -> Explain related concept -> Ask Check Question).
-        2.  **Execute Loop:** Iterate through your micro-plan:
-            *   **Explain:** Generate a concise explanation for the current micro-step (using `file_search` if needed). Store this explanation.
-            *   **Check Understanding:** Generate a relevant `QuizQuestion` (potentially using `call_quiz_creator_agent` tool if available). Call the `ask_user_question_and_get_answer` tool, passing the question data. **Execution Pauses Here.**
-            *   **Resume & Evaluate:** When execution resumes, you will receive the user's answer index from the `ask_user_question_and_get_answer` tool result. Evaluate if the answer is correct.
-            *   **Adapt:** Based on the evaluation:
-                *   Correct: Move to the next micro-step. Increase internal mastery estimate.
-                *   Incorrect: Re-explain differently, provide another example, or ask a simpler question. Decrease internal mastery estimate.
-        3.  **Objective Completion:** Continue the loop until your internal assessment indicates the `learning_goal` of the `FocusObjective` is met OR you determine the user is stuck and cannot proceed.
-        4.  **Return Final Result:** Output a single `TeacherTurnResult` JSON object indicating `objective_complete` or `objective_failed` along with a summary.
+        YOUR WORKFLOW **MUST** BE:
+        1. **Read Knowledge Base ONCE:** Call the `read_knowledge_base` tool *exactly one time* at the beginning 
+           to get the document analysis and available content.
+        2. **Get Detailed Content:** If the KB summary doesn't have enough detail about the focus topic, 
+           use `get_document_content` to fetch relevant sections (use file paths from KB).
+        3. **Prepare Teaching Material:**
+           - Create a clear, structured explanation of the topic
+           - Provide relevant examples from the content
+           - Design practice exercises
+           - Identify additional resources
+           - Highlight key points to remember
+           - Suggest next steps for learning
 
-        **CRITICAL:**
-        - Manage your own internal loop to achieve the `FocusObjective`.
-        - Use the `ask_user_question_and_get_answer` tool when you need user input.
-        - Your final output MUST be a single `TeacherTurnResult` JSON object when the objective is finished (or failed).
+        TEACHING PRINCIPLES:
+        - Start with the basics and build up gradually
+        - Use clear, concise language
+        - Provide concrete examples
+        - Include practical exercises
+        - Relate concepts to real-world applications
+        - Break down complex ideas into manageable parts
+
+        OUTPUT FORMAT:
+        Your output **MUST** be a valid JSON object matching the TeachingResponse schema with these fields:
+        - explanation: Clear, structured explanation of the topic
+        - examples: List of relevant examples
+        - practice_exercises: List of exercises for practice
+        - additional_resources: List of suggested resources
+        - key_points: List of important points to remember
+        - next_steps: List of suggested next steps
+
+        EXAMPLE OUTPUT:
+        {
+            "explanation": "Variables in programming are like containers that store data...",
+            "examples": [
+                "Example 1: Declaring a variable - `let name = 'John'`",
+                "Example 2: Changing variable value - `name = 'Jane'`"
+            ],
+            "practice_exercises": [
+                "1. Declare three different variables with different data types",
+                "2. Write code to swap values between two variables"
+            ],
+            "additional_resources": [
+                "MDN Web Docs - Variables and Scoping",
+                "Practice exercises in Chapter 2"
+            ],
+            "key_points": [
+                "Variables must be declared before use",
+                "Variable names are case-sensitive",
+                "Use meaningful variable names"
+            ],
+            "next_steps": [
+                "Practice with different data types",
+                "Learn about variable scope",
+                "Explore const vs let declarations"
+            ]
+        }
         """,
         tools=teacher_tools,
-        input_schema=FocusObjective, # Define input schema
-        output_schema=TeacherTurnResult, # Define output schema
-        model=model_name, # Use model name string for ADK
-        # No handoffs needed FROM the teacher in this model
+        output_schema=TeachingResponse,
+        model=model_name
     )
+    
     return teacher_agent
 
-# Removed old functions:
-# - lesson_content_handoff_filter
-# - create_teacher_agent
-# - create_teacher_agent_without_handoffs
-# - generate_lesson_content 
+async def teach_topic(focus: FocusObjective, context=None, supabase: Client = None) -> Optional[TeachingResponse]:
+    """
+    Create a teaching response for the given focus objective.
+    
+    Args:
+        focus: FocusObjective containing the topic to teach
+        context: Context object with session_id and user state
+        supabase: Optional Supabase client instance
+        
+    Returns:
+        A TeachingResponse object containing the teaching material, or None on failure.
+    """
+    if not focus or not context or not hasattr(context, 'session_id'):
+        logger.error("teach_topic: Invalid focus objective or context")
+        return None
+
+    # Create the teacher agent
+    teacher_agent = create_teacher_agent()
+    
+    # Setup RunConfig for tracing
+    run_config = RunConfig(
+        workflow_name="AI Tutor - Teaching",
+        group_id=str(context.session_id)
+    )
+    
+    # Create prompt for the agent
+    user_state = getattr(context, 'user_state', None)
+    user_state_str = f"\nCurrent user understanding: {user_state}" if user_state else ""
+    
+    # Format the focus objective details
+    prerequisites_str = "\n- " + "\n- ".join(focus.prerequisites) if focus.prerequisites else "None"
+    goals_str = "\n- " + "\n- ".join(focus.learning_goals)
+    
+    prompt = f"""
+    Please create a comprehensive teaching response for the following topic:
+
+    TOPIC: {focus.topic}
+    DESCRIPTION: {focus.description}
+    PREREQUISITES: {prerequisites_str}
+    LEARNING GOALS: {goals_str}
+    {user_state_str}
+
+    First, use the `read_knowledge_base` tool to access the document analysis.
+    Then, if needed, use `get_document_content` to get more detailed information about this topic.
+
+    Create a structured teaching response that:
+    1. Explains the topic clearly and thoroughly
+    2. Provides relevant examples from the content
+    3. Includes practical exercises
+    4. Suggests additional resources
+    5. Highlights key points
+    6. Recommends next steps
+
+    Return your response in the TeachingResponse format.
+    """
+    
+    try:
+        result = await Runner.run(
+            teacher_agent,
+            prompt,
+            run_config=run_config
+        )
+        
+        if not result or not result.output:
+            logger.error("teach_topic: No output from teacher")
+            return None
+            
+        # The output should already be a TeachingResponse thanks to output_schema
+        return result.output
+        
+    except Exception as e:
+        logger.error(f"teach_topic: Error during teaching: {str(e)}")
+        return None 
