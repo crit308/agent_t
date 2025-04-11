@@ -101,7 +101,7 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
         - Ensure your final output strictly adheres to the required JSON format (`TutorInteractionResponse`).
         """,
         tools=orchestrator_tools,
-        # output_schema=TutorInteractionResponse, # REMOVE output_schema - cannot be Union and conflicts with tools
+        # output_schema=TutorInteractionResponse, # Orchestrator's final output is usually implicit or a simple message
         model=model_identifier, # Correct keyword is 'model'
     )
 

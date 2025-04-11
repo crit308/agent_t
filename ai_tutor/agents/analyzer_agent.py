@@ -1,6 +1,7 @@
+from __future__ import annotations
 import os
 import logging
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel
 from uuid import UUID
 from supabase import Client
@@ -9,12 +10,15 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.runners import Runner, RunConfig
 from google.adk.tools import FunctionTool, ToolContext
 from google.adk.models import Gemini # Use ADK/Gemini model
-#from google.adk.agents import types as adk_types # Try importing ADK's types module
 # Import Content/Part directly from google.generativeai
-import google.generativeai as genai
-#from google.generativeai import types as adk_types
-# Import types from google.adk.agents
-from google.adk.agents import types as adk_types # Correct import path?
+# from google.ai.generativelanguage import Content, Part
+# Import Content/Part from google.adk.events
+# from google.adk.events import Content, Part # Assume they might be here
+# Import types directly from google.adk (if they are re-exported there)
+# import google.adk as adk # KEEP? Seems unused
+# from google.cloud.aiplatform import FunctionResponse # REMOVE
+
+from google.generativeai.types import Content, Part # Correct import path
 
 logger = logging.getLogger(__name__)
 
@@ -130,12 +134,7 @@ async def analyze_documents(context=None, supabase: Client = None) -> Optional[A
     analyzer_agent = create_analyzer_agent()
     
     # Setup RunConfig for tracing
-    run_config = None
-    if context and hasattr(context, 'session_id'):
-        # Create RunConfig with valid ADK fields if needed, or pass None
-        run_config = RunConfig(
-            # Example: max_llm_calls=10 # Add valid RunConfig fields here if needed
-        )
+    run_config = RunConfig() # Use empty config for basic runs
 
     # Create a prompt that instructs the agent to perform comprehensive analysis
     file_list_str = "\n - ".join(file_paths)
@@ -177,10 +176,12 @@ async def analyze_documents(context=None, supabase: Client = None) -> Optional[A
     async for event in adk_runner.run_async(
         user_id=str(context.user_id), # Assuming context has user_id
         session_id=str(context.session_id), # Assuming context has session_id
-        # Use the types directly from the imported genai module
-        new_message=adk_types.Content(role="user", parts=[adk_types.Part(text=prompt)]),
+        # Use dictionary representation instead of Content/Part objects
+        new_message={
+            "role": "user",
+            "parts": [{"text": prompt}]
+        },
         run_config=run_config,
-        # context=context # ADK runner gets context via session_service
     ):
         last_event = event # Capture the last event
     

@@ -20,10 +20,10 @@ from ai_tutor.context import UserModelState
 from ai_tutor.agents.models import LessonPlan, LessonContent, Quiz, QuizFeedback, SessionAnalysis
 from ai_tutor.agents.analyzer_agent import AnalysisResult # Import AnalysisResult from its correct location
 
-# Import Event from the correct ADK submodule
-# Import SessionService classes from the correct ADK submodule
+# Import ADK SessionService classes
 from google.adk.sessions.base_session_service import BaseSessionService, Session, ListSessionsResponse, GetSessionConfig, ListEventsResponse # Import SessionService classes
-from google.adk.events import Event # Import Event from google.adk.events
+# Import ADK Event class
+from google.adk.events import Event
 
 if TYPE_CHECKING:
     from supabase import Client
@@ -286,24 +286,24 @@ class SupabaseSessionService(BaseSessionService):
         session_id = UUID(session.id)
         user_id = UUID(session.user_id)
         
-        # ADK Runner handles merging state delta into session.state dictionary internally.
+        # ADK Runner should have already merged event.actions.state_delta
+        # into the session.state dictionary before calling this method.
         # We just need to persist the updated session.state back to Supabase.
         updated_context_dict = session.state # Get the already updated state dict
         
-        # Ensure state is JSON serializable (handle UUIDs, datetimes if not done by Pydantic model_dump)
+        # Ensure state is JSON serializable (Pydantic's model_dump in get/create helps)
         logger.debug(f"Persisting updated context for session {session_id}")
-        try:
+        try: # Ensure `updated_at` trigger is working correctly in Supabase
             response: PostgrestAPIResponse = self.supabase.table("sessions").update({
                 "context_data": updated_context_dict,
-                "updated_at": datetime.now().isoformat()
+                "updated_at": datetime.now().isoformat() # Update timestamp explicitly
             }).eq("id", str(session_id)).eq("user_id", str(user_id)).execute()
 
             if response.error:
                  error_msg = f"Failed to persist event/state for session {session_id}: {response.error}"
                  logger.error(error_msg)
+                 # Log error but return original event as per BaseSessionService expectation
                  # Raising might stop the agent run, logging might lead to state divergence.
-                 # For now, log and continue, but this needs careful consideration.
-                 # Return the original event maybe? Or raise a specific exception?
                  # For now, log the error and return the original event.
                  return event
                  

@@ -4,6 +4,7 @@ from fastapi import Depends, HTTPException, status
 import os
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from contextlib import asynccontextmanager # Import asynccontextmanager
 
 # Load environment variables from .env file
 load_dotenv()
@@ -23,22 +24,34 @@ from ai_tutor.agents.models import (
 )
 from ai_tutor.agents.analyzer_agent import AnalysisResult
 from ai_tutor.api_models import TutorInteractionResponse, InteractionResponseData # Add InteractionResponseData
+from ai_tutor.session_manager import SupabaseSessionService # Needed for Runner init
 
-# --- SDK Configuration ---
-api_key = os.environ.get("OPENAI_API_KEY")
-if not api_key:
-    print("WARNING: OPENAI_API_KEY environment variable not set. Some functionalities might be limited.")
-    # Decide if the app should exit or continue with limited functionality
-    # exit(1) # Or raise an exception
-else:
-    # set_default_openai_key(api_key) # ADK uses Google Cloud auth by default
-    # set_default_openai_api("responses")
-    # Set Google Cloud Credentials (e.g., via environment variable GOOGLE_APPLICATION_CREDENTIALS)
-    # Or ensure `gcloud auth application-default login` has been run.
-    print("Google ADK configured. Ensure Google Cloud authentication is set up.")
+# --- SDK Configuration --- REMOVED OpenAI specific block
+# api_key = os.environ.get("OPENAI_API_KEY")
+# if not api_key:
+#     print("WARNING: OPENAI_API_KEY environment variable not set. Some functionalities might be limited.")
+#     # Decide if the app should exit or continue with limited functionality
+#     # exit(1) # Or raise an exception
+# else:
+#     # set_default_openai_key(api_key) # ADK uses Google Cloud auth by default
+#     # set_default_openai_api("responses")
+#     # Set Google Cloud Credentials (e.g., via environment variable GOOGLE_APPLICATION_CREDENTIALS)
+#     # Or ensure `gcloud auth application-default login` has been run.
+#     print("Google ADK configured. Ensure Google Cloud authentication is set up.")
 
 # --- Supabase Client Initialization is now handled in dependencies.py ---
 # You might still want a check here to ensure it *was* initialized successfully if critical
+
+# --- FastAPI Lifespan for Runner Management ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # On startup: Initialize the runner cache
+    app.state.adk_runners = {} # Dictionary to hold Runner instances per session_id
+    print("Initialized ADK Runner cache on app startup.")
+    yield
+    # On shutdown: Clean up runners if needed (optional)
+    app.state.adk_runners.clear()
+    print("Cleared ADK Runner cache on app shutdown.")
 
 # --- Rebuild Pydantic models after all imports ---
 # Ensure all models potentially using forward refs are rebuilt
@@ -54,9 +67,10 @@ FocusObjective.model_rebuild() # Rebuild the newly added model if it uses forwar
 TutorContext.model_rebuild() # Now this should work
 
 app = FastAPI(
-    title="AI Tutor API",
+    title="AI Tutor API (ADK Backend)",
     description="API for generating lessons and quizzes using AI agents.",
     version="1.0.0",
+    lifespan=lifespan # Add the lifespan context manager
 )
 
 # --- CORS Configuration ---

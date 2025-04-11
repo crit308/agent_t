@@ -6,13 +6,15 @@ from uuid import UUID
 
 # Import necessary response models from api_models.py
 from ai_tutor.api_models import ExplanationResponse, QuestionResponse, MessageResponse # Add others if needed
-from ai_tutor.agents.models import QuizQuestion # If asking structured questions
+# from ai_tutor.agents.models import QuizQuestion # If asking structured questions
+from ..agents.models import QuizQuestion # Use relative import
 from ai_tutor.context import TutorContext # Import TutorContext for type hint
 
 from google.adk.tools import LongRunningFunctionTool, ToolContext, FunctionTool # Import FunctionTool
-# Import google.generativeai directly
-from google.adk.agents import types as adk_types # Import types from ADK
-from google.adk.events import Event, EventActions # Import Event classes
+# Import ADK Event and Content/Part from google.adk.events
+from google.adk.events import Event, EventActions # Keep Event, EventActions
+from google.generativeai.types import Content, Part # Correct import path
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -84,67 +86,57 @@ class AskUserQuestionTool(LongRunningFunctionTool):
     A long-running tool used by the Teacher Agent to ask the user a question
     and wait for their answer.
     """
-    def __init__(self, name: str = "ask_user_question_and_get_answer"):
-        # The actual function logic is within run_async_stream
-        super().__init__(func=self._placeholder_func_for_schema)
-        self.name = name
+    def __init__(self):
+        # The actual function logic is within 'run'
+        super().__init__(func=self.run_tool_logic)
+        self.name = "ask_user_question_and_get_answer"
         self.description = "Asks the user a multiple-choice question and waits for their answer index."
-        self.input_schema = QuizQuestion # Use QuizQuestion model for input validation
+        # Define the input schema based on QuizQuestion (simplified for tool input)
+        self.input_schema = QuizQuestion # Or a subset Pydantic model if preferred
 
-    def _placeholder_func_for_schema(self, question: QuizQuestion) -> Dict[str, Any]:
-        """Placeholder for schema generation. Actual logic is in run_async_stream."""
-        pass
-
-    async def run_async_stream(
-        self, *, args: Dict[str, Any], tool_context: ToolContext
-    ) -> AsyncGenerator[Event, None]:
+    async def run_tool_logic(self, question_data: Dict[str, Any], tool_context: ToolContext):
         """
         The core logic: signal pause, wait for resume, return answer.
-        This implementation yields a specific Event to signal the pause.
         """
         try:
-            # Validate input using Pydantic
-            question_obj = QuizQuestion.model_validate(args)
+            # Validate input using Pydantic (optional but recommended)
+            question_obj = QuizQuestion.model_validate(question_data)
             logger.info(f"AskUserQuestionTool: Asking question - '{question_obj.question[:50]}...'")
 
             # Create and yield the pause event with question data
             pause_event = Event(
                 author=tool_context.agent_name,
-                content=adk_types.Content(
+                content=Content(
                     role="tool",
-                    parts=[adk_types.Part(text=f"Waiting for user answer to question about: {question_obj.related_section}")]
+                    parts=[Part(text=f"Waiting for user answer to question about: {question_obj.related_section}")]
                 ),
-                actions=EventActions(
-                    custom_action={
-                        "signal": "request_user_input",
-                        "tool_call_id": tool_context.function_call_id,
-                        "question_data": question_obj.model_dump()
-                    }
-                ),
-                invocation_id=tool_context.invocation_id
+                action=EventActions.PAUSE,
+                data=question_obj.model_dump()
             )
-            yield pause_event
-            logger.info(f"AskUserQuestionTool: Yielded pause signal event for tool_call_id {tool_context.function_call_id}.")
 
-            # Execution pauses here until the Runner receives a FunctionResponse event
-            # with matching tool_call_id and feeds it back into this session's execution
+            # Yield the pause event
+            yield pause_event
+            logger.info(f"{self.name}: Yielded pause signal event for tool_call_id {tool_context.function_call_id}.")
+            # --- Execution Pauses Here ---
+            # The generator finishes here after yielding the pause event.
+            # The agent's execution resumes when a FunctionResponse event is processed.
 
         except Exception as e:
-            error_msg = f"Error in AskUserQuestionTool: {e}"
-            logger.exception(error_msg)
+            error_msg = f"Error in {self.name}: {str(e)}"
+            logger.error(error_msg)
+
             # Yield an error event
             error_event = Event(
                 author=tool_context.agent_name,
-                content=adk_types.Content(
+                content=Content(
                     role="tool",
-                    parts=[adk_types.Part(text=error_msg)]
+                    parts=[Part(text=error_msg)]
                 ),
-                actions=EventActions(
-                    custom_action={"error": error_msg}
-                ),
-                invocation_id=tool_context.invocation_id
+                action=EventActions.ERROR,
+                data={"error": error_msg}
             )
             yield error_event
+            # Generator finishes after yielding error
 
 # Instantiate the tool for export
 ask_user_question_and_get_answer_tool = AskUserQuestionTool() 
