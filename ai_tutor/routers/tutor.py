@@ -16,13 +16,14 @@ from pydantic_core import ValidationError # Import Pydantic validation error
 
 # ADK and Agent related imports
 from google.adk.runners import Runner, RunConfig
-from google.adk.agents import LlmAgent, BaseAgent
-from google.adk.events import Event
-# Use types from google.generativeai package
-from google.generativeai import types # Import the types module
+from google.adk import Agent # Use top-level Agent alias
+from google.adk.events import Event # Import Event from correct module
+from ai_tutor.manager import AITutorManager
+# Import Content and Part directly
+from google.generativeai.types import Content, Part # Import specific classes
+# Use types from the base google-generativeai library as used by ADK internally
 
 from ai_tutor.output_logger import get_logger as get_session_logger_instance, TutorOutputLogger # Rename import
-from ai_tutor.manager import AITutorManager
 from ai_tutor.dependencies import get_supabase_client, get_session_service
 from ai_tutor.auth import verify_token
 from google.api_core import exceptions as google_exceptions
@@ -444,48 +445,46 @@ async def interact_with_tutor(
         user_data_str = json.dumps(interaction_input.data) if interaction_input.data is not None else 'None'
         user_input_text = f"User Action Type: {interaction_input.type}. Data: {user_data_str}"
         # Create user input event for ADK
-        message_to_runner = types.Content(role="user", parts=[types.Part(text=user_input_text)])
+        message_to_runner = Content(role="user", parts=[Part.from_text(user_input_text)]) # Use imported Content/Part
         logger.log_user_input(user_input_text) # Log user input
         print(f"[Interact] Running Agent: {orchestrator_agent.name}")
 
     elif interaction_input.type == "tool_response":
         # Validate tool_response data structure
         if not isinstance(interaction_input.data, dict) or 'name' not in interaction_input.data or 'response' not in interaction_input.data:
-            logger.error(f"Invalid tool_response data format for session {session_id}: {interaction_input.data}")
+            logger.warning(f"Invalid tool_response data format for session {session_id}: {interaction_input.data}")
             raise HTTPException(status_code=400, detail="Invalid format for tool_response data.")
 
         try:
             # Ensure response data is serializable if needed by FunctionResponse
             response_data = interaction_input.data.get('response', {})
-            # Construct function response using Content/Part objects
-            message_to_runner = types.Content(
+            message_to_runner = Content( # Use imported Content/Part
                 role="function",
-                parts=[types.Part.from_function_response(
+                parts=[Part.from_function_response(
                     name=interaction_input.data['name'],
                     response=response_data
                 )]
             )
-            # Log the structured tool response if needed
-            session_logger.log_tool_response(interaction_input.data['name'], response_data) 
+            session_logger.log_function_response(interaction_input.data['name'], response_data)
 
         except Exception as e:
             logger.exception(f"Error constructing FunctionResponse for tool_response in session {session_id}: {e}")
             raise HTTPException(status_code=500, detail="Error processing tool response.")
 
     elif interaction_input.type == "system_message": # Example if needed
-        message_to_runner = types.Content(
-            role="system",
-            parts=[types.Part(text=interaction_input.message)]
+        message_to_runner = Content( # Use imported Content/Part
+            role="system", # Note: Gemini often uses 'user'/'model', 'system' might be ignored unless specifically handled
+            parts=[Part.from_text(interaction_input.message)] # Use Part.from_text
         )
         session_logger.log_system_message(interaction_input.message) # Log system message
 
     else:
         # Default or error handling for unknown types
         error_text = f"Unknown interaction type received: {interaction_input.type}. Data: {interaction_input.data}"
-        logger.error(error_text)
-        message_to_runner = types.Content(
+        logger.warning(error_text) # Log as warning might be better
+        message_to_runner = Content(
             role="user",
-            parts=[types.Part(text=error_text)]
+            parts=[Part.from_text(error_text)]
         )
 
     if not message_to_runner:
@@ -566,13 +565,13 @@ async def submit_answer_to_tutor(
     # --- Create the FunctionResponse Event ---
     answer_event = Event(
         author="user",
-        content=types.Content( # Use types module
+        content=Content(
             role="tool", # Response is for a tool
             parts=[
-                types.Part.from_function_response( # Use types module
+                Part.from_function_response(
                     name=ask_user_question_and_get_answer_tool.name, # Use the actual tool name
                     id=tool_call_id, # CRUCIAL: Match the original tool call ID
-                    response={"answer_index": tool_response_data} # The data the tool's caller expects
+                    response={"answer_index": tool_response_data} # Pass the response data correctly
                 )
             ]
         ),

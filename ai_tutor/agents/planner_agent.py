@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from supabase import Client
-from google.adk.agents import LlmAgent
+from google.adk import Agent
 from google.adk.tools import BaseTool, FunctionTool, ToolContext
 from google.adk.runners import Runner, RunConfig
 from pydantic import BaseModel, Field
@@ -64,8 +64,8 @@ class FocusObjective(BaseModel):
     estimated_time_minutes: Optional[int] = None
     difficulty_level: Optional[str] = None
 
-def create_planner_agent() -> LlmAgent:
-    """Creates a planner agent that determines the next learning focus based on provided context."""
+def create_planner_agent() -> Agent:
+    """Creates a planner agent that determines the next learning focus using ADK."""
 
     # Import the common tools
     from ai_tutor.tools.orchestrator_tools import get_document_content
@@ -79,7 +79,7 @@ def create_planner_agent() -> LlmAgent:
     model_identifier = "gemini-1.5-pro"  # Using Pro for better planning capabilities
 
     # Create the planner agent focusing on identifying the next focus
-    planner_agent = LlmAgent(
+    planner_agent = Agent(
         name="focus_planner",
         instruction="""You are an expert learning strategist. Your task is to determine the user's **next learning focus** based on the analyzed documents and potentially their current progress (provided in the prompt context).
 

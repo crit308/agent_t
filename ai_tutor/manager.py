@@ -1,6 +1,9 @@
+from __future__ import annotations
 import asyncio
 import os
-from typing import List, Optional, Any
+import json
+import logging
+from typing import List, Optional, Any, Dict
 from pydantic import BaseModel  # Import BaseModel if not already imported
 import threading
 import uuid
@@ -9,8 +12,7 @@ from collections import defaultdict # Added import
 import re # Added import
 
 from google.adk.runners import Runner # Use ADK Runner
-from google.adk.agents import BaseAgent
-from google.adk.agents.llm_agent import LlmAgent
+from google.adk import Agent # Use top-level Agent alias
 from google.adk.agents.run_config import RunConfig # Use ADK RunConfig
 
 from ai_tutor.tools.file_upload import FileUploadManager, upload_document

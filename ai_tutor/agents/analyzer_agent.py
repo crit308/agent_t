@@ -1,16 +1,18 @@
 from __future__ import annotations
 import os
+import json
 import logging
 from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel
 from uuid import UUID
 from supabase import Client
 
-from google.adk.agents import LlmAgent, BaseAgent
+from google.adk import Agent # Use top-level Agent alias
 from google.adk.runners import Runner, RunConfig
 from google.adk.tools import FunctionTool, ToolContext
-# Import the types module from google-generativeai
-from google.generativeai import types
+from google.adk.agents import LlmAgent, BaseAgent
+# Import specific types directly
+from google.generativeai.types import Content, Part
 
 logger = logging.getLogger(__name__)
 
@@ -43,21 +45,12 @@ class AnalysisResult(BaseModel):
     key_terms: List[KeyTerm]
     file_names: List[str]
 
-def create_analyzer_agent() -> LlmAgent:
-    """Create an analyzer agent that reads full document content."""
-    
-    # Import the document content tool
-    from ai_tutor.tools.orchestrator_tools import get_document_content
-    
-    analyzer_tools = [get_document_content]
-    
-    # Instantiate the base model provider and get the base model
-    # provider: OpenAIProvider = OpenAIProvider() # ADK handles model provider
-    # base_model = provider.get_model("o3-mini")
+def create_analyzer_agent() -> Agent:
+    """Creates the Document Analyzer Agent."""
     model_identifier = "gemini-1.5-pro"  # Using Pro for better analysis capabilities
     
     # Create the analyzer agent
-    analyzer_agent = LlmAgent(
+    analyzer_agent = Agent( # Use Agent alias
         name="document_analyzer",
         instruction="""
         You are an expert document analyzer. Your task is to analyze the documents whose content will be provided by tools.
@@ -96,7 +89,6 @@ def create_analyzer_agent() -> LlmAgent:
         - Do not stop until you have analyzed all relevant documents
         - Do not include placeholder or generic content
         """,
-        tools=analyzer_tools,
         model=model_identifier,
     )
     
@@ -164,15 +156,17 @@ async def analyze_documents(context=None, supabase: Client = None) -> Optional[A
     )
 
     # Use run_async with keyword arguments
+    # Ensure new_message uses google.generativeai Content/Part
     last_event = None
     async for event in adk_runner.run_async(
         user_id=str(context.user_id),
         session_id=str(context.session_id),
         # Use ADK types here
-        new_message={
-            "role": "user",
-            "parts": [{"text": prompt}]
-        },
+        # Convert the prompt string into a Content object using direct imports
+        new_message=Content( # Use imported Content
+            role="user",
+            parts=[Part(text=prompt)] # Use imported Part
+        ),
         run_config=run_config,
     ):
         last_event = event # Capture the last event

@@ -21,8 +21,7 @@ from ai_tutor.agents.models import LessonPlan, LessonContent, Quiz, QuizFeedback
 from ai_tutor.agents.analyzer_agent import AnalysisResult # Import AnalysisResult from its correct location
 
 # Import ADK SessionService classes
-from google.adk.sessions.base_session_service import BaseSessionService, Session, ListSessionsResponse, GetSessionConfig, ListEventsResponse # Import SessionService classes
-# Import ADK Event class
+from google.adk.sessions.base_session_service import BaseSessionService, Session, ListSessionsResponse, GetSessionConfig, ListEventsResponse
 from google.adk.events import Event
 
 if TYPE_CHECKING:

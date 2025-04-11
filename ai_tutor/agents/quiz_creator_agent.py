@@ -1,9 +1,11 @@
+from __future__ import annotations
+import logging
 import os
 import json
 from typing import Any
 
 # Use ADK imports
-from google.adk.agents import LlmAgent
+from google.adk import Agent # Use top-level Agent alias
 
 from ai_tutor.agents.models import QuizCreationResult, QuizQuestion
 # from ai_tutor.agents.utils import RoundingModelWrapper # Remove if not used with ADK model
@@ -15,12 +17,12 @@ from ai_tutor.agents.models import QuizCreationResult, QuizQuestion
 
 
 # This function now defines the AGENT used AS A TOOL
-def create_quiz_creator_agent() -> LlmAgent:
+def create_quiz_creator_agent() -> Agent:
     """Creates the Quiz Creator Agent."""
     model_identifier = "gemini-1.5-flash" # Use Flash for potentially faster/cheaper quiz generation
 
     # Create the quiz creator agent as an ADK LLMAgent
-    quiz_creator_agent = LlmAgent(
+    quiz_creator_agent = Agent(
         name="quiz_creator_tool_agent", # Use valid Python identifier
         instruction="""
         You are an expert educational assessment designer. Your task is to create quiz questions based on the specific instructions provided in the prompt (e.g., topic, number of questions, difficulty).
@@ -43,7 +45,7 @@ def create_quiz_creator_agent() -> LlmAgent:
 # Function to generate a single quiz question using the agent
 # Note: This function might need adjustments based on how the agent is run (sync/async)
 # and how context is passed.
-def generate_quiz(agent: LlmAgent, context: str) -> QuizCreationResult:
+def generate_quiz(agent: Agent, context: str) -> QuizCreationResult:
     """Generates a single quiz question based on the provided context."""
     # Assuming the agent's run method takes context and returns the JSON string
     # result_json_str = agent.run(context=context) # Adapt based on agent's run signature

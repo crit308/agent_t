@@ -1,13 +1,17 @@
 from __future__ import annotations
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any, TYPE_CHECKING, Union, AsyncGenerator
 from uuid import UUID
 from pydantic import BaseModel, Field
 from supabase import Client
 import logging
 
-from google.adk.agents import LlmAgent
+from google.adk import Agent
 from google.adk.runners import Runner, RunConfig
-from google.adk.tools import FunctionTool, ToolContext
+from google.adk.tools import BaseTool, FunctionTool, ToolContext, LongRunningFunctionTool
+from google.generativeai import types
+from google.adk.models import Gemini
+from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
+from agents.run_context import RunContextWrapper
 
 from ai_tutor.agents.planner_agent import FocusObjective
 from ai_tutor.context import TutorContext
@@ -23,8 +27,8 @@ class TeachingResponse(BaseModel):
     key_points: List[str] = Field(default_factory=list)
     next_steps: List[str] = Field(default_factory=list)
 
-def create_teacher_agent() -> LlmAgent:
-    """Creates a teacher agent that explains concepts using ADK."""
+def create_interactive_teacher_agent() -> Agent:
+    """Creates an INTERACTIVE Teacher Agent using Google ADK."""
 
     # Use ADK models
     model_identifier = "gemini-1.5-flash" # Or other ADK supported model
@@ -43,15 +47,15 @@ def create_teacher_agent() -> LlmAgent:
     ]
 
     # Use LLMAgent, define input/output schemas
-    teacher_agent = LlmAgent(
+    teacher_agent = Agent(
         name="interactive_lesson_teacher", # Use valid Python identifier
         instruction=""" # Use singular 'instruction'
         You are an autonomous AI Teacher responsible for guiding a student through a specific `FocusObjective` provided as input (topic, learning_goal).
 
         YOUR CONTEXT:
         - You receive the `FocusObjective` details in the initial prompt/input.
-        - Maintain your progress internally through the conversation history.
-        - Use `read_knowledge_base` or `get_document_content` tools to get content details for explanations. Provide the file path from the context/KB analysis when calling `get_document_content`.
+        - You access necessary context (like file paths) via the `ToolContext` provided when your tools run.
+        - Use `read_knowledge_base` or `get_document_content` tools to get content details for explanations.
         - Use the `ask_user_question_and_get_answer` tool to pause, ask the user a question (provide the full QuizQuestion JSON as args), and wait for their answer index.
 
         YOUR AUTONOMOUS TASK:
@@ -93,8 +97,8 @@ async def teach_topic(focus: FocusObjective, context=None, supabase: Client = No
         logger.error("teach_topic: Invalid focus objective or context")
         return None
 
-    # Create the teacher agent
-    teacher_agent = create_teacher_agent()
+    # Create the teacher agent - no vector_store_id needed
+    teacher_agent = create_interactive_teacher_agent()
     
     # Setup RunConfig for tracing
     run_config = RunConfig(
@@ -121,6 +125,7 @@ async def teach_topic(focus: FocusObjective, context=None, supabase: Client = No
 
     First, use the `read_knowledge_base` tool to access the document analysis.
     Then, if needed, use `get_document_content` to get more detailed information about this topic.
+    Note: The necessary context (like file paths and vector store IDs) will be available via ToolContext when the tools run.
 
     Create a structured teaching response that:
     1. Explains the topic clearly and thoroughly
@@ -137,7 +142,8 @@ async def teach_topic(focus: FocusObjective, context=None, supabase: Client = No
         result = await Runner.run(
             teacher_agent,
             prompt,
-            run_config=run_config
+            run_config=run_config,
+            context=context  # Pass the context to ensure it's available in ToolContext
         )
         
         if not result or not result.output:
@@ -149,7 +155,7 @@ async def teach_topic(focus: FocusObjective, context=None, supabase: Client = No
         
     except Exception as e:
         logger.error(f"teach_topic: Error during teaching: {str(e)}")
-        return None 
+        return None
 
 # Placeholder import for TeacherTurnResult if not defined elsewhere
 class TeacherTurnResult(BaseModel):

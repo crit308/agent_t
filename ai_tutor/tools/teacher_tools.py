@@ -12,9 +12,10 @@ from ai_tutor.context import TutorContext # Import TutorContext for type hint
 
 # Use ADK imports
 from google.adk.tools import LongRunningFunctionTool, ToolContext, FunctionTool # Import FunctionTool
+# Use types from the base google-generativeai library as used by ADK internally
+# Import Content and Part directly
+from google.generativeai.types import Content, Part
 from google.adk.events import Event, EventActions # Import Event classes
-# Use types from google.generativeai package
-from google.generativeai import types # Import the types module
 
 from pydantic import BaseModel, Field
 
@@ -107,13 +108,15 @@ class AskUserQuestionTool(LongRunningFunctionTool):
 
             # Create and yield the pause event with question data
             pause_event = Event(
-                author=tool_context.agent_name,
-                content=types.Content(
-                    role="tool",
-                    parts=[types.Part(text=f"Waiting for user answer to question about: {question_obj.related_section}")]
-                ),
-                action=EventActions.PAUSE,
-                data=question_obj.model_dump()
+                author=tool_context.agent_name, # Associate with the agent calling the tool
+                content=Content(role="tool", parts=[Part.from_text(f"Waiting for user answer to question: {question_obj.question[:30]}...")]), # Use imported Content/Part
+                actions=EventActions(
+                    # Use a custom action field to signal the pause and carry data
+                    custom_action={
+                        "type": "ask_question",
+                        "data": question_obj.dict()
+                    }
+                )
             )
 
             # Yield the pause event
@@ -130,12 +133,16 @@ class AskUserQuestionTool(LongRunningFunctionTool):
             # Yield an error event
             error_event = Event(
                 author=tool_context.agent_name,
-                content=types.Content(
+                content=Content( # Use imported Content/Part
                     role="tool",
-                    parts=[types.Part(text=error_msg)]
+                    parts=[Part.from_text(error_msg)]
                 ),
-                action=EventActions.ERROR,
-                data={"error": error_msg}
+                actions=EventActions(
+                    custom_action={
+                        "type": "error",
+                        "data": {"message": error_msg}
+                    }
+                )
             )
             yield error_event
             # Generator finishes after yielding error
