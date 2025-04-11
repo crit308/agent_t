@@ -15,19 +15,17 @@ from pydantic import BaseModel
 from pydantic_core import ValidationError # Import Pydantic validation error
 
 # ADK and Agent related imports
-from google.adk.runners import Runner, RunConfig # Remove RunnerError import
-from google.adk.agents import LlmAgent, BaseAgent # Correct LlmAgent casing
-# Import Content/Part directly from google.ai.generativelanguage
-# from google.ai.generativelanguage import Content, Part
-# Import Content/Part from google.adk.events
-# from google.adk.events import Event, Content, Part # Import Content/Part here
-# Import types from google.adk.agents
-# Import Content/Part directly from google.generativeai
-# from google.ai.generativelanguage import Content, Part # Keep this line (or ensure it's there)
-# Import Content/Part directly from google.ai.generativelanguage
-# from google.ai.generativelanguage import Content, Part # Ensure this import exists
-from google.adk.events import Event # Import Event
-from google.generativeai.types import Content, Part # Correct import path
+from google.adk.runners import Runner, RunConfig
+from google.adk.agents import LlmAgent, BaseAgent
+from google.adk.events import Event
+# Use types from google.generativeai package
+from google.generativeai import types # Import the types module
+
+from ai_tutor.output_logger import get_logger as get_session_logger_instance, TutorOutputLogger # Rename import
+from ai_tutor.manager import AITutorManager
+from ai_tutor.dependencies import get_supabase_client, get_session_service
+from ai_tutor.auth import verify_token
+from google.api_core import exceptions as google_exceptions
 
 # Project specific imports
 from ai_tutor.session_manager import SessionManager, SupabaseSessionService, Session # Use Session from ADK session_manager
@@ -45,12 +43,6 @@ from ai_tutor.api_models import (
     InteractionRequestData, InteractionResponseData
 )
 from ai_tutor.context import TutorContext
-from ai_tutor.output_logger import get_logger as get_session_logger_instance, TutorOutputLogger # Rename import
-from ai_tutor.manager import AITutorManager
-from ai_tutor.dependencies import get_supabase_client, get_session_service
-from ai_tutor.auth import verify_token
-from google.api_core import exceptions as google_exceptions
-
 
 router = APIRouter()
 # session_manager = SessionManager() # Keep for create_session? Or fully replace with service? Consider removing.
@@ -451,12 +443,9 @@ async def interact_with_tutor(
         # Ensure data is None or a valid JSON string representation
         user_data_str = json.dumps(interaction_input.data) if interaction_input.data is not None else 'None'
         user_input_text = f"User Action Type: {interaction_input.type}. Data: {user_data_str}"
-        # Create message using Content/Part objects
-        user_event_content = Content(
-            role="user",
-            parts=[Part(text=user_input_text)]
-        )
-        session_logger.log_user_input(user_input_text) # Log user input
+        # Create user input event for ADK
+        message_to_runner = types.Content(role="user", parts=[types.Part(text=user_input_text)])
+        logger.log_user_input(user_input_text) # Log user input
         print(f"[Interact] Running Agent: {orchestrator_agent.name}")
 
     elif interaction_input.type == "tool_response":
@@ -469,9 +458,9 @@ async def interact_with_tutor(
             # Ensure response data is serializable if needed by FunctionResponse
             response_data = interaction_input.data.get('response', {})
             # Construct function response using Content/Part objects
-            message_to_runner = Content(
+            message_to_runner = types.Content(
                 role="function",
-                parts=[Part.from_function_response(
+                parts=[types.Part.from_function_response(
                     name=interaction_input.data['name'],
                     response=response_data
                 )]
@@ -484,9 +473,9 @@ async def interact_with_tutor(
             raise HTTPException(status_code=500, detail="Error processing tool response.")
 
     elif interaction_input.type == "system_message": # Example if needed
-        message_to_runner = Content(
+        message_to_runner = types.Content(
             role="system",
-            parts=[Part(text=interaction_input.message)]
+            parts=[types.Part(text=interaction_input.message)]
         )
         session_logger.log_system_message(interaction_input.message) # Log system message
 
@@ -494,9 +483,9 @@ async def interact_with_tutor(
         # Default or error handling for unknown types
         error_text = f"Unknown interaction type received: {interaction_input.type}. Data: {interaction_input.data}"
         logger.error(error_text)
-        message_to_runner = Content(
+        message_to_runner = types.Content(
             role="user",
-            parts=[Part(text=error_text)]
+            parts=[types.Part(text=error_text)]
         )
 
     if not message_to_runner:
@@ -576,31 +565,36 @@ async def submit_answer_to_tutor(
 
     # --- Create the FunctionResponse Event ---
     answer_event = Event(
-        author="user", # Or system? Clarify ADK best practice
-        content=Content( # Use import from events
+        author="user",
+        content=types.Content( # Use types module
             role="tool", # Response is for a tool
             parts=[
-                Part.from_function_response( # Use import from events
-                    name="ask_user_question_and_get_answer", # Tool name
+                types.Part.from_function_response( # Use types module
+                    name=ask_user_question_and_get_answer_tool.name, # Use the actual tool name
                     id=tool_call_id, # CRUCIAL: Match the original tool call ID
                     response={"answer_index": tool_response_data} # The data the tool's caller expects
                 )
-            ] # Pass the response data as a list
+            ]
         ),
-        invocation_id=tutor_context.last_interaction_summary or f"resume_{session_id}"
+        invocation_id=tutor_context.last_interaction_summary or f"resume_{session_id}",
     )
 
-    # ADK's Runner should handle routing this event correctly based on the function_call_id.
-    # Note: We pass the *content* of the event, not the full event object to new_message
-    run_config = RunConfig() # Use empty config
+    # --- Resume the ADK Runner ---
+    # Re-initialize runner and run_async, providing the answer event.
+    orchestrator_agent = create_orchestrator_agent() # Recreate agent instance
+    adk_runner = Runner("ai_tutor", orchestrator_agent, session_service)
+    run_config = RunConfig(workflow_name="Tutor_Interaction_Resume", group_id=str(session_id))
 
     # Process the stream *after* resuming (need to define last_event... here)
     try:
-        last_event = None
+        last_agent_event_after_resume: Optional[Event] = None
+        question_after_resume: Optional[QuizQuestion] = None
+        paused_id_after_resume: Optional[str] = None
+        
         async for event in adk_runner.run_async(
             user_id=str(user.id),
             session_id=str(session_id),
-            new_message=answer_event, # Pass the dictionary content
+            new_message=answer_event.content, # Pass the Content object from the event
             run_config=run_config
         ):
             print(f"[Answer] Received Event after resume: ID={event.id}, Author={event.author}")
@@ -615,7 +609,7 @@ async def submit_answer_to_tutor(
         logger.info(f"ADK Runner finished after answer. Last event action: {last_event.action}")
 
         # Process the final event for the API response
-        api_response_data = _process_adk_event_for_api(last_event, session_logger)
+        api_response_data = _process_adk_event_for_api(last_event_after_resume, session_logger)
         return api_response_data
 
     except google_exceptions.GoogleAPIError as e:

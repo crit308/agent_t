@@ -1,55 +1,24 @@
 import os
-import openai
 import json
-
-from agents import Agent, Runner, RunConfig, handoff, HandoffInputData, function_tool, ModelProvider
-from agents.models.openai_provider import OpenAIProvider
-from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
-from agents.run_context import RunContextWrapper
 from typing import Optional
 
+# Use ADK imports
+from google.adk.agents import LlmAgent
+from google.adk.runners import Runner, RunConfig
+
 from ai_tutor.agents.models import Quiz, QuizUserAnswers, QuizFeedback, QuizQuestion, QuizFeedbackItem
-from ai_tutor.agents.utils import process_handoff_data, RoundingModelWrapper
-
-
-def quiz_user_answers_handoff_filter(handoff_data: HandoffInputData) -> HandoffInputData:
-    """Filter function for handoff from quiz creator to quiz teacher agent.
-    
-    This ensures the quiz teacher agent receives both the quiz and user answers.
-    """
-    print("DEBUG: Entering quiz_user_answers_handoff_filter (Quiz User Answers)")
-    
-    try:
-        processed_data = process_handoff_data(handoff_data)
-        print("DEBUG: Exiting quiz_user_answers_handoff_filter")
-        return processed_data
-    except Exception as e:
-        print(f"ERROR in quiz_user_answers_handoff_filter: {e}")
-        return handoff_data  # Fallback
 
 
 def create_quiz_teacher_agent(api_key: str = None):
     """Create a quiz teacher agent that evaluates user answers and provides feedback."""
     
-    # If API key is provided, ensure it's set in environment
-    if api_key:
-        os.environ["OPENAI_API_KEY"] = api_key
-    
-    # Ensure OPENAI_API_KEY is set in the environment
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        print("WARNING: OPENAI_API_KEY environment variable is not set for quiz teacher agent!")
-    else:
-        print(f"Using OPENAI_API_KEY from environment for quiz teacher agent")
-    
-    # Instantiate the base model provider and get the base model
-    provider: ModelProvider = OpenAIProvider()
-    base_model = provider.get_model("o3-mini")
+    # Use Gemini model via ADK
+    model_identifier = "gemini-1.5-pro"  # Using Pro for better feedback capabilities
     
     # Create the quiz teacher agent
-    quiz_teacher_agent = Agent(
-        name="Quiz Teacher",
-        instructions="""
+    quiz_teacher_agent = LlmAgent(
+        name="quiz_teacher",
+        instruction="""
         You are an expert educational feedback provider specializing in analyzing quiz responses and providing detailed, actionable feedback.
         Your task is to analyze the user's quiz answers and provide comprehensive feedback that helps them improve their understanding.
         
@@ -83,8 +52,7 @@ def create_quiz_teacher_agent(api_key: str = None):
         YOUR OUTPUT MUST BE A VALID QUIZ FEEDBACK OBJECT.
         """,
         output_type=QuizFeedback,
-        model=RoundingModelWrapper(base_model),
-        # No handoffs needed for the quiz teacher agent - it's the last in the chain
+        model=model_identifier
     )
     
     return quiz_teacher_agent
@@ -175,7 +143,7 @@ async def generate_quiz_feedback(quiz: Quiz, user_answers: QuizUserAnswers, api_
     if context and hasattr(context, 'session_id'):
         run_config = RunConfig(
             workflow_name="AI Tutor - Quiz Feedback",
-            group_id=str(context.session_id) # Convert UUID to string
+            group_id=str(context.session_id)
         )
     
     # Run the quiz teacher agent
@@ -204,7 +172,7 @@ async def generate_quiz_feedback(quiz: Quiz, user_answers: QuizUserAnswers, api_
             overall_feedback="Error generating feedback. Please try again.",
             suggested_study_topics=[],
             next_steps=["Contact support for assistance with quiz feedback."]
-        ) 
+        )
 
 
 async def evaluate_single_answer(
@@ -230,7 +198,7 @@ async def evaluate_single_answer(
         print(f"Error: Invalid input for single answer evaluation. Question: {question}, Answer Index: {user_answer_index}")
         return None
 
-    # Create a non-handoff quiz teacher agent instance
+    # Create the quiz teacher agent
     agent = create_quiz_teacher_agent(api_key)
 
     # Construct a focused prompt for single answer evaluation
@@ -263,7 +231,7 @@ async def evaluate_single_answer(
     if context and hasattr(context, 'session_id'):
         run_config = RunConfig(
             workflow_name="AI Tutor - Single Answer Eval",
-            group_id=str(context.session_id) # Convert UUID to string
+            group_id=str(context.session_id)
         )
 
     result = await Runner.run(agent, prompt, run_config=run_config, context=context)

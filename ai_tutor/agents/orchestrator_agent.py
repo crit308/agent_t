@@ -3,10 +3,11 @@ from __future__ import annotations
 import os
 from typing import List, Optional, TYPE_CHECKING, Union, cast
 
-from agents import Agent, Runner, RunConfig, ModelProvider
-from agents.models.openai_provider import OpenAIProvider
-from agents.run_context import RunContextWrapper
-from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
+# Use ADK imports
+from google.adk.agents import BaseAgent # Keep BaseAgent if needed
+from google.adk.agents.llm_agent import LlmAgent # Correct casing
+from google.adk.runners import Runner, RunConfig
+from google.adk.tools.agent_tool import AgentTool # Correct import path
 
 # Use TYPE_CHECKING for TutorContext import
 if TYPE_CHECKING:
@@ -32,12 +33,7 @@ from ai_tutor.api_models import (
     FeedbackResponse, MessageResponse, ErrorResponse
 )
 
-from google.adk.tools.agent_tool import AgentTool # Import AgentTool from its specific module
-from google.adk.agents import BaseAgent # Import BaseAgent if needed elsewhere
-from google.adk.agents.llm_agent import LlmAgent # Correct casing
-from google.adk.runners import Runner, RunConfig # Use ADK Runner/Config
-
-def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
+def create_orchestrator_agent(api_key: str = None) -> LlmAgent:
     """Creates the Orchestrator Agent for the AI Tutor."""
 
     if api_key:
@@ -101,8 +97,8 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
         - Ensure your final output strictly adheres to the required JSON format (`TutorInteractionResponse`).
         """,
         tools=orchestrator_tools,
-        # output_schema=TutorInteractionResponse, # Orchestrator's final output is usually implicit or a simple message
-        model=model_identifier, # Correct keyword is 'model'
+        # output_schema=TutorInteractionResponse, # REMOVE - Orchestrator manages flow, doesn't generate this directly
+        model=model_identifier
     )
 
     return orchestrator_agent 

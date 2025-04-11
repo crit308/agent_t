@@ -2,15 +2,12 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from supabase import Client
-from google.adk.agents import LlmAgent, Agent
+from google.adk.agents import LlmAgent
 from google.adk.tools import BaseTool, FunctionTool, ToolContext
-from agents.models.openai_provider import OpenAIProvider
 from google.adk.runners import Runner, RunConfig
-from google.adk.tools import ToolContext
 from pydantic import BaseModel, Field
 
 from ai_tutor.agents.models import FocusObjective
-from ai_tutor.agents.utils import RoundingModelWrapper
 from ai_tutor.context import TutorContext
 import os
 import logging

@@ -1,15 +1,9 @@
-from agents import HandoffInputData
 import pprint
 import json
-# import decimal # Not needed if converting directly
 import copy
-from decimal import Decimal # Keep Decimal for potential input types
+from decimal import Decimal
 import re
 from typing import Any, Dict, List, Union, Tuple, AsyncIterator
-
-# Import additional classes needed for the wrapper
-from agents import Model, ModelResponse, ModelSettings, ModelTracing, AgentOutputSchema, Handoff, Tool
-from agents.items import TResponseInputItem, TResponseStreamEvent
 
 # --- Helper for recursive rounding ---
 def _recursive_round_scores(data: Any, max_decimals: int = 8):
@@ -20,9 +14,8 @@ def _recursive_round_scores(data: Any, max_decimals: int = 8):
     Handles nested structures and avoids deepcopying non-pickleable objects.
 
     NOTE: This is necessary because file_search results can contain scores with
-    precision exceeding the OpenAI API's limit (currently 16 decimals) when
-    included in the input history for subsequent calls. This function aims to
-    fix ONLY the 'score' fields. Avoid overly broad recursion or deepcopy.
+    precision exceeding the API's limit when included in the input history for 
+    subsequent calls. This function aims to fix ONLY the 'score' fields.
     """
     # Handle dictionaries
     if isinstance(data, dict):

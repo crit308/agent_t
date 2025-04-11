@@ -10,10 +10,12 @@ from ai_tutor.api_models import ExplanationResponse, QuestionResponse, MessageRe
 from ..agents.models import QuizQuestion # Use relative import
 from ai_tutor.context import TutorContext # Import TutorContext for type hint
 
+# Use ADK imports
 from google.adk.tools import LongRunningFunctionTool, ToolContext, FunctionTool # Import FunctionTool
-# Import ADK Event and Content/Part from google.adk.events
-from google.adk.events import Event, EventActions # Keep Event, EventActions
-from google.generativeai.types import Content, Part # Correct import path
+from google.adk.events import Event, EventActions # Import Event classes
+# Use types from google.generativeai package
+from google.generativeai import types # Import the types module
+
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -106,9 +108,9 @@ class AskUserQuestionTool(LongRunningFunctionTool):
             # Create and yield the pause event with question data
             pause_event = Event(
                 author=tool_context.agent_name,
-                content=Content(
+                content=types.Content(
                     role="tool",
-                    parts=[Part(text=f"Waiting for user answer to question about: {question_obj.related_section}")]
+                    parts=[types.Part(text=f"Waiting for user answer to question about: {question_obj.related_section}")]
                 ),
                 action=EventActions.PAUSE,
                 data=question_obj.model_dump()
@@ -128,9 +130,9 @@ class AskUserQuestionTool(LongRunningFunctionTool):
             # Yield an error event
             error_event = Event(
                 author=tool_context.agent_name,
-                content=Content(
+                content=types.Content(
                     role="tool",
-                    parts=[Part(text=error_msg)]
+                    parts=[types.Part(text=error_msg)]
                 ),
                 action=EventActions.ERROR,
                 data={"error": error_msg}

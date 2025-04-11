@@ -6,19 +6,11 @@ from pydantic import BaseModel
 from uuid import UUID
 from supabase import Client
 
-from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents import LlmAgent, BaseAgent
 from google.adk.runners import Runner, RunConfig
 from google.adk.tools import FunctionTool, ToolContext
-from google.adk.models import Gemini # Use ADK/Gemini model
-# Import Content/Part directly from google.generativeai
-# from google.ai.generativelanguage import Content, Part
-# Import Content/Part from google.adk.events
-# from google.adk.events import Content, Part # Assume they might be here
-# Import types directly from google.adk (if they are re-exported there)
-# import google.adk as adk # KEEP? Seems unused
-# from google.cloud.aiplatform import FunctionResponse # REMOVE
-
-from google.generativeai.types import Content, Part # Correct import path
+# Import the types module from google-generativeai
+from google.generativeai import types
 
 logger = logging.getLogger(__name__)
 
@@ -174,9 +166,9 @@ async def analyze_documents(context=None, supabase: Client = None) -> Optional[A
     # Use run_async with keyword arguments
     last_event = None
     async for event in adk_runner.run_async(
-        user_id=str(context.user_id), # Assuming context has user_id
-        session_id=str(context.session_id), # Assuming context has session_id
-        # Use dictionary representation instead of Content/Part objects
+        user_id=str(context.user_id),
+        session_id=str(context.session_id),
+        # Use ADK types here
         new_message={
             "role": "user",
             "parts": [{"text": prompt}]

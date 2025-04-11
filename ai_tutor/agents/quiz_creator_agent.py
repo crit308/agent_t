@@ -1,14 +1,9 @@
 import os
-# import openai
 import json
 from typing import Any
 
 # Use ADK imports
 from google.adk.agents import LlmAgent
-# Keep OpenAIProvider import only if still used directly, otherwise remove
-# from agents.models.openai_provider import OpenAIProvider
-# from agents.run_context import RunContextWrapper # Remove if context not needed
-# from agents.extensions.handoff_prompt import prompt_with_handoff_instructions # Remove handoff
 
 from ai_tutor.agents.models import QuizCreationResult, QuizQuestion
 # from ai_tutor.agents.utils import RoundingModelWrapper # Remove if not used with ADK model

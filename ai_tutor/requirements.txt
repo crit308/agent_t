@@ -1,19 +1,20 @@
-# openai>=1.0.0 # REMOVE
+# Core dependencies
 pydantic>=2.0.0
 requests>=2.25.0
 python-dotenv>=0.19.0
 rich>=10.0.0
 fastapi>=0.100.0
 uvicorn[standard]>=0.20.0
-python-multipart>=0.0.6 # For file uploads
+python-multipart>=0.0.6
+supabase>=2.0.0
+psycopg2-binary
 
-supabase>=2.0.0 # Assuming you have this already
-google-adk>=0.1.0 # Add Google ADK
-google-cloud-aiplatform>=1.87.0 # Dependency for ADK
-sqlalchemy>=2.0 # Dependency for ADK DatabaseSessionService (even if we use custom Supabase one)
-# google-generativeai>=0.5.0 # Explicitly add the dependency for ADK types (Reverted)
-psycopg2-binary # Or appropriate driver if using DatabaseSessionService backend
-google-cloud-storage # If using GCS ArtifactService (optional)
+# ADK and related dependencies
+google-adk>=0.1.0
+google-cloud-aiplatform>=1.87.0
+sqlalchemy>=2.0
+google-generativeai>=0.5.0
+google-cloud-storage
 # Optional dependencies needed for certain ADK tools
 # llama-index-core>=0.10.0 # REMOVE - No longer using FilesRetrieval
 # llama-index-readers-file>=0.1.0 # REMOVE 

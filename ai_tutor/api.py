@@ -11,11 +11,10 @@ load_dotenv()
 
 from ai_tutor.context import TutorContext, UserModelState, UserConceptMastery  # Import context models
 from ai_tutor.routers import sessions, tutor, folders # Import folders router
-from ai_tutor.dependencies import get_supabase_client # Import dependency from new location
-from agents import set_default_openai_key, set_default_openai_api, Agent # Import Agent
+from ai_tutor.dependencies import get_supabase_client, get_session_service # Import new service dependency
+from google.adk.agents import LlmAgent # Use ADK imports
+from google.adk.runners import Runner, RunConfig # Use ADK imports
 from ai_tutor.auth import verify_token # Assume auth.py exists for JWT verification
-from google.adk.agents.llm_agent import LlmAgent # Correct casing
-# from ai_tutor.agents.student_modeler_agent import StudentModelerAgent, InteractionAnalysis   # Remove unused import
 from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent, generate_quiz # Assuming these exist
 
 # Import models needed for resolving forward references in TutorContext and other API models
@@ -25,22 +24,6 @@ from ai_tutor.agents.models import (
 from ai_tutor.agents.analyzer_agent import AnalysisResult
 from ai_tutor.api_models import TutorInteractionResponse, InteractionResponseData # Add InteractionResponseData
 from ai_tutor.session_manager import SupabaseSessionService # Needed for Runner init
-
-# --- SDK Configuration --- REMOVED OpenAI specific block
-# api_key = os.environ.get("OPENAI_API_KEY")
-# if not api_key:
-#     print("WARNING: OPENAI_API_KEY environment variable not set. Some functionalities might be limited.")
-#     # Decide if the app should exit or continue with limited functionality
-#     # exit(1) # Or raise an exception
-# else:
-#     # set_default_openai_key(api_key) # ADK uses Google Cloud auth by default
-#     # set_default_openai_api("responses")
-#     # Set Google Cloud Credentials (e.g., via environment variable GOOGLE_APPLICATION_CREDENTIALS)
-#     # Or ensure `gcloud auth application-default login` has been run.
-#     print("Google ADK configured. Ensure Google Cloud authentication is set up.")
-
-# --- Supabase Client Initialization is now handled in dependencies.py ---
-# You might still want a check here to ensure it *was* initialized successfully if critical
 
 # --- FastAPI Lifespan for Runner Management ---
 @asynccontextmanager

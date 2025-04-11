@@ -1,2 +1,0 @@
-python-multipart>=0.0.6 # For file uploads
-+supabase-py>=2.0.0  # Add supabase client 

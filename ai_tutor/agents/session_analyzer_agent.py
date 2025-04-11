@@ -1,11 +1,10 @@
 import os
-import openai
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 
-from agents import Agent, Runner, trace, RunConfig, ModelProvider
-from agents.models.openai_provider import OpenAIProvider
-from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
+# Use ADK imports
+from google.adk.agents import LlmAgent
+from google.adk.runners import Runner, RunConfig
 
 from ai_tutor.agents.models import (
     LessonPlan,
@@ -17,7 +16,6 @@ from ai_tutor.agents.models import (
     TeachingInsight,
     SessionAnalysis
 )
-from ai_tutor.agents.utils import RoundingModelWrapper
 
 
 def create_session_analyzer_agent(api_key: str = None):
@@ -40,14 +38,13 @@ def create_session_analyzer_agent(api_key: str = None):
     else:
         print(f"Using OPENAI_API_KEY from environment for session analyzer agent")
     
-    # Instantiate the base model provider and get the base model
-    provider: ModelProvider = OpenAIProvider()
-    base_model = provider.get_model("gpt-4o")  # Using gpt-4o which supports structured output
+    # Use Gemini model via ADK
+    model_identifier = "gemini-1.5-pro"  # Using Pro for better analysis capabilities
     
     # Create the session analyzer agent
-    session_analyzer_agent = Agent(
-        name="Session Analyzer",
-        instructions=prompt_with_handoff_instructions("""
+    session_analyzer_agent = LlmAgent(
+        name="session_analyzer",
+        instruction="""
         You are an expert educational analyst specialized in evaluating teaching sessions.
         
         Your task is to analyze the entire AI tutor workflow including:
@@ -85,9 +82,7 @@ def create_session_analyzer_agent(api_key: str = None):
         Format your response as a structured SessionAnalysis object.
         
         YOUR OUTPUT MUST BE ONLY A VALID SESSIONANALYSIS OBJECT.
-        """),
-        output_type=SessionAnalysis,
-        model=RoundingModelWrapper(base_model),
+        """
     )
     
     return session_analyzer_agent
