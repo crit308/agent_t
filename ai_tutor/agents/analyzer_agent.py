@@ -11,8 +11,8 @@ from google.adk import Agent # Use top-level Agent alias
 from google.adk.runners import Runner, RunConfig
 from google.adk.tools import FunctionTool, ToolContext
 from google.adk.agents import LlmAgent, BaseAgent
-# Import specific types directly
-from google.generativeai.types import Content, Part
+# Import Content and Part from the content_types submodule
+from google.genai.types import Content, Part
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class AnalysisResult(BaseModel):
 
 def create_analyzer_agent() -> Agent:
     """Creates the Document Analyzer Agent."""
-    model_identifier = "gemini-1.5-pro"  # Using Pro for better analysis capabilities
+    model_identifier = "gemini-2.0-flash"  # Using Pro for better analysis capabilities
     
     # Create the analyzer agent
     analyzer_agent = Agent( # Use Agent alias
@@ -156,16 +156,16 @@ async def analyze_documents(context=None, supabase: Client = None) -> Optional[A
     )
 
     # Use run_async with keyword arguments
-    # Ensure new_message uses google.generativeai Content/Part
+    # Ensure new_message uses google.generativeai.types
     last_event = None
     async for event in adk_runner.run_async(
         user_id=str(context.user_id),
-        session_id=str(context.session_id),
+        session_id=str(context.session_id), # type: ignore
         # Use ADK types here
         # Convert the prompt string into a Content object using direct imports
-        new_message=Content( # Use imported Content
+        new_message=Content( # Use types.Content
             role="user",
-            parts=[Part(text=prompt)] # Use imported Part
+            parts=[Part(text=prompt)] # Use types.Part
         ),
         run_config=run_config,
     ):

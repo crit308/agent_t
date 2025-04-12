@@ -154,9 +154,18 @@ class SupabaseSessionService(BaseSessionService):
 
                 # Parse timestamp
                 try:
-                    last_update_time = datetime.fromisoformat(updated_at_str).timestamp() if updated_at_str else time.time()
+                    # updated_at_str_no_tz = updated_at_str.split('+')[0] # Remove timezone offset if present
+                    # last_update_time = datetime.fromisoformat(updated_at_str_no_tz).timestamp()
+                    # More robust parsing: handle potential fractional seconds and timezone
+                    if '+' in updated_at_str:
+                         # Handle timezone offset (e.g., +00)
+                        dt_obj = datetime.strptime(updated_at_str, "%Y-%m-%dT%H:%M:%S.%f%z")
+                    else:
+                        # Assume no timezone, parse just the time part
+                        dt_obj = datetime.strptime(updated_at_str, "%Y-%m-%dT%H:%M:%S.%f")
+                    last_update_time = dt_obj.timestamp()
                 except (ValueError, TypeError) as e:
-                    logger.warning(f"Invalid timestamp format for session {session_uuid}: {e}. Using current time.")
+                    logger.warning(f"Invalid timestamp format for session {session_uuid}: '{updated_at_str}'. Error: {e}. Using current time.")
                     last_update_time = time.time()
 
                 # Optional: Validate context structure matches TutorContext
@@ -298,14 +307,12 @@ class SupabaseSessionService(BaseSessionService):
                 "updated_at": datetime.now().isoformat() # Update timestamp explicitly
             }).eq("id", str(session_id)).eq("user_id", str(user_id)).execute()
 
-            if response.error:
-                 error_msg = f"Failed to persist event/state for session {session_id}: {response.error}"
-                 logger.error(error_msg)
-                 # Log error but return original event as per BaseSessionService expectation
-                 # Raising might stop the agent run, logging might lead to state divergence.
-                 # For now, log the error and return the original event.
-                 return event
-                 
+            if not response.data:
+                error_detail = getattr(response, 'error', None) or getattr(response, 'message', 'Unknown error')
+                logger.error(f"Error persisting event/state for session {session_id}: {error_detail}")
+            else:
+                logger.debug(f"Successfully persisted event {event.id} for session {session_id}")
+
             # Update the timestamp on the in-memory event object (optional, depends if caller uses it)
             # Fetching the actual update_time from DB would require another query.
             # Using current time is a reasonable approximation.
@@ -313,8 +320,8 @@ class SupabaseSessionService(BaseSessionService):
             session.last_update_time = event.timestamp # Also update session timestamp
             return event # Return the event (potentially updated)
         except Exception as e:
-            logger.exception(f"Error persisting event/state for session {session_id}: {e}")
-            # Handle error appropriately
+            logger.exception(f"Database exception persisting event/state for session {session_id}: {e}")
+            # Handle exception - maybe raise or just log and continue
             return event # Return original event on error
 
     # --- Methods below are not strictly required if events aren't persisted ---

@@ -19,9 +19,9 @@ from ai_tutor.agents.teacher_agent import create_interactive_teacher_agent
 from ai_tutor.tools.orchestrator_tools import (
     # These are now implemented as AgentTools below
     # call_planner_agent, call_teacher_agent, call_quiz_creator_agent,
-    update_user_model,
-    get_user_model_status,
-    reflect_on_interaction,
+    update_user_model_tool,
+    get_user_model_status_tool,
+    reflect_on_interaction_tool,
 )
 
 # Import models needed for type hints if tools return them
@@ -39,7 +39,7 @@ def create_orchestrator_agent(api_key: str = None) -> Agent:
         os.environ["GOOGLE_API_KEY"] = api_key
 
     # --- ADK Model Setup ---
-    model_identifier = "gemini-1.5-flash" # Use flash for now
+    model_identifier = "gemini-2.0-flash" # Use flash for now
     
     # --- Create Agent Instances for AgentTool ---
     # Agent creation no longer needs VS ID directly - agents get context when their tools run
@@ -50,9 +50,9 @@ def create_orchestrator_agent(api_key: str = None) -> Agent:
         AgentTool(planner_agent_instance), # Name is inherited from planner_agent_instance.name
         AgentTool(teacher_agent_instance), # Name is inherited from teacher_agent_instance.name
         # Keep utility tools if Orchestrator still uses them directly
-        update_user_model,
-        get_user_model_status,
-        reflect_on_interaction,
+        update_user_model_tool,
+        get_user_model_status_tool,
+        reflect_on_interaction_tool,
     ]
 
     orchestrator_agent = Agent(
@@ -67,7 +67,7 @@ def create_orchestrator_agent(api_key: str = None) -> Agent:
         - You delegate the teaching of the `current_focus_objective` to the `call_teacher_agent` tool.
         - The `call_teacher_agent` tool runs autonomously and returns a `TeacherTurnResult` (indicating objective completion status) when finished.
         - You evaluate user answers to checking questions using `call_quiz_teacher_evaluate`.
-        - The `reflect_on_interaction` tool helps analyze difficulties if the Teacher tool reports failure.
+        - The `reflect_on_interaction_tool` helps analyze difficulties if the Teacher tool reports failure.
         - User's last input/action is provided in the prompt.
 
         **Core Responsibilities:**
@@ -78,7 +78,7 @@ def create_orchestrator_agent(api_key: str = None) -> Agent:
         5.  **Loop:**
             *   If the Teacher reported success (`objective_complete`), call the `call_planner_agent` tool again to get the *next* focus objective. Store it in state. -> END TURN.
             *   If the Planner indicates no more objectives (e.g., returns a specific signal or empty objective), the session is complete. Respond with a concluding message. -> END TURN.
-            *   If the Teacher reported failure (`objective_failed`), decide how to proceed. Maybe call `reflect_on_interaction` or try the `call_planner_agent` again for a different approach, or end the session. -> END TURN.
+            *   If the Teacher reported failure (`objective_failed`), decide how to proceed. Maybe call `reflect_on_interaction_tool` or try the `call_planner_agent` again for a different approach, or end the session. -> END TURN.
 
         CORE WORKFLOW:
         1. Check session state for `current_focus_objective`.

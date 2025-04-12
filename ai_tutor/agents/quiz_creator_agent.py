@@ -19,7 +19,7 @@ from ai_tutor.agents.models import QuizCreationResult, QuizQuestion
 # This function now defines the AGENT used AS A TOOL
 def create_quiz_creator_agent() -> Agent:
     """Creates the Quiz Creator Agent."""
-    model_identifier = "gemini-1.5-flash" # Use Flash for potentially faster/cheaper quiz generation
+    model_identifier = "gemini-2.0-flash" # Use Flash for potentially faster/cheaper quiz generation
 
     # Create the quiz creator agent as an ADK LLMAgent
     quiz_creator_agent = Agent(

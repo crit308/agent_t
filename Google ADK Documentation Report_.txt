@@ -1,0 +1,1653 @@
+﻿Comprehensive Analysis of the Google Agent Development Kit (ADK)
+Executive Summary:
+The Google Agent Development Kit (ADK) represents an open-source framework designed to facilitate the development and deployment of sophisticated AI agents. With a strong emphasis on integration with Google's AI ecosystem, particularly the Gemini family of models, the ADK also offers the flexibility to work with various other Large Language Models (LLMs) and open-source generative AI tools.1 This report provides a comprehensive overview of the ADK, encompassing its fundamental architecture, the diverse types of agents and tools it supports, its mechanisms for managing conversational context, deployment strategies, and the crucial aspects of responsible AI development. The aim is to equip software developers and technical architects with a thorough understanding of the ADK's capabilities and its potential for building innovative AI-powered applications.
+Introduction to Google ADK:
+The Google Agent Development Kit (ADK) is presented as a versatile and modular framework that empowers developers to construct and implement AI agents.1 Its open-source nature fosters community-driven innovation and allows for extensive customization.1 A key design principle of the ADK is its deep integration with Google's advanced AI technologies, most notably the Gemini models, which are at the forefront of large-scale language processing.1 However, the ADK's utility extends beyond Google's offerings, as it is engineered to be compatible with a wide array of LLMs and open-source generative AI tools, providing developers with significant flexibility in their choice of underlying AI models.1 This adaptability ensures that the ADK can be leveraged across diverse application scenarios and technological stacks.
+The framework is structured to simplify the complexities associated with building AI agents, ranging from basic implementations powered by Gemini to intricate agent architectures that involve sophisticated orchestration and collaboration.1 This layered approach allows developers to start with fundamental agent functionalities and progressively build towards more complex systems as their needs evolve. The ADK's comprehensive nature addresses various stages of the agent development lifecycle, including design, implementation, evaluation, and deployment, making it a holistic solution for creating AI-driven applications.
+The strategic emphasis on Google's ecosystem suggests a deliberate alignment with Google Cloud services, potentially offering streamlined integration with platforms like Vertex AI. This could translate to more efficient development workflows and smoother deployment processes for organizations already invested in Google's cloud infrastructure. The ability to seamlessly leverage other LLMs indicates a commitment to providing developers with the freedom to select the most appropriate AI model for their specific requirements, fostering an environment of innovation and best-fit solutions.
+Core Concepts and Architecture:
+Agents:
+At its core, the Agent Development Kit defines an Agent as an autonomous execution unit designed to achieve specific objectives.4 These agents possess the ability to perform tasks, engage with users, utilize external tools, and coordinate their actions with other agents within a system.4 The fundamental building block for all agents within the ADK is the BaseAgent class, which serves as the foundational blueprint upon which more specialized agent types are constructed.4 Developers typically extend this base class in one of three primary ways to create functional agents tailored to different needs, ranging from intelligent reasoning to structured process control.4
+LLM Agents (LlmAgent, Agent): These agents harness the power of Large Language Models (LLMs) as their central processing engine.4 This allows them to interpret natural language, engage in reasoning, formulate plans, generate responses, and dynamically determine the next course of action, including the selection and utilization of appropriate tools.4 LLM Agents are particularly well-suited for tasks that are inherently language-centric and require a high degree of flexibility and adaptability in decision-making.4 The API reference 5 indicates the presence of both Agent and LlmAgent classes, with LlmAgent specifically incorporating configurations for interacting with LLMs, such as callbacks for model and tool interactions, settings for content generation, and the specification of the underlying model. The LlmAgent also allows for the configuration of a global_instruction that sets a general tone or directive, as well as a more specific instruction to guide the agent's behavior in particular contexts.5 While the Agents overview 4 presents Agent as synonymous with LlmAgent, the distinct presence in the API suggests a potential evolution in naming conventions or a more subtle architectural distinction where the base Agent class might offer a more generic agent framework that can be specialized further. Investigating the functionalities of the BaseAgent class in the API documentation would provide further clarity on this distinction.
+Workflow Agents (SequentialAgent, ParallelAgent, LoopAgent): These specialized agents are designed to manage the execution flow of other agents according to predefined, deterministic patterns.4 These patterns include sequential execution, where agents are run one after the other; parallel execution, where multiple agents can operate concurrently; and looping execution, where an agent or a set of agents can be executed repeatedly until a certain condition is met.4 Notably, Workflow Agents do not rely on an LLM for their flow control logic, making them ideal for structured processes that demand predictable and consistent execution.4 The API reference 5 confirms the existence of these workflow agent types, with the LoopAgent offering a configuration option for max_iterations, allowing developers to control the maximum number of times the loop can execute. The availability of these diverse workflow agents underscores the ADK's ability to handle complex, multi-step tasks with a high degree of predictability. This structured approach is particularly advantageous in scenarios where the sequence or concurrency of operations is critical for achieving the desired outcome.
+Custom Agents: Developers can create highly specialized agents by directly extending the BaseAgent class.4 This approach allows for the implementation of unique operational logic, specific control flows, or specialized integrations with external systems that are not covered by the standard agent types.4 Custom Agents cater to application requirements that are highly tailored and demand bespoke functionalities.
+Multi-Agent Systems: The ADK facilitates the creation of modular and scalable applications through the composition of multiple specialized agents arranged in a hierarchical structure.1 This architecture enables complex coordination and the delegation of tasks among different agents, allowing for the development of sophisticated AI systems that can tackle intricate problems by breaking them down into smaller, more manageable sub-tasks.1 In such systems, different agent types often collaborate, with LLM Agents providing intelligent, language-based task execution, Workflow Agents managing the overall process flow using standard patterns, and Custom Agents offering specialized capabilities or rules needed for unique integrations.4 The emphasis on multi-agent systems indicates that the ADK is well-suited for building advanced applications that require the orchestrated efforts of multiple AI entities, promoting scalability and maintainability through modular design.
+Table: Comparison of Agent Types:
+| Feature | LLM Agent (LlmAgent) | Workflow Agent | Custom Agent (BaseAgent subclass) |
+| :------------------- |...source |
+Tools:
+Tools within the Google Agent Development Kit represent specific capabilities that are provided to AI agents, enabling them to perform actions and interact with the world beyond their inherent text generation and reasoning abilities.6 The effective utilization of tools is often a distinguishing factor between highly capable agents and more basic language model implementations.6 Tools are action-oriented, allowing agents to perform tasks such as querying databases, making API requests, searching the web, executing code, and retrieving information.6 They extend the limitations of an agent's training data by providing access to real-time information and the ability to affect external systems.6 It is important to note that tools themselves execute predefined, developer-defined logic and do not possess independent reasoning capabilities; rather, the agent's LLM decides which tool to use, when, and with what inputs.6
+Agents utilize tools dynamically through mechanisms that often involve function calling.6 This process typically includes the agent's LLM analyzing its instructions and the user's request, selecting the appropriate tool based on its description, generating the necessary arguments for the tool, invoking its execution, receiving the output from the tool, and finally incorporating this output into its reasoning process to formulate the next response or determine the subsequent step.6
+The ADK offers flexibility by supporting several types of tools.6 Function Tools are created by developers and are tailored to specific application needs. These can include standard synchronous functions or methods defined in code, the use of another agent as a tool, and support for long-running function tools that perform asynchronous operations.5 Built-in Tools are ready-to-use functionalities provided by the framework for common tasks, such as Google Search and Code Execution.1 The availability of tools like google_search 7 and the various implementations of BaseCodeExecutor in the API reference 5, including ContainerCodeExecutor, UnsafeLocalCodeExecutor, and VertexAiCodeExecutor, demonstrates the framework's commitment to providing essential out-of-the-box capabilities. The inclusion of these built-in tools can significantly accelerate the development process by providing immediate access to frequently needed functionalities. The different code executor options offer a balance between security and convenience, allowing developers to choose the most appropriate method for their specific use case.
+Furthermore, the ADK supports the integration of Third-Party Tools from popular external libraries like LangChain and CrewAI.1 This capability greatly expands the potential of ADK agents by allowing developers to leverage existing ecosystems of tools and services without needing to build everything from scratch.
+Within an agent's instructions, a tool can be directly referenced by its function name.6 When the tool's function name and docstring are sufficiently descriptive, the instructions can primarily focus on guiding the LLM on when to utilize the tool.6 It is crucial to provide clear instructions to the agent on how to handle different return values from a tool, such as success or error messages.6 The ADK also supports the sequential use of tools, where the output of one tool can serve as the input for another, enabling more complex workflows.6
+For advanced scenarios, the ADK provides access to additional contextual information within a tool function through the special parameter tool_context: ToolContext in the function signature.5 This provides an instance of the ToolContext class when the tool is called, offering access to the current session's state, the agent's subsequent actions, the unique identifier for the specific tool invocation, authentication credentials, and methods to interact with configured services like Artifacts and Memory.6 The availability of authentication methods (request_credential, get_auth_response) and memory search (search_memory) within ToolContext 5 highlights the framework's ability to manage secure interactions and access long-term knowledge. The ToolContext feature empowers tools to be more context-aware, leading to more sophisticated and integrated agent behaviors.
+The way a standard Python function is defined as an ADK Tool significantly impacts the agent's ability to use it correctly.6 The LLM relies on the function's name, parameters (arguments) with type hints, and docstring to understand its purpose.6 Key guidelines include using descriptive names, clear parameters with type hints, a dictionary return type, and a comprehensive docstring explaining what the tool does, when to use it, and the structure of its inputs and outputs.6 Keeping tools focused and simple with fewer parameters generally leads to more reliable agent behavior.6
+Sessions, State, and Memory:
+Meaningful, multi-turn conversations necessitate that agents understand and maintain context. The Agent Development Kit provides structured mechanisms to manage this context through the concepts of Session, State, and Memory.1
+A Session represents a single, ongoing interaction between a user and the agent system.9 It encompasses the chronological sequence of messages and actions (Events) for that specific interaction.9 Additionally, a Session can hold temporary data known as State, which is relevant only during the current conversation.1 The SessionService is responsible for managing the entire lifecycle of Session objects, including their creation, retrieval, updating (by appending Events and modifying State), and deletion.9 The ADK offers different implementations of the SessionService, such as InMemorySessionService for local testing and VertexAiSessionService for production deployments on Google Cloud.9 This provision of different service implementations caters to the varying needs of development stages and deployment environments. The in-memory service simplifies local testing by providing a lightweight, non-persistent storage solution, while the Vertex AI service offers the scalability and persistence required for production-grade applications.
+State (session.state) refers to the data stored within a specific Session.1 It is used to manage information that is pertinent only to the active conversation thread, such as items in a shopping cart or user preferences mentioned within the current session.9 The API reference 5 details a State class with methods for retrieving values, checking for changes (deltas), converting the state to a dictionary, and updating the state. Furthermore, it defines prefixes for different scopes of state: APP_PREFIX, TEMP_PREFIX, and USER_PREFIX.5 This structured approach to managing session state with distinct prefixes allows developers to organize and access contextual data in an efficient manner, ensuring appropriate isolation and management of information based on its scope and relevance.
+Memory, on the other hand, represents a store of information that can span multiple past sessions or include external data sources.2 It acts as a knowledge base that the agent can search to recall information or context that extends beyond the immediate conversation.9 The MemoryService is responsible for managing this long-term knowledge store, handling the ingestion of information (often from completed Sessions) and providing methods to search this stored knowledge based on queries.5 Implementations such as InMemoryMemoryService and VertexAiRagMemoryService are available.5 The search_memory method, accessible within both ToolContext and BaseMemoryService 5, enables agents to retrieve relevant information from the memory store. The inclusion of a dedicated memory management system allows ADK agents to retain knowledge across different interactions, leading to more contextual and personalized experiences. The integration with Vertex AI for Retrieval-Augmented Generation (RAG) further enhances this capability by leveraging Google Cloud's infrastructure for efficient and scalable knowledge retrieval.
+Artifacts:
+In the Google Agent Development Kit, Artifacts provide a fundamental mechanism for managing named and versioned binary data.1 This data can be associated with a specific user interaction session or persistently with a user across multiple sessions.16 Artifacts enable agents and tools to handle various data formats beyond simple text strings, including files, images, audio, and other binary formats, thus facilitating richer and more versatile interactions.16 An Artifact is essentially a piece of binary data, such as the content of a file, identified by a unique filename string within a specific scope (either a session or a user).16 Each time an artifact with the same filename is saved, a new version is automatically created, ensuring a history of changes.16 Artifacts are consistently represented using the standard google.genai.types.Part object, with the core data typically stored within the inline_data attribute, which contains the raw binary content as bytes and a MIME type string indicating the type of data.16
+Artifacts are not stored directly within the agent or session state; instead, their storage and retrieval are managed by a dedicated Artifact Service, which is an implementation of the BaseArtifactService.5 The ADK provides default implementations such as InMemoryArtifactService for testing and temporary storage and GcsArtifactService for persistent storage using Google Cloud Storage.5 The chosen service automatically handles versioning when data is saved.
+The use of Artifacts is particularly beneficial in scenarios involving binary or large data, where session state is more suited for smaller configuration or conversational context.16 Key reasons to utilize Artifacts include the ability to handle non-textual data formats, persist large amounts of binary data without cluttering the session state, enable users to upload and retrieve files, facilitate the sharing of binary outputs generated by agents or tools, and cache the results of computationally expensive operations that produce binary data.16 In essence, Artifacts managed by an ArtifactService are the appropriate mechanism in ADK whenever an agent needs to work with file-like binary data that requires persistence, versioning, or sharing.16
+Interaction with artifacts within an agent's logic is primarily done through methods provided by the CallbackContext and ToolContext objects.8 These methods abstract the underlying storage details, allowing developers to focus on the data itself. Before using these methods, an instance of a BaseArtifactService implementation must be provided when initializing the Runner.5 The artifact interaction methods include save_artifact(filename: str, artifact: types.Part) -> int, which saves the artifact data and returns the version number, and load_artifact(filename: str, version: Optional[int] = None) -> Optional[types.Part], which retrieves an artifact, either the latest version or a specific one.8 Additionally, tool_context.list_artifacts() -> list[str] allows listing all unique artifact filenames accessible within the current scope.8 The artifact management system is crucial for enabling ADK agents to handle rich media and large binary data, expanding their application scope beyond simple text-based interactions. The automatic versioning of artifacts ensures data integrity and allows for tracking changes over time.
+Callbacks:
+Callbacks in Google's Agent Development Kit are a fundamental feature that allows developers to observe, customize, and control the behavior of agents during their execution process.1 They are essentially Python functions defined by the user and associated with an agent upon its creation.17 The ADK framework automatically invokes these functions at specific, predefined points in the agent's lifecycle.17 These key stages include before or after the agent's main processing logic runs, before sending a request to or after receiving a response from the Large Language Model (LLM), and before executing a tool (like a Python function or another agent) or after it finishes.5 Specific callback types available include before_agent_callback, after_agent_callback, before_model_callback, after_model_callback, before_tool_callback, and after_tool_callback.5
+The benefits of using callbacks are significant. They provide a mechanism for detailed observation and debugging by allowing logging of information at critical steps.11 Callbacks also enable customization and control by allowing modification of data flowing through the agent, such as LLM requests or tool results, and can even be used to bypass certain steps based on custom logic.17 They are instrumental in implementing guardrails by enforcing safety rules, validating inputs and outputs, and preventing disallowed operations.11 Furthermore, callbacks can be used for state management by reading or dynamically updating the agent's session state during execution.17 Finally, they facilitate integration and enhancement by allowing the triggering of external actions like API calls or notifications and the addition of features such as caching.17
+Callbacks are registered by passing the defined Python functions as arguments to the agent's constructor (__init__) when creating an instance of Agent or LlmAgent.5 For instance, a callback function can be defined and registered using parameters like before_model_callback during the creation of an LlmAgent.17
+The callback mechanism involves the ADK framework checking for corresponding callback functions at predefined execution points.17 If a callback is registered, the framework executes the user-defined function.17 These callback functions are not called in isolation; the framework provides special context objects (CallbackContext or ToolContext) as arguments.8 These context objects contain crucial information about the current state of the agent's execution, including invocation details, session state, and potentially references to services like artifacts or memory.8 Developers can utilize these context objects to understand the current situation and interact with the framework.8
+A powerful aspect of callbacks is how their return value influences the agent's subsequent actions, allowing for interception and control of the execution flow.17 Returning None from a callback indicates that the callback has completed its task (e.g., logging, inspection) and that the ADK agent should proceed with its normal operation.17 However, returning a specific type of object (instead of None) allows developers to override the ADK agent's default behavior.17 The framework will then use the returned object and skip the step that would normally follow or replace the result that was just generated.17 For example, returning types.Content from a before_agent_callback can skip the agent's main logic, or returning LlmResponse from a before_model_callback can bypass the call to the LLM.17 This capability makes callbacks an incredibly versatile tool for customizing and controlling agent behavior at a granular level.
+Runtime Environment:
+The ADK Runtime serves as the central engine that powers agent applications during user interactions.1 It orchestrates the execution of agents, tools, and callbacks in response to user input, managing the flow of information, changes in state, and interactions with external services such as LLMs or storage systems.19 It acts as the operational core of the agentic application, connecting and running the defined components (agents, tools) to fulfill user requests.19
+At its heart, the ADK Runtime operates on an Event Loop, which facilitates communication between the Runner component and the "Execution Logic" (comprising Agents, LLM calls, Callbacks, and Tools).19 This loop functions as follows: first, the Runner receives a user query and initiates the processing by the main Agent.19 The Agent then executes its logic until it has something to report (such as a response, a request to use a tool, or a state change), at which point it yields an Event.19 The Runner receives this Event, processes any associated actions (like saving state changes via Services), and forwards the event onwards (e.g., to the user interface).19 Critically, the Agent's logic only resumes from where it paused after the Runner has processed the event, potentially reflecting the effects of the changes committed by the Runner.19 This cycle repeats until the agent has no more events to yield for the current user query.19 This event-driven loop is the fundamental pattern that governs how ADK executes agent code, ensuring a structured and manageable flow of operations.
+The ADK Runtime comprises several key components.19 The Runner is the primary entry point and orchestrator for a single user query (run_async and run_live are key methods 5). It manages the Event Loop, receives events from the Execution Logic, coordinates with Services to process and commit event actions (state and artifact changes), and forwards processed events upstream (e.g., to the UI). The Runner drives the conversation turn by turn based on the events yielded by the agents.5 Execution Logic Components contain the custom code and core agent capabilities. This includes the Agent (whether it's a BaseAgent, LlmAgent, or other specialized type), which implements the _run_async_impl method to yield events and represents the primary logic unit for processing information and deciding on actions. Tools (such as BaseTool, FunctionTool, AgentTool) are external functions or capabilities used by agents (often LlmAgent) to interact with the outside world or perform specific tasks. They execute and return results, which are then encapsulated in events. Callbacks are user-defined functions attached to agents that hook into specific points in the execution flow, potentially modifying behavior or state, with their effects also captured in events. These execution logic components perform the actual thinking, calculation, or external interaction and communicate their results or needs by yielding Event objects and pausing until the Runner processes them.19
+Event objects are the messages passed back and forth between the Runner and the Execution Logic.5 An Event represents an atomic occurrence, such as user input, agent text, a tool call or result, a state change request, or a control signal. It carries both the content of the occurrence and any intended side effects (actions like state_delta).5 Services are backend components responsible for managing persistent or shared resources. The Runner primarily uses these during event processing. The SessionService (with implementations like BaseSessionService and InMemorySessionService) manages Session objects, including saving and loading them, applying state_delta to the session state, and appending events to the event history. The ArtifactService (with implementations like BaseArtifactService, InMemoryArtifactService, and GcsArtifactService) manages the storage and retrieval of binary artifact data. The MemoryService (such as BaseMemoryService) optionally manages long-term semantic memory across sessions for a user. The Runner interacts with these services to ensure that changes signaled by event.actions are reliably stored before the Execution Logic resumes.5 A Session is a data container that holds the state and history for one specific conversation between a user and the application. It stores the current state dictionary, the list of all past events (event history), and references to associated artifacts, all managed by the SessionService.5 Finally, Invocation is a conceptual term representing everything that happens in response to a single user query, from the moment the Runner receives it until the agent logic finishes yielding events for that query. An invocation might involve multiple agent runs, LLM calls, tool executions, and callback executions, all tied together by a single invocation_id within the InvocationContext.8 The ADK Runtime also exhibits important behaviors related to state updates, "dirty reads," streaming output, and its asynchronous nature, which are crucial for building predictable and efficient agents.
+Events:
+Events are the fundamental units of information flow within the Google Agent Development Kit.1 They represent every significant occurrence during an agent's interaction, from the initial user input to the final response, encompassing all the intermediate steps.15 Understanding events is crucial because they are the primary means by which components communicate, how state is managed, and how control flow is directed.15 An Event in ADK is an immutable record that captures a specific point in the agent's execution, documenting user messages, agent replies, requests to use tools (function calls), tool results, state changes, control signals, and errors.5 Technically, an event is an instance of the google.adk.events.Event class, which extends the basic LlmResponse structure by adding ADK-specific metadata and an actions payload.5
+Events are central to ADK's operation for several key reasons.15 They serve as the standard message format for communication between the user interface, the Runner, agents, the LLM, and tools. All interactions and data flow as Event objects.15 Events carry instructions for state modifications via event.actions.state_delta and track artifact updates via event.actions.artifact_delta. The SessionService utilizes these signals to ensure persistence of state and artifacts.15 Specific fields within events, such as event.actions.transfer_to_agent or event.actions.escalate, act as signals that direct the framework, determining which agent runs next or if a loop should terminate, thus controlling the flow of execution.15 The sequence of events recorded in session.events provides a complete, chronological history of an interaction, which is invaluable for debugging, auditing, and understanding agent behavior step-by-step.15 Essentially, the entire process, from a user's query to the agent's final answer, is orchestrated through the generation, interpretation, and processing of Event objects.
+As a developer, interaction with the stream of events yielded by the Runner is paramount.15 By examining event.author and the main payload in event.content and event.content.parts, one can quickly determine the origin and type of an event.15 The event.author can indicate 'user' for direct user input or the name of a specific agent. The event.content can contain text messages, tool call requests (identifiable via event.get_function_calls()), or tool results (identifiable via event.get_function_responses()). The event.partial attribute can be checked to see if it's a streaming output.15 Once the event type is known, relevant data can be extracted. For text content, event.content.parts.text can be used. For function call details, iterating through event.get_function_calls() provides access to the tool name and arguments. Similarly, event.get_function_responses() yields the tool name and result for function response details. Identifiers like event.id (unique for the event) and event.invocation_id (for the entire interaction cycle) are also available.5
+The event.actions object signals changes that have occurred or should occur. It is important to check if event.actions exists before accessing its fields. State changes are available in event.actions.state_delta as a dictionary of key-value pairs that were modified. Artifact saves are indicated in event.actions.artifact_delta as a dictionary of filename-version pairs. Control flow signals such as event.actions.transfer_to_agent (a string), event.actions.escalate (a boolean), and event.actions.skip_summarization (a boolean) can also be inspected.5 The built-in helper method event.is_final_response() can be used to identify events suitable for display as the agent's complete output for a turn, helping to filter out intermediate steps like tool calls and partial streaming text.15
+Events are generated at various points and processed systematically by the framework.15 User input, agent logic (using yield Event(...)), LLM responses (translated into Event objects), and tool results (containing the function_response) are common sources of event generation.15 When an event is generated, it is yielded to the Runner. The Runner then sends the event to the configured SessionService, where state deltas are applied to session.state, artifact deltas are processed, metadata is finalized, and the event is appended to session.events. Finally, the Runner yields the processed event outwards to the calling application.15 The document provides several examples of typical events, including user input, agent final text response, agent streaming text response, tool call request, tool result provided, state/artifact update only, agent transfer signal, and loop escalation signal.15 Additional details include the use of ToolContext.function_call_id for linking tool actions, how state and artifact changes are recorded via deltas in subsequent events, the meaning of state scope prefixes (app:, user:, temp:), and the structure of error events (with event.error_code and event.error_message fields).15 Best practices for working with events include ensuring clear authorship, using semantic content and actions, being aware of idempotency, using is_final_response(), leveraging history, and using metadata effectively.15 Treating events as structured messages with clear purposes is key to building and managing complex agent behaviors in ADK.
+Context:
+In the Google Agent Development Kit, "context" refers to a crucial collection of information that is accessible to an agent and its tools during specific operations.1 This context provides the necessary background knowledge and resources for effective task handling or conversation turns.8 Agents often require more than just the latest user message to perform well, making context essential for several key reasons.8 It enables agents to remember details across multiple steps in a conversation, such as user preferences or previous calculations, primarily managed through session state.8 Context also facilitates the passing of data, allowing information discovered or generated in one step (like an LLM call or a tool execution) to be shared with subsequent steps, again with session state playing a crucial role.8 Furthermore, context enables interaction with various framework capabilities, including artifact storage (saving or loading files associated with the session), memory (searching for relevant information from past interactions), and authentication (requesting and retrieving credentials for tools).8 It also provides information about the currently running agent (agent.name) and a unique identifier for the current request-response cycle (invocation_id), which is useful for logging and debugging.5 Finally, context enables specialized operations within tools, such as requesting authentication or searching memory, by providing access to the current interaction's details.8
+The central element that holds all this information together for a single user-request-to-final-response cycle (an invocation) is the InvocationContext.8 However, developers typically do not create or manage this object directly. The ADK framework creates it when an invocation begins (e.g., via runner.run_async) and implicitly passes the relevant contextual information to the agent code, callbacks, and tools.8 While InvocationContext serves as the comprehensive internal container, ADK offers specialized context objects tailored to specific situations.8 These different "flavors" of context ensure that developers have the appropriate tools and permissions for the task at hand without needing to manage the full complexity of the internal context everywhere.8
+These specialized context objects include InvocationContext, ReadonlyContext, CallbackContext, and ToolContext.8 The InvocationContext is the most comprehensive, providing access to the entire state of the current invocation, including the session (with its state and events), the current agent instance, invocation_id, initial user_content, references to configured services (artifact_service, memory_service, session_service), and fields related to live/streaming modes.5 It is primarily used when the agent's core logic requires direct access to the overall session or services, although interactions with state and artifacts are often delegated to callbacks or tools.8 It can also be used to control the invocation itself (e.g., setting ctx.end_invocation = True).5 ReadonlyContext is provided in scenarios where only read access to basic information is needed and modification is disallowed, such as in InstructionProvider functions.8 It offers a safe, read-only view of fundamental contextual details, including invocation_id, agent_name, and a read-only view of the current state.8 CallbackContext is passed as callback_context to agent lifecycle callbacks and model interaction callbacks.5 It facilitates inspecting and modifying state, interacting with artifacts, and accessing invocation details specifically within callbacks.8 In addition to the contents of ReadonlyContext, CallbackContext provides a mutable state property and methods for interacting with the configured artifact_service: load_artifact(filename) and save_artifact(filename, part).8 It also provides direct access to user_content.8 Finally, ToolContext is passed as tool_context to the functions backing FunctionTools and to tool execution callbacks.5 It provides everything that CallbackContext does, along with specialized methods essential for tool execution, such as handling authentication, searching memory, and listing artifacts.8 Key capabilities added to CallbackContext include authentication methods (request_credential(auth_config) and get_auth_response(auth_config)), artifact listing (list_artifacts()), memory search (search_memory(query)), a function_call_id property, and an actions property providing direct access to the EventActions object.5 The existence of these different context objects, each tailored to specific needs and providing appropriate levels of access and functionality, reflects a thoughtful design that promotes cleaner, more secure, and more manageable code.
+Developing with ADK:
+Getting Started:
+Initiating development with the Google ADK involves a series of straightforward steps, as outlined in the documentation.1 The first crucial step is Installation, which involves installing the google-adk Python package using the pip package manager with the command pip install google-adk.1 Following installation, the ADK offers several resources to help developers quickly become familiar with the framework. Quickstart guides are available to facilitate the creation of a first ADK agent and to specifically learn how to build a streaming agent.1 For a more in-depth learning experience, a comprehensive Tutorial is provided that guides users through the process of building their first ADK multi-agent.1 To further aid understanding and provide practical examples, a collection of Sample Agents is available in a dedicated GitHub repository, showcasing various applications of the ADK in domains like retail, travel, and customer service.1 Finally, the "About" section within the documentation provides an overview of the key components involved in building and deploying ADK agents, offering a foundational understanding of the framework's architecture.20 The availability of these comprehensive getting started resources significantly reduces the initial learning curve for developers, making it easier to begin experimenting with and utilizing the ADK.
+Building and Deploying Agents:
+The process of building and deploying agents with the ADK involves defining agent behavior, orchestration logic, and tool usage directly within the code.7 This code-first approach provides developers with fine-grained control over their agents' functionalities and allows for robust testing and versioning.7 For local development and testing, the ADK offers a command-line interface (CLI) with commands like adk run and adk web, as well as a visual web UI that simplifies debugging and interaction with agents.3 The framework also supports containerization using Docker, enabling developers to package their agents and deploy them in various environments.1 When it comes to deploying agents to production, the ADK provides seamless integration with Google Cloud services. One option is to use Vertex AI Agent Engine, a fully managed, auto-scaling service specifically designed for deploying and scaling AI agents built with frameworks like ADK.1 Another option is Cloud Run, a managed auto-scaling compute platform on Google Cloud that allows running the agent as a container-based application, offering more control over the underlying infrastructure.1 This flexibility in deployment options allows developers to choose the solution that best fits their operational needs, technical expertise, and scalability requirements. The direct integration with Google Cloud services streamlines the deployment process for users already invested in this ecosystem.
+API Reference Overview:
+The API Reference for the Google Agent Development Kit provides comprehensive documentation for the various modules and their constituent classes, functions, and attributes.1 This detailed reference serves as an invaluable resource for developers seeking an in-depth understanding of the framework's capabilities. Key modules include google.adk.agents, which contains classes for defining and managing different types of agents like Agent, BaseAgent, LlmAgent, LoopAgent, ParallelAgent, and SequentialAgent.5 The google.adk.artifacts module deals with the management of binary data and includes classes like BaseArtifactService, GcsArtifactService, and InMemoryArtifactService.5 Code execution functionalities are provided by the google.adk.code_executors module, featuring BaseCodeExecutor and its implementations such as ContainerCodeExecutor and VertexAiCodeExecutor.5 The google.adk.evaluation module offers tools for assessing agent performance, with the AgentEvaluator class being central to this.5 The google.adk.events module defines classes for representing events within the agent system, including Event and EventActions.5 Managing agent memory is handled by the google.adk.memory module, which includes BaseMemoryService and implementations like InMemoryMemoryService and VertexAiRagMemoryService.5 The google.adk.models module defines interfaces and implementations for interacting with different Language Models, such as BaseLlm and Gemini, along with the LLMRegistry.5 Planning agent actions is the focus of the google.adk.planners module, containing classes like BasePlanner and BuiltInPlanner.5 The google.adk.runners module provides classes for running and managing the execution of agents, including InMemoryRunner and Runner.5 Session management is handled by the google.adk.sessions module, with classes like BaseSessionService, InMemorySessionService, Session, and State.5 Finally, the google.adk.tools module defines classes for creating and utilizing tools, such as BaseTool, FunctionTool, ToolContext, and various pre-built tool integrations.5 This comprehensive API reference underscores the ADK's status as a mature and well-structured framework, offering developers a wide array of tools and functionalities for building sophisticated AI agents. The modular design of the API promotes code organization and maintainability, making it easier to develop and manage complex agent systems.
+Evaluation and Responsible AI:
+Evaluating Agent Performance:
+Evaluation is a critical aspect of developing with the Google Agent Development Kit, as it ensures that language model (LLM) agents function as intended and maintain stability, especially given the inherent probabilistic nature of these models.1 Traditional software testing methods that rely on clear "pass/fail" signals are often inadequate for assessing agent performance, necessitating qualitative evaluations of both the final output and the agent's trajectory—the sequence of steps taken to reach the solution.24 This involves assessing the quality of the agent's decisions, its reasoning process, and the correctness and relevance of the final result.24
+The ADK provides a framework for automating these evaluations, which is highly recommended for progressing beyond the initial prototyping phase.24 The evaluation process in ADK primarily focuses on two key components: evaluating the agent's trajectory and tool use, and evaluating the quality of the final response.24 Evaluating the trajectory involves analyzing the steps an agent takes to arrive at a solution, including its choice of tools and the efficiency of its approach.24 This often entails comparing the agent's actual trajectory to an expected or ideal one to identify errors and inefficiencies. Several ground-truth-based trajectory evaluation metrics are available, such as exact match, in-order match, and precision, with the choice of metric depending on the specific requirements of the agent.24 Evaluating the final response involves assessing its quality, relevance, and correctness.24
+The ADK offers two main approaches for conducting these evaluations against predefined datasets and criteria: using a test file and using an Evalset File.24 Using a test file involves creating individual JSON files (with the .test.json suffix) for each simple agent-model interaction (session), making it effective for unit testing during active agent development.24 Each test file contains a single session, which may include multiple turns, with each turn specifying the user's query, the expected tool use, expected intermediate agent responses, and the reference (expected final response).24 Test files can be organized into folders, and a test_config.json file within a folder can specify evaluation criteria.24 Using an Evalset File involves a dedicated JSON dataset (with the .evalset.json suffix) for evaluating more complex, multi-turn conversations, making it suitable for integration tests.24 An evalset file contains multiple "evals," each representing a distinct session with a unique name and an associated initial session state, with each eval consisting of one or more "turns" containing the same fields as in the test file approach.24
+Evaluation criteria define how the agent's performance is measured against the evalset.24 The ADK supports metrics such as tool_trajectory_avg_score (which compares actual tool usage to expected usage) and response_match_score (which compares the final response to the expected response using the ROUGE metric).24 Default values for these criteria are used if not specified in a test_config.json file.24
+Developers can run evaluations using the ADK in three primary ways: through a Web-based UI (accessible via the adk web command), programmatically using pytest and test files, and via a Command Line Interface (using the adk eval command).3 The web-based UI provides an interactive interface for evaluating agents and generating evaluation datasets.24 Running evaluations programmatically allows for integration into testing pipelines and CI/CD processes.24 The command-line interface enables direct execution of evaluations on existing eval set files, facilitating automation.24 The comprehensive evaluation framework offered by the ADK empowers developers to systematically assess the performance of their agents, ensuring both the quality of the final output and the correctness of the reasoning process. The availability of different evaluation approaches and criteria provides flexibility in tailoring the evaluation process to the specific needs of the agent being developed.
+Building Responsible Agents:
+As AI agents become increasingly capable, ensuring that they operate safely, securely, and in alignment with brand values is of paramount importance.1 Uncontrolled agents can pose significant risks, including executing misaligned or harmful actions such as data exfiltration and generating inappropriate content that can damage a brand's reputation.18 The Google Agent Development Kit places a strong emphasis on building responsible AI agents and offers several mechanisms to establish strict boundaries, ensuring that agents only perform actions that have been explicitly allowed.18
+These mechanisms include Identity and Authorization to control who the agent acts as by defining agent and user authentication.18 Guardrails can be implemented to screen both inputs and outputs, providing precise control over model and tool calls. This includes In-Tool Guardrails, where tools are designed defensively using developer-set tool context to enforce policies (e.g., allowing queries only on specific tables).18 If using Gemini models, developers can benefit from Built-in Gemini Safety Features, such as content filters to block harmful outputs and system instructions to guide the model's behavior and safety guidelines.18 Model and tool callbacks provide another layer of control by allowing validation of model and tool calls before or after execution, checking parameters against agent state or external policies.18 Callbacks can also be used to implement an additional safety layer using a cheap and fast model like Gemini Flash Lite to screen inputs and outputs.18 To prevent security issues from model-generated code, the ADK supports Sandboxed code execution.18 Evaluation and tracing tools are available to assess the quality and correctness of the agent's output and to gain visibility into agent actions, analyzing the steps taken to reach a solution.18 Finally, Network Controls and VPC-SC can be used to confine agent activity within secure perimeters to prevent data exfiltration and limit the potential impact radius.18 The documentation includes a dedicated "Responsible Agents" guide that provides further information and best practices.1 Google's broader AI Principles and the dimensions of Responsible AI (Fairness, Accountability, Safety, Privacy) serve as overarching guidelines for developing AI solutions ethically and responsibly.27 The robust set of features and guidelines within the ADK underscores the importance of building AI systems with a strong focus on safety and ethical considerations.
+Deployment Options:
+The Agent Development Kit offers several options for deploying agents, catering to different needs for production readiness and flexibility.1 One primary option is Agent Engine in Vertex AI, which is a fully managed, auto-scaling service on Google Cloud specifically designed for deploying, managing, and scaling AI agents built with frameworks like ADK.1 This service handles the underlying infrastructure, allowing developers to focus on their agent logic. Another key deployment option is Cloud Run, a managed auto-scaling compute platform on Google Cloud that enables running the agent as a container-based application.1 Cloud Run offers more control over the environment while still providing scalability and ease of management. Additionally, for development and testing purposes, agents can be run locally.1 The availability of both a fully managed service and a more configurable platform provides developers with the flexibility to choose the deployment option that best aligns with their operational requirements, technical expertise, and desired level of control. The direct integration with Google Cloud services simplifies the deployment process for those already operating within this ecosystem.
+Contributing to ADK:
+The Google Agent Development Kit is an open-source project that welcomes contributions from the community to both its core Python framework and its documentation. The project maintains two main repositories on GitHub: google/adk-python, which contains the source code for the core Python library, and google/adk-docs, which houses the source for the documentation website. Individuals interested in contributing are asked to first sign a Contributor License Agreement (CLA) to grant permission for their contributions to be used and redistributed as part of the project. It is also recommended to review the community guidelines to ensure contributions align with the project's standards and goals.
+There are several ways to contribute to the ADK. Reporting issues, whether they are bugs in the framework or errors in the documentation, is a valuable way to help improve the project. Suggestions for enhancements to existing features or ideas for new functionalities are also welcome and can be submitted as issues in the respective GitHub repositories. Improving the documentation by fixing typos, clarifying explanations, or adding missing information can be done by submitting Pull Requests (PRs) to the google/adk-docs repository. Contributing code to fix bugs, implement new features, or provide code samples for the documentation involves submitting PRs to the google/adk-python repository. All contributions, including those from project members, undergo a code review process using GitHub Pull Requests to ensure quality and adherence to project standards. By contributing to the ADK, individuals agree that their contributions will be licensed under the project's Apache 2.0 License. The project's open nature and clear contribution guidelines encourage community involvement, which can lead to a more robust, feature-rich, and widely adopted framework over time.
+Conclusion:
+The Google Agent Development Kit stands out as a flexible and modular framework that provides a comprehensive suite of tools and functionalities for building, evaluating, and deploying AI agents.1 Its strong integration with Google's AI ecosystem, coupled with its support for other leading LLMs, offers developers a versatile platform for creating sophisticated AI-powered applications.1 From defining various types of agents and equipping them with a rich set of tools to managing conversational context and ensuring responsible AI practices, the ADK addresses the key challenges in developing advanced AI systems.1 The availability of comprehensive documentation, including getting started guides, tutorials, and a detailed API reference, lowers the barrier to entry for new developers.1 Furthermore, the flexible deployment options on Google Cloud, along with the project's open-source nature and clear contribution guidelines, foster a vibrant ecosystem for innovation and growth. The ADK holds significant potential for developers looking to build a wide range of AI-powered applications, from simple conversational bots to complex multi-agent systems capable of tackling intricate tasks. As the field of AI agent development continues to evolve, the Google ADK is poised to play a crucial role in shaping the future of intelligent automation and interactive systems.
+Trabalhos citados
+1. Agent Development Kit - Google, acesso a abril 11, 2025, https://google.github.io/adk-docs/
+2. Build and manage multi-system agents with Vertex AI | Google Cloud Blog, acesso a abril 11, 2025, https://cloud.google.com/blog/products/ai-machine-learning/build-and-manage-multi-system-agents-with-vertex-ai/
+3. Just did a deep dive into Google's Agent Development Kit (ADK). Here are some thoughts, nitpicks, and things I loved (unbiased) : r/ollama - Reddit, acesso a abril 11, 2025, https://www.reddit.com/r/ollama/comments/1jvsw3f/just_did_a_deep_dive_into_googles_agent/
+4. Agents - Agent Development Kit - Google, acesso a abril 11, 2025, https://google.github.io/adk-docs/agents/
+5. Agent Development Kit documentation - Google, acesso a abril 11, 2025, https://google.github.io/adk-docs/api-reference/
+6. Tools - Agent Development Kit - Google, acesso a abril 11, 2025, https://google.github.io/adk-docs/tools/
+7. google/adk-python: An open-source, code-first Python toolkit for building, evaluating, and deploying sophisticated AI agents with flexibility and control. - GitHub, acesso a abril 11, 2025, https://github.com/google/adk-python
+8. Context - Agent Development Kit - Google, acesso a abril 11, 2025, https://google.github.io/adk-docs/context/
+9. Introduction to Conversational Context: Session, State, and Memory - Google, acesso a abril 11, 2025, https://google.github.io/adk-docs/sessions/
+10. Building Google Agent Using ADK | Agent Development Kit | Generative AI - YouTube, acesso a abril 11, 2025, https://www.youtube.com/watch?v=tuvi4BmXR5s
+11. Build Your First Intelligent Agent Team: A Progressive Weather Bot with ADK - Colab, acesso a abril 11, 2025, https://colab.research.google.com/github/google/adk-docs/blob/main/examples/python/notebooks/adk_tutorial.ipynb
+12. adk-python/CHANGELOG.md at main - GitHub, acesso a abril 11, 2025, https://github.com/google/adk-python/blob/main/CHANGELOG.md
+13. Session - Agent Development Kit - Google, acesso a abril 11, 2025, https://google.github.io/adk-docs/sessions/session/
+14. Use a Agent Development Kit agent | Generative AI on Vertex AI - Google Cloud, acesso a abril 11, 2025, https://cloud.google.com/vertex-ai/generative-ai/docs/agent-engine/use/adk
+15. Events: - Agent Development Kit - Google, acesso a abril 11, 2025, https://google.github.io/adk-docs/events/
+16. Artifacts - Agent Development Kit - Google, acesso a abril 11, 2025, https://google.github.io/adk-docs/artifacts/
+17. Callbacks: Observe, Customize, and Control Agent Behavior - Google, acesso a abril 11, 2025, https://google.github.io/adk-docs/callbacks/
+18. Responsible Agents - Agent Development Kit - Google, acesso a abril 11, 2025, https://google.github.io/adk-docs/guides/responsible-agents/
+19. Runtime - Agent Development Kit - Google, acesso a abril 11, 2025, https://google.github.io/adk-docs/runtime/
+20. Get Started - Agent Development Kit - Google, acesso a abril 11, 2025, https://google.github.io/adk-docs/get-started/
+21. Quickstart: Build an agent with the Agent Development Kit | Generative AI on Vertex AI, acesso a abril 11, 2025, https://cloud.google.com/vertex-ai/generative-ai/docs/agent-development-kit/quickstart
+22. Build Multi-Model Agent in 10 Minutes - Google's New Agent Kit Is INSANE! - YouTube, acesso a abril 11, 2025, https://www.youtube.com/watch?v=SjZG-QKrw5o
+23. Deploying Your Agent - Agent Development Kit - Google, acesso a abril 11, 2025, https://google.github.io/adk-docs/deploy/
+24. Why Evaluate Agents - Agent Development Kit - Google, acesso a abril 11, 2025, https://google.github.io/adk-docs/evaluate/
+25. acesso a janeiro 1, 1970, https://google.github.io/adk-docs/guides/
+26. Google unveils new AI agent toolkit | Digital Watch Observatory, acesso a abril 11, 2025, https://dig.watch/updates/google-unveils-new-ai-agent-toolkit
+27. Introduction to Responsible AI | Machine Learning - Google for Developers, acesso a abril 11, 2025, https://developers.google.com/machine-learning/guides/intro-responsible-ai
+28. AI Principles - Google AI, acesso a abril 11, 2025, https://ai.google/responsibility/principles/
+29. Responsible AI - Google Cloud, acesso a abril 11, 2025, https://cloud.google.com/responsible-ai
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+API REFERENCE:
+
+Submodules
+google.adk.agents module
+google.adk.agents.Agent
+alias of LlmAgent
+pydantic model google.adk.agents.BaseAgent
+Bases: BaseModel
+Base class for all agents in Agent Development Kit.
+Show JSON schema
+Fields:
+   * after_agent_callback (Callable[[google.adk.agents.callback_context.CallbackContext], google.genai.types.Content | None] | None)
+   * before_agent_callback (Callable[[google.adk.agents.callback_context.CallbackContext], google.genai.types.Content | None] | None)
+   * description (str)
+   * name (str)
+   * parent_agent (google.adk.agents.base_agent.BaseAgent | None)
+   * sub_agents (list[google.adk.agents.base_agent.BaseAgent])
+Validators:
+   * __validate_name » name
+field after_agent_callback: Optional[AfterAgentCallback] = None
+Callback signature that is invoked after the agent run.
+Parameters:
+callback_context – MUST be named ‘callback_context’ (enforced).
+Returns:
+The content to return to the user. When set, the agent run will skipped and the provided content will be appended to event history as agent response.
+field before_agent_callback: Optional[BeforeAgentCallback] = None
+Callback signature that is invoked before the agent run.
+Parameters:
+callback_context – MUST be named ‘callback_context’ (enforced).
+Returns:
+The content to return to the user. When set, the agent run will skipped and the provided content will be returned to user.
+field description: str = ''
+Description about the agent’s capability.
+The model uses this to determine whether to delegate control to the agent. One-line description is enough and preferred.
+field name: str [Required]
+The agent’s name.
+Agent name must be a Python identifier and unique within the agent tree. Agent name cannot be “user”, since it’s reserved for end-user’s input.
+Validated by:
+   * __validate_name
+field parent_agent: Optional[BaseAgent] = None
+The parent agent of this agent.
+Note that an agent can ONLY be added as sub-agent once.
+If you want to add one agent twice as sub-agent, consider to create two agent instances with identical config, but with different name and add them to the agent tree.
+field sub_agents: list[BaseAgent] [Optional]
+The sub-agents of this agent.
+find_agent(name)
+Finds the agent with the given name in this agent and its descendants.
+Return type:
+Optional[BaseAgent]
+Parameters:
+name – The name of the agent to find.
+Returns:
+The agent with the matching name, or None if no such agent is found.
+find_sub_agent(name)
+Finds the agent with the given name in this agent’s descendants.
+Return type:
+Optional[BaseAgent]
+Parameters:
+name – The name of the agent to find.
+Returns:
+The agent with the matching name, or None if no such agent is found.
+model_post_init(_BaseAgent__context)
+Override this method to perform additional initialization after __init__ and model_construct. This is useful if you want to do some validation that requires the entire model to be initialized.
+Return type:
+None
+final async run_async(parent_context)
+Entry method to run an agent via text-based conversaction.
+Return type:
+AsyncGenerator[Event, None]
+Parameters:
+parent_context – InvocationContext, the invocation context of the parent agent.
+Yields:
+Event – the events generated by the agent.
+final async run_live(parent_context)
+Entry method to run an agent via video/audio-based conversaction.
+Return type:
+AsyncGenerator[Event, None]
+Parameters:
+parent_context – InvocationContext, the invocation context of the parent agent.
+Yields:
+Event – the events generated by the agent.
+property root_agent: BaseAgent
+Gets the root agent of this agent.
+pydantic model google.adk.agents.LlmAgent
+Bases: BaseAgent
+LLM-based Agent.
+Show JSON schema
+Fields:
+   * after_model_callback (Optional[AfterModelCallback])
+   * after_tool_callback (Optional[AfterToolCallback])
+   * before_model_callback (Optional[BeforeModelCallback])
+   * before_tool_callback (Optional[BeforeToolCallback])
+   * code_executor (Optional[BaseCodeExecutor])
+   * disallow_transfer_to_parent (bool)
+   * disallow_transfer_to_peers (bool)
+   * examples (Optional[ExamplesUnion])
+   * generate_content_config (Optional[types.GenerateContentConfig])
+   * global_instruction (Union[str, InstructionProvider])
+   * include_contents (Literal['default', 'none'])
+   * input_schema (Optional[type[BaseModel]])
+   * instruction (Union[str, InstructionProvider])
+   * model (Union[str, BaseLlm])
+   * output_key (Optional[str])
+   * output_schema (Optional[type[BaseModel]])
+   * planner (Optional[BasePlanner])
+   * tools (list[ToolUnion])
+Validators:
+   * __model_validator_after » all fields
+   * __validate_generate_content_config » generate_content_config
+field after_model_callback: Optional[AfterModelCallback] = None
+Called after calling LLM.
+Parameters:
+   * callback_context – CallbackContext,
+   * llm_response – LlmResponse, the actual model response.
+Returns:
+The content to return to the user. When present, the actual model response will be ignored and the provided content will be returned to user.
+Validated by:
+   * __model_validator_after
+field after_tool_callback: Optional[AfterToolCallback] = None
+Called after the tool is called.
+Parameters:
+   * tool – The tool to be called.
+   * args – The arguments to the tool.
+   * tool_context – ToolContext,
+   * tool_response – The response from the tool.
+Returns:
+When present, the returned dict will be used as tool result.
+Validated by:
+   * __model_validator_after
+field before_model_callback: Optional[BeforeModelCallback] = None
+Called before calling the LLM. :param callback_context: CallbackContext, :param llm_request: LlmRequest, The raw model request. Callback can mutate the :param request.:
+Returns:
+The content to return to the user. When present, the model call will be skipped and the provided content will be returned to user.
+Validated by:
+   * __model_validator_after
+field before_tool_callback: Optional[BeforeToolCallback] = None
+Called before the tool is called.
+Parameters:
+   * tool – The tool to be called.
+   * args – The arguments to the tool.
+   * tool_context – ToolContext,
+Returns:
+The tool response. When present, the returned tool response will be used and the framework will skip calling the actual tool.
+Validated by:
+   * __model_validator_after
+field code_executor: Optional[BaseCodeExecutor] = None
+Allow agent to execute code blocks from model responses using the provided CodeExecutor.
+Check out available code executions in google.adk.code_executor package.
+NOTE: to use model’s built-in code executor, don’t set this field, add google.adk.tools.built_in_code_execution to tools instead.
+Validated by:
+   * __model_validator_after
+field disallow_transfer_to_parent: bool = False
+Disallows LLM-controlled transferring to the parent agent.
+Validated by:
+   * __model_validator_after
+field disallow_transfer_to_peers: bool = False
+Disallows LLM-controlled transferring to the peer agents.
+Validated by:
+   * __model_validator_after
+field examples: Optional[ExamplesUnion] = None
+Validated by:
+   * __model_validator_after
+field generate_content_config: Optional[types.GenerateContentConfig] = None
+The additional content generation configurations.
+NOTE: not all fields are usable, e.g. tools must be configured via tools, thinking_config must be configured via planner in LlmAgent.
+For example: use this config to adjust model temperature, configure safety settings, etc.
+Validated by:
+   * __model_validator_after
+   * __validate_generate_content_config
+field global_instruction: Union[str, InstructionProvider] = ''
+Instructions for all the agents in the entire agent tree.
+global_instruction ONLY takes effect in root agent.
+For example: use global_instruction to make all agents have a stable identity or personality.
+Validated by:
+   * __model_validator_after
+field include_contents: Literal['default', 'none'] = 'default'
+Whether to include contents in the model request.
+When set to ‘none’, the model request will not include any contents, such as user messages, tool results, etc.
+Validated by:
+   * __model_validator_after
+field input_schema: Optional[type[BaseModel]] = None
+The input schema when agent is used as a tool.
+Validated by:
+   * __model_validator_after
+field instruction: Union[str, InstructionProvider] = ''
+Instructions for the LLM model, guiding the agent’s behavior.
+Validated by:
+   * __model_validator_after
+field model: Union[str, BaseLlm] = ''
+The model to use for the agent.
+When not set, the agent will inherit the model from its ancestor.
+Validated by:
+   * __model_validator_after
+field output_key: Optional[str] = None
+The key in session state to store the output of the agent.
+Typically use cases: - Extracts agent reply for later use, such as in tools, callbacks, etc. - Connects agents to coordinate with each other.
+Validated by:
+   * __model_validator_after
+field output_schema: Optional[type[BaseModel]] = None
+The output schema when agent replies.
+NOTE: when this is set, agent can ONLY reply and CANNOT use any tools, such as function tools, RAGs, agent transfer, etc.
+Validated by:
+   * __model_validator_after
+field planner: Optional[BasePlanner] = None
+Instructs the agent to make a plan and execute it step by step.
+NOTE: to use model’s built-in thinking features, set the thinking_config field in google.adk.planners.built_in_planner.
+Validated by:
+   * __model_validator_after
+field tools: list[ToolUnion] [Optional]
+Tools available to this agent.
+Validated by:
+   * __model_validator_after
+canonical_global_instruction(ctx)
+The resolved self.instruction field to construct global instruction.
+This method is only for use by Agent Development Kit.
+Return type:
+str
+canonical_instruction(ctx)
+The resolved self.instruction field to construct instruction for this agent.
+This method is only for use by Agent Development Kit.
+Return type:
+str
+property canonical_model: BaseLlm
+The resolved self.model field as BaseLlm.
+This method is only for use by Agent Development Kit.
+property canonical_tools: list[BaseTool]
+The resolved self.tools field as a list of BaseTool.
+This method is only for use by Agent Development Kit.
+pydantic model google.adk.agents.LoopAgent
+Bases: BaseAgent
+A shell agent that run its sub-agents in a loop.
+When sub-agent generates an event with escalate or max_iterations are reached, the loop agent will stop.
+Show JSON schema
+Fields:
+   * max_iterations (Optional[int])
+Validators:
+field max_iterations: Optional[int] = None
+The maximum number of iterations to run the loop agent.
+If not set, the loop agent will run indefinitely until a sub-agent escalates.
+pydantic model google.adk.agents.ParallelAgent
+Bases: BaseAgent
+A shell agent that run its sub-agents in parallel in isolated manner.
+This approach is beneficial for scenarios requiring multiple perspectives or attempts on a single task, such as:
+   * Running different algorithms simultaneously.
+   * Generating multiple responses for review by a subsequent evaluation agent.
+Show JSON schema
+Fields:
+Validators:
+pydantic model google.adk.agents.SequentialAgent
+Bases: BaseAgent
+A shell agent that run its sub-agents in sequence.
+Show JSON schema
+Fields:
+Validators:
+google.adk.artifacts module
+class google.adk.artifacts.BaseArtifactService
+Bases: ABC
+Abstract base class for artifact services.
+abstract delete_artifact(*, app_name, user_id, session_id, filename)
+Deletes an artifact.
+Return type:
+None
+Parameters:
+   * app_name – The name of the application.
+   * user_id – The ID of the user.
+   * session_id – The ID of the session.
+   * filename – The name of the artifact file.
+abstract list_artifact_keys(*, app_name, user_id, session_id)
+Lists all the artifact filenames within a session.
+Return type:
+list[str]
+Parameters:
+   * app_name – The name of the application.
+   * user_id – The ID of the user.
+   * session_id – The ID of the session.
+Returns:
+A list of all artifact filenames within a session.
+abstract list_versions(*, app_name, user_id, session_id, filename)
+Lists all versions of an artifact.
+Return type:
+list[int]
+Parameters:
+   * app_name – The name of the application.
+   * user_id – The ID of the user.
+   * session_id – The ID of the session.
+   * filename – The name of the artifact file.
+Returns:
+A list of all available versions of the artifact.
+abstract load_artifact(*, app_name, user_id, session_id, filename, version=None)
+Gets an artifact from the artifact service storage.
+The artifact is a file identified by the app name, user ID, session ID, and filename.
+Return type:
+Optional[Part]
+Parameters:
+   * app_name – The app name.
+   * user_id – The user ID.
+   * session_id – The session ID.
+   * filename – The filename of the artifact.
+   * version – The version of the artifact. If None, the latest version will be returned.
+Returns:
+The artifact or None if not found.
+abstract save_artifact(*, app_name, user_id, session_id, filename, artifact)
+Saves an artifact to the artifact service storage.
+The artifact is a file identified by the app name, user ID, session ID, and filename. After saving the artifact, a revision ID is returned to identify the artifact version.
+Return type:
+int
+Parameters:
+   * app_name – The app name.
+   * user_id – The user ID.
+   * session_id – The session ID.
+   * filename – The filename of the artifact.
+   * artifact – The artifact to save.
+Returns:
+The revision ID. The first version of the artifact has a revision ID of 0. This is incremented by 1 after each successful save.
+class google.adk.artifacts.GcsArtifactService(bucket_name, **kwargs)
+Bases: BaseArtifactService
+An artifact service implementation using Google Cloud Storage (GCS).
+Initializes the GcsArtifactService.
+Parameters:
+   * bucket_name – The name of the bucket to use.
+   * **kwargs – Keyword arguments to pass to the Google Cloud Storage client.
+delete_artifact(*, app_name, user_id, session_id, filename)
+Deletes an artifact.
+Return type:
+None
+Parameters:
+   * app_name – The name of the application.
+   * user_id – The ID of the user.
+   * session_id – The ID of the session.
+   * filename – The name of the artifact file.
+list_artifact_keys(*, app_name, user_id, session_id)
+Lists all the artifact filenames within a session.
+Return type:
+list[str]
+Parameters:
+   * app_name – The name of the application.
+   * user_id – The ID of the user.
+   * session_id – The ID of the session.
+Returns:
+A list of all artifact filenames within a session.
+list_versions(*, app_name, user_id, session_id, filename)
+Lists all versions of an artifact.
+Return type:
+list[int]
+Parameters:
+   * app_name – The name of the application.
+   * user_id – The ID of the user.
+   * session_id – The ID of the session.
+   * filename – The name of the artifact file.
+Returns:
+A list of all available versions of the artifact.
+load_artifact(*, app_name, user_id, session_id, filename, version=None)
+Gets an artifact from the artifact service storage.
+The artifact is a file identified by the app name, user ID, session ID, and filename.
+Return type:
+Optional[Part]
+Parameters:
+   * app_name – The app name.
+   * user_id – The user ID.
+   * session_id – The session ID.
+   * filename – The filename of the artifact.
+   * version – The version of the artifact. If None, the latest version will be returned.
+Returns:
+The artifact or None if not found.
+save_artifact(*, app_name, user_id, session_id, filename, artifact)
+Saves an artifact to the artifact service storage.
+The artifact is a file identified by the app name, user ID, session ID, and filename. After saving the artifact, a revision ID is returned to identify the artifact version.
+Return type:
+int
+Parameters:
+   * app_name – The app name.
+   * user_id – The user ID.
+   * session_id – The session ID.
+   * filename – The filename of the artifact.
+   * artifact – The artifact to save.
+Returns:
+The revision ID. The first version of the artifact has a revision ID of 0. This is incremented by 1 after each successful save.
+pydantic model google.adk.artifacts.InMemoryArtifactService
+Bases: BaseArtifactService, BaseModel
+An in-memory implementation of the artifact service.
+Show JSON schema
+Fields:
+   * artifacts (dict[str, list[google.genai.types.Part]])
+field artifacts: dict[str, list[Part]] [Optional]
+delete_artifact(*, app_name, user_id, session_id, filename)
+Deletes an artifact.
+Return type:
+None
+Parameters:
+   * app_name – The name of the application.
+   * user_id – The ID of the user.
+   * session_id – The ID of the session.
+   * filename – The name of the artifact file.
+list_artifact_keys(*, app_name, user_id, session_id)
+Lists all the artifact filenames within a session.
+Return type:
+list[str]
+Parameters:
+   * app_name – The name of the application.
+   * user_id – The ID of the user.
+   * session_id – The ID of the session.
+Returns:
+A list of all artifact filenames within a session.
+list_versions(*, app_name, user_id, session_id, filename)
+Lists all versions of an artifact.
+Return type:
+list[int]
+Parameters:
+   * app_name – The name of the application.
+   * user_id – The ID of the user.
+   * session_id – The ID of the session.
+   * filename – The name of the artifact file.
+Returns:
+A list of all available versions of the artifact.
+load_artifact(*, app_name, user_id, session_id, filename, version=None)
+Gets an artifact from the artifact service storage.
+The artifact is a file identified by the app name, user ID, session ID, and filename.
+Return type:
+Optional[Part]
+Parameters:
+   * app_name – The app name.
+   * user_id – The user ID.
+   * session_id – The session ID.
+   * filename – The filename of the artifact.
+   * version – The version of the artifact. If None, the latest version will be returned.
+Returns:
+The artifact or None if not found.
+save_artifact(*, app_name, user_id, session_id, filename, artifact)
+Saves an artifact to the artifact service storage.
+The artifact is a file identified by the app name, user ID, session ID, and filename. After saving the artifact, a revision ID is returned to identify the artifact version.
+Return type:
+int
+Parameters:
+   * app_name – The app name.
+   * user_id – The user ID.
+   * session_id – The session ID.
+   * filename – The filename of the artifact.
+   * artifact – The artifact to save.
+Returns:
+The revision ID. The first version of the artifact has a revision ID of 0. This is incremented by 1 after each successful save.
+google.adk.code_executors module
+pydantic model google.adk.code_executors.BaseCodeExecutor
+Bases: BaseModel
+Abstract base class for all code executors.
+The code executor allows the agent to execute code blocks from model responses and incorporate the execution results into the final response.
+optimize_data_file
+If true, extract and process data files from the model request and attach them to the code executor. Supported data file MimeTypes are [text/csv]. Default to False.
+stateful
+Whether the code executor is stateful. Default to False.
+error_retry_attempts
+The number of attempts to retry on consecutive code execution errors. Default to 2.
+code_block_delimiters
+The list of the enclosing delimiters to identify the code blocks.
+execution_result_delimiters
+The delimiters to format the code execution result.
+Show JSON schema
+Fields:
+   * code_block_delimiters (List[tuple[str, str]])
+   * error_retry_attempts (int)
+   * execution_result_delimiters (tuple[str, str])
+   * optimize_data_file (bool)
+   * stateful (bool)
+field code_block_delimiters: List[tuple[str, str]] = [('```tool_code\n', '\n```'), ('```python\n', '\n```')]
+The list of the enclosing delimiters to identify the code blocks. For example, the delimiter (’```python
+‘, ‘ ```’) can be
+used to identify code blocks with the following format:
+`python print("hello") `
+field error_retry_attempts: int = 2
+The number of attempts to retry on consecutive code execution errors. Default to 2.
+field execution_result_delimiters: tuple[str, str] = ('```tool_output\n', '\n```')
+The delimiters to format the code execution result.
+field optimize_data_file: bool = False
+If true, extract and process data files from the model request and attach them to the code executor. Supported data file MimeTypes are [text/csv].
+Default to False.
+field stateful: bool = False
+Whether the code executor is stateful. Default to False.
+abstract execute_code(invocation_context, code_execution_input)
+Executes code and return the code execution result.
+Return type:
+CodeExecutionResult
+Parameters:
+   * invocation_context – The invocation context of the code execution.
+   * code_execution_input – The code execution input.
+Returns:
+The code execution result.
+class google.adk.code_executors.CodeExecutorContext(session_state)
+Bases: object
+The persistent context used to configure the code executor.
+Initializes the code executor context.
+Parameters:
+session_state – The session state to get the code executor context from.
+add_input_files(input_files)
+Adds the input files to the code executor context.
+Parameters:
+input_files – The input files to add to the code executor context.
+add_processed_file_names(file_names)
+Adds the processed file name to the session state.
+Parameters:
+file_names – The processed file names to add to the session state.
+clear_input_files()
+Removes the input files and processed file names to the code executor context.
+get_error_count(invocation_id)
+Gets the error count from the session state.
+Return type:
+int
+Parameters:
+invocation_id – The invocation ID to get the error count for.
+Returns:
+The error count for the given invocation ID.
+get_execution_id()
+Gets the session ID for the code executor.
+Return type:
+Optional[str]
+Returns:
+The session ID for the code executor context.
+get_input_files()
+Gets the code executor input file names from the session state.
+Return type:
+list[File]
+Returns:
+A list of input files in the code executor context.
+get_processed_file_names()
+Gets the processed file names from the session state.
+Return type:
+list[str]
+Returns:
+A list of processed file names in the code executor context.
+get_state_delta()
+Gets the state delta to update in the persistent session state.
+Return type:
+dict[str, Any]
+Returns:
+The state delta to update in the persistent session state.
+increment_error_count(invocation_id)
+Increments the error count from the session state.
+Parameters:
+invocation_id – The invocation ID to increment the error count for.
+reset_error_count(invocation_id)
+Resets the error count from the session state.
+Parameters:
+invocation_id – The invocation ID to reset the error count for.
+set_execution_id(session_id)
+Sets the session ID for the code executor.
+Parameters:
+session_id – The session ID for the code executor.
+update_code_execution_result(invocation_id, code, result_stdout, result_stderr)
+Updates the code execution result.
+Parameters:
+   * invocation_id – The invocation ID to update the code execution result for.
+   * code – The code to execute.
+   * result_stdout – The standard output of the code execution.
+   * result_stderr – The standard error of the code execution.
+pydantic model google.adk.code_executors.ContainerCodeExecutor
+Bases: BaseCodeExecutor
+A code executor that uses a custom container to execute code.
+base_url
+Optional. The base url of the user hosted Docker client.
+image
+The tag of the predefined image or custom image to run on the container. Either docker_path or image must be set.
+docker_path
+The path to the directory containing the Dockerfile. If set, build the image from the dockerfile path instead of using the predefined image. Either docker_path or image must be set.
+Initializes the ContainerCodeExecutor.
+Parameters:
+   * base_url – Optional. The base url of the user hosted Docker client.
+   * image – The tag of the predefined image or custom image to run on the container. Either docker_path or image must be set.
+   * docker_path – The path to the directory containing the Dockerfile. If set, build the image from the dockerfile path instead of using the predefined image. Either docker_path or image must be set.
+   * **data – The data to initialize the ContainerCodeExecutor.
+Show JSON schema
+Fields:
+   * base_url (str | None)
+   * docker_path (str)
+   * image (str)
+   * optimize_data_file (bool)
+   * stateful (bool)
+field base_url: Optional[str] = None
+Optional. The base url of the user hosted Docker client.
+field docker_path: str = None
+The path to the directory containing the Dockerfile. If set, build the image from the dockerfile path instead of using the predefined image. Either docker_path or image must be set.
+field image: str = None
+The tag of the predefined image or custom image to run on the container. Either docker_path or image must be set.
+field optimize_data_file: bool = False
+If true, extract and process data files from the model request and attach them to the code executor. Supported data file MimeTypes are [text/csv].
+Default to False.
+field stateful: bool = False
+Whether the code executor is stateful. Default to False.
+execute_code(invocation_context, code_execution_input)
+Executes code and return the code execution result.
+Return type:
+CodeExecutionResult
+Parameters:
+   * invocation_context – The invocation context of the code execution.
+   * code_execution_input – The code execution input.
+Returns:
+The code execution result.
+model_post_init(context, /)
+This function is meant to behave like a BaseModel method to initialise private attributes.
+It takes context as an argument since that’s what pydantic-core passes when calling it.
+Return type:
+None
+Parameters:
+   * self – The BaseModel instance.
+   * context – The context.
+pydantic model google.adk.code_executors.UnsafeLocalCodeExecutor
+Bases: BaseCodeExecutor
+A code executor that unsafely execute code in the current local context.
+Initializes the UnsafeLocalCodeExecutor.
+Show JSON schema
+Fields:
+   * optimize_data_file (bool)
+   * stateful (bool)
+field optimize_data_file: bool = False
+If true, extract and process data files from the model request and attach them to the code executor. Supported data file MimeTypes are [text/csv].
+Default to False.
+field stateful: bool = False
+Whether the code executor is stateful. Default to False.
+execute_code(invocation_context, code_execution_input)
+Executes code and return the code execution result.
+Return type:
+CodeExecutionResult
+Parameters:
+   * invocation_context – The invocation context of the code execution.
+   * code_execution_input – The code execution input.
+Returns:
+The code execution result.
+pydantic model google.adk.code_executors.VertexAiCodeExecutor
+Bases: BaseCodeExecutor
+A code executor that uses Vertex Code Interpreter Extension to execute code.
+resource_name
+If set, load the existing resource name of the code interpreter extension instead of creating a new one. Format: projects/123/locations/us-central1/extensions/456
+Initializes the VertexAiCodeExecutor.
+Parameters:
+   * resource_name – If set, load the existing resource name of the code interpreter extension instead of creating a new one. Format: projects/123/locations/us-central1/extensions/456
+   * **data – Additional keyword arguments to be passed to the base class.
+Show JSON schema
+Fields:
+   * resource_name (str)
+field resource_name: str = None
+If set, load the existing resource name of the code interpreter extension instead of creating a new one. Format: projects/123/locations/us-central1/extensions/456
+execute_code(invocation_context, code_execution_input)
+Executes code and return the code execution result.
+Return type:
+CodeExecutionResult
+Parameters:
+   * invocation_context – The invocation context of the code execution.
+   * code_execution_input – The code execution input.
+Returns:
+The code execution result.
+model_post_init(context, /)
+This function is meant to behave like a BaseModel method to initialise private attributes.
+It takes context as an argument since that’s what pydantic-core passes when calling it.
+Return type:
+None
+Parameters:
+   * self – The BaseModel instance.
+   * context – The context.
+google.adk.evaluation module
+class google.adk.evaluation.AgentEvaluator
+Bases: object
+An evaluator for Agents, mainly intented for helping with test cases.
+static evaluate(agent_module, eval_dataset_file_path_or_dir, num_runs=2, agent_name=None, initial_session_file=None)
+Evaluates an Agent given eval data.
+Parameters:
+   * agent_module – The path to python module that contains the definition of the agent. There is convention in place here, where the code is going to look for ‘root_agent’ in the loaded module.
+   * eval_dataset – The eval data set. This can be either a string representing full path to the file containing eval dataset, or a directory that is recusively explored for all files that have a .test.json suffix.
+   * num_runs – Number of times all entries in the eval dataset should be assessed.
+   * agent_name – The name of the agent.
+   * initial_session_file – File that contains initial session state that is needed by all the evals in the eval dataset.
+static find_config_for_test_file(test_file)
+Find the test_config.json file in the same folder as the test file.
+google.adk.events module
+pydantic model google.adk.events.Event
+Bases: LlmResponse
+Represents an event in a conversation between agents and users.
+It is used to store the content of the conversation, as well as the actions taken by the agents like function calls, etc.
+invocation_id
+The invocation ID of the event.
+author
+“user” or the name of the agent, indicating who appended the event to the session.
+actions
+The actions taken by the agent.
+long_running_tool_ids
+The ids of the long running function calls.
+branch
+The branch of the event.
+id
+The unique identifier of the event.
+timestamp
+The timestamp of the event.
+is_final_response
+Whether the event is the final response of the agent.
+get_function_calls
+Returns the function calls in the event.
+Show JSON schema
+Fields:
+   * actions (google.adk.events.event_actions.EventActions)
+   * author (str)
+   * branch (str | None)
+   * id (str)
+   * invocation_id (str)
+   * long_running_tool_ids (set[str] | None)
+   * timestamp (float)
+field actions: EventActions [Optional]
+The actions taken by the agent.
+field author: str [Required]
+‘user’ or the name of the agent, indicating who appended the event to the session.
+field branch: Optional[str] = None
+The branch of the event.
+The format is like agent_1.agent_2.agent_3, where agent_1 is the parent of agent_2, and agent_2 is the parent of agent_3.
+Branch is used when multiple sub-agent shouldn’t see their peer agents’ conversaction history.
+field id: str = ''
+The unique identifier of the event.
+field invocation_id: str = ''
+The invocation ID of the event.
+field long_running_tool_ids: Optional[set[str]] = None
+Set of ids of the long running function calls. Agent client will know from this field about which function call is long running. only valid for function call event
+field timestamp: float [Optional]
+The timestamp of the event.
+get_function_calls()
+Returns the function calls in the event.
+Return type:
+list[FunctionCall]
+get_function_responses()
+Returns the function responses in the event.
+Return type:
+list[FunctionResponse]
+has_trailing_code_exeuction_result()
+Returns whether the event has a trailing code execution result.
+Return type:
+bool
+is_final_response()
+Returns whether the event is the final response of the agent.
+Return type:
+bool
+model_post_init(_Event__context)
+Post initialization logic for the event.
+static new_id()
+pydantic model google.adk.events.EventActions
+Bases: BaseModel
+Represents the actions attached to an event.
+Show JSON schema
+Fields:
+   * artifact_delta (dict[str, int])
+   * escalate (bool | None)
+   * requested_auth_configs (dict[str, google.adk.auth.auth_tool.AuthConfig])
+   * skip_summarization (bool | None)
+   * state_delta (dict[str, object])
+   * transfer_to_agent (str | None)
+field artifact_delta: dict[str, int] [Optional]
+Indicates that the event is updating an artifact. key is the filename, value is the version.
+field escalate: Optional[bool] = None
+The agent is escalating to a higher level agent.
+field requested_auth_configs: dict[str, AuthConfig] [Optional]
+Will only be set by a tool response indicating tool request euc. dict key is the function call id since one function call response (from model) could correspond to multiple function calls. dict value is the required auth config.
+field skip_summarization: Optional[bool] = None
+If true, it won’t call model to summarize function response.
+Only used for function_response event.
+field state_delta: dict[str, object] [Optional]
+Indicates that the event is updating the state with the given delta.
+field transfer_to_agent: Optional[str] = None
+If set, the event transfers to the specified agent.
+google.adk.examples module
+class google.adk.examples.BaseExampleProvider
+Bases: ABC
+Base class for example providers.
+This class defines the interface for providing examples for a given query.
+abstract get_examples(query)
+Returns a list of examples for a given query.
+Return type:
+list[Example]
+Parameters:
+query – The query to get examples for.
+Returns:
+A list of Example objects.
+pydantic model google.adk.examples.Example
+Bases: BaseModel
+A few-shot example.
+input
+The input content for the example.
+output
+The expected output content for the example.
+Show JSON schema
+Fields:
+   * input (google.genai.types.Content)
+   * output (list[google.genai.types.Content])
+field input: Content [Required]
+field output: list[Content] [Required]
+class google.adk.examples.VertexAiExampleStore(examples_store_name)
+Bases: BaseExampleProvider
+Provides examples from Vertex example store.
+Initializes the VertexAiExampleStore.
+Parameters:
+examples_store_name – The resource name of the vertex example store, in the format of projects/{project}/locations/{location}/exampleStores/{example_store}.
+get_examples(query)
+Returns a list of examples for a given query.
+Return type:
+list[Example]
+Parameters:
+query – The query to get examples for.
+Returns:
+A list of Example objects.
+google.adk.memory module
+class google.adk.memory.BaseMemoryService
+Bases: ABC
+Base class for memory services.
+The service provides functionalities to ingest sessions into memory so that the memory can be used for user queries.
+abstract add_session_to_memory(session)
+Adds a session to the memory service.
+A session may be added multiple times during its lifetime.
+Parameters:
+session – The session to add.
+abstract search_memory(*, app_name, user_id, query)
+Searches for sessions that match the query.
+Return type:
+SearchMemoryResponse
+Parameters:
+   * app_name – The name of the application.
+   * user_id – The id of the user.
+   * query – The query to search for.
+Returns:
+A SearchMemoryResponse containing the matching memories.
+class google.adk.memory.InMemoryMemoryService
+Bases: BaseMemoryService
+An in-memory memory service for prototyping purpose only.
+Uses keyword matching instead of semantic search.
+add_session_to_memory(session)
+Adds a session to the memory service.
+A session may be added multiple times during its lifetime.
+Parameters:
+session – The session to add.
+search_memory(*, app_name, user_id, query)
+Prototyping purpose only.
+Return type:
+SearchMemoryResponse
+session_events: dict[str, list[Event]]
+keys are app_name/user_id/session_id
+class google.adk.memory.VertexAiRagMemoryService(rag_corpus=None, similarity_top_k=None, vector_distance_threshold=10)
+Bases: BaseMemoryService
+A memory service that uses Vertex AI RAG for storage and retrieval.
+Initializes a VertexAiRagMemoryService.
+Parameters:
+   * rag_corpus – The name of the Vertex AI RAG corpus to use. Format: projects/{project}/locations/{location}/ragCorpora/{rag_corpus_id} or {rag_corpus_id}
+   * similarity_top_k – The number of contexts to retrieve.
+   * vector_distance_threshold – Only returns contexts with vector distance smaller than the threshold..
+add_session_to_memory(session)
+Adds a session to the memory service.
+A session may be added multiple times during its lifetime.
+Parameters:
+session – The session to add.
+search_memory(*, app_name, user_id, query)
+Searches for sessions that match the query using rag.retrieval_query.
+Return type:
+SearchMemoryResponse
+google.adk.models module
+Defines the interface to support a model.
+pydantic model google.adk.models.BaseLlm
+Bases: BaseModel
+The BaseLLM class.
+model
+The name of the LLM, e.g. gemini-1.5-flash or gemini-1.5-flash-001.
+model_config
+The model config
+Show JSON schema
+Fields:
+   * model (str)
+field model: str [Required]
+The name of the LLM, e.g. gemini-1.5-flash or gemini-1.5-flash-001.
+connect(llm_request)
+Creates a live connection to the LLM.
+Return type:
+BaseLlmConnection
+Parameters:
+llm_request – LlmRequest, the request to send to the LLM.
+Returns:
+BaseLlmConnection, the connection to the LLM.
+abstract async generate_content_async(llm_request, stream=False)
+Generates one content from the given contents and tools.
+Return type:
+AsyncGenerator[LlmResponse, None]
+Parameters:
+   * llm_request – LlmRequest, the request to send to the LLM.
+   * stream – bool = False, whether to do streaming call.
+Yields:
+a generator of types.Content.
+For non-streaming call, it will only yield one Content.
+For streaming call, it may yield more than one content, but all yielded contents should be treated as one content by merging the parts list.
+classmethod supported_models()
+Returns a list of supported models in regex for LlmRegistry.
+Return type:
+list[str]
+pydantic model google.adk.models.Gemini
+Bases: BaseLlm
+Integration for Gemini models.
+model
+The name of the Gemini model.
+Show JSON schema
+Fields:
+   * model (str)
+field model: str = 'gemini-1.5-flash'
+The name of the LLM, e.g. gemini-1.5-flash or gemini-1.5-flash-001.
+connect(llm_request)
+Connects to the Gemini model and returns an llm connection.
+Return type:
+BaseLlmConnection
+Parameters:
+llm_request – LlmRequest, the request to send to the Gemini model.
+Yields:
+BaseLlmConnection, the connection to the Gemini model.
+async generate_content_async(llm_request, stream=False)
+Sends a request to the Gemini model.
+Return type:
+AsyncGenerator[LlmResponse, None]
+Parameters:
+   * llm_request – LlmRequest, the request to send to the Gemini model.
+   * stream – bool = False, whether to do streaming call.
+Yields:
+LlmResponse – The model response.
+static supported_models()
+Provides the list of supported models.
+Return type:
+list[str]
+Returns:
+A list of supported models.
+property api_client: Client
+Provides the api client.
+Returns:
+The api client.
+class google.adk.models.LLMRegistry
+Bases: object
+Registry for LLMs.
+static new_llm(model)
+Creates a new LLM instance.
+Return type:
+BaseLlm
+Parameters:
+model – The model name.
+Returns:
+The LLM instance.
+static register(llm_cls)
+Registers a new LLM class.
+Parameters:
+llm_cls – The class that implements the model.
+static resolve(model)
+Resolves the model to a BaseLlm subclass.
+Return type:
+type[BaseLlm]
+Parameters:
+model – The model name.
+Returns:
+The BaseLlm subclass.
+Raises:
+ValueError – If the model is not found.
+google.adk.planners module
+class google.adk.planners.BasePlanner
+Bases: ABC
+Abstract base class for all planners.
+The planner allows the agent to generate plans for the queries to guide its action.
+abstract build_planning_instruction(readonly_context, llm_request)
+Builds the system instruction to be appended to the LLM request for planning.
+Return type:
+Optional[str]
+Parameters:
+   * readonly_context – The readonly context of the invocation.
+   * llm_request – The LLM request. Readonly.
+Returns:
+The planning system instruction, or None if no instruction is needed.
+abstract process_planning_response(callback_context, response_parts)
+Processes the LLM response for planning.
+Return type:
+Optional[List[Part]]
+Parameters:
+   * callback_context – The callback context of the invocation.
+   * response_parts – The LLM response parts. Readonly.
+Returns:
+The processed response parts, or None if no processing is needed.
+class google.adk.planners.BuiltInPlanner(*, thinking_config)
+Bases: BasePlanner
+The built-in planner that uses model’s built-in thinking features.
+thinking_config
+Config for model built-in thinking features. An error will be returned if this field is set for models that don’t support thinking.
+Initializes the built-in planner.
+Parameters:
+thinking_config – Config for model built-in thinking features. An error will be returned if this field is set for models that don’t support thinking.
+apply_thinking_config(llm_request)
+Applies the thinking config to the LLM request.
+Return type:
+None
+Parameters:
+llm_request – The LLM request to apply the thinking config to.
+build_planning_instruction(readonly_context, llm_request)
+Builds the system instruction to be appended to the LLM request for planning.
+Return type:
+Optional[str]
+Parameters:
+   * readonly_context – The readonly context of the invocation.
+   * llm_request – The LLM request. Readonly.
+Returns:
+The planning system instruction, or None if no instruction is needed.
+process_planning_response(callback_context, response_parts)
+Processes the LLM response for planning.
+Return type:
+Optional[List[Part]]
+Parameters:
+   * callback_context – The callback context of the invocation.
+   * response_parts – The LLM response parts. Readonly.
+Returns:
+The processed response parts, or None if no processing is needed.
+thinking_config: ThinkingConfig
+Config for model built-in thinking features. An error will be returned if this field is set for models that don’t support thinking.
+class google.adk.planners.PlanReActPlanner
+Bases: BasePlanner
+Plan-Re-Act planner that constraints the LLM response to generate a plan before any action/observation.
+Note: this planner does not require the model to support buil-in thinking features or setting the thinking config.
+build_planning_instruction(readonly_context, llm_request)
+Builds the system instruction to be appended to the LLM request for planning.
+Return type:
+str
+Parameters:
+   * readonly_context – The readonly context of the invocation.
+   * llm_request – The LLM request. Readonly.
+Returns:
+The planning system instruction, or None if no instruction is needed.
+process_planning_response(callback_context, response_parts)
+Processes the LLM response for planning.
+Return type:
+Optional[List[Part]]
+Parameters:
+   * callback_context – The callback context of the invocation.
+   * response_parts – The LLM response parts. Readonly.
+Returns:
+The processed response parts, or None if no processing is needed.
+google.adk.runners module
+class google.adk.runners.InMemoryRunner(agent, *, app_name='InMemoryRunner')
+Bases: Runner
+An in-memory Runner for testing and development.
+This runner uses in-memory implementations for artifact, session, and memory services, providing a lightweight and self-contained environment for agent execution.
+agent
+The root agent to run.
+app_name
+The application name of the runner. Defaults to ‘InMemoryRunner’.
+Initializes the InMemoryRunner.
+Parameters:
+   * agent – The root agent to run.
+   * app_name – The application name of the runner. Defaults to ‘InMemoryRunner’.
+class google.adk.runners.Runner(*, app_name, agent, artifact_service=None, session_service, memory_service=None)
+Bases: object
+The Runner class is used to run agents.
+It manages the execution of an agent within a session, handling message processing, event generation, and interaction with various services like artifact storage, session management, and memory.
+app_name
+The application name of the runner.
+agent
+The root agent to run.
+artifact_service
+The artifact service for the runner.
+session_service
+The session service for the runner.
+memory_service
+The memory service for the runner.
+Initializes the Runner.
+Parameters:
+   * app_name – The application name of the runner.
+   * agent – The root agent to run.
+   * artifact_service – The artifact service for the runner.
+   * session_service – The session service for the runner.
+   * memory_service – The memory service for the runner.
+agent: BaseAgent
+The root agent to run.
+app_name: str
+The app name of the runner.
+artifact_service: Optional[BaseArtifactService] = None
+The artifact service for the runner.
+close_session(session)
+Closes a session and adds it to the memory service (experimental feature).
+Parameters:
+session – The session to close.
+memory_service: Optional[BaseMemoryService] = None
+The memory service for the runner.
+run(*, user_id, session_id, new_message, run_config=RunConfig(speech_config=None, response_modalities=None, save_input_blobs_as_artifacts=False, support_cfc=False, streaming_mode=<StreamingMode.NONE: None>, output_audio_transcription=None, max_llm_calls=500))
+Runs the agent.
+NOTE: This sync interface is only for local testing and convenience purpose. Consider to use run_async for production usage.
+Return type:
+Generator[Event, None, None]
+Parameters:
+   * user_id – The user ID of the session.
+   * session_id – The session ID of the session.
+   * new_message – A new message to append to the session.
+   * run_config – The run config for the agent.
+Yields:
+The events generated by the agent.
+async run_async(*, user_id, session_id, new_message, run_config=RunConfig(speech_config=None, response_modalities=None, save_input_blobs_as_artifacts=False, support_cfc=False, streaming_mode=<StreamingMode.NONE: None>, output_audio_transcription=None, max_llm_calls=500))
+Main entry method to run the agent in this runner.
+Return type:
+AsyncGenerator[Event, None]
+Parameters:
+   * user_id – The user ID of the session.
+   * session_id – The session ID of the session.
+   * new_message – A new message to append to the session.
+   * run_config – The run config for the agent.
+Yields:
+The events generated by the agent.
+async run_live(*, session, live_request_queue, run_config=RunConfig(speech_config=None, response_modalities=None, save_input_blobs_as_artifacts=False, support_cfc=False, streaming_mode=<StreamingMode.NONE: None>, output_audio_transcription=None, max_llm_calls=500))
+Runs the agent in live mode (experimental feature).
+Return type:
+AsyncGenerator[Event, None]
+Parameters:
+   * session – The session to use.
+   * live_request_queue – The queue for live requests.
+   * run_config – The run config for the agent.
+Yields:
+The events generated by the agent.
+session_service: BaseSessionService
+The session service for the runner.
+google.adk.sessions module
+class google.adk.sessions.BaseSessionService
+Bases: ABC
+Base class for session services.
+The service provides a set of methods for managing sessions and events.
+append_event(session, event)
+Appends an event to a session object.
+Return type:
+Event
+close_session(*, session)
+Closes a session.
+abstract create_session(*, app_name, user_id, state=None, session_id=None)
+Creates a new session.
+Return type:
+Session
+Parameters:
+   * app_name – the name of the app.
+   * user_id – the id of the user.
+   * state – the initial state of the session.
+   * session_id – the client-provided id of the session. If not provided, a generated ID will be used.
+Returns:
+The newly created session instance.
+Return type:
+session
+abstract delete_session(*, app_name, user_id, session_id)
+Deletes a session.
+Return type:
+None
+abstract get_session(*, app_name, user_id, session_id, config=None)
+Gets a session.
+Return type:
+Optional[Session]
+abstract list_events(*, app_name, user_id, session_id)
+Lists events in a session.
+Return type:
+ListEventsResponse
+abstract list_sessions(*, app_name, user_id)
+Lists all the sessions.
+Return type:
+ListSessionsResponse
+class google.adk.sessions.DatabaseSessionService(db_url)
+Bases: BaseSessionService
+A session service that uses a database for storage.
+Parameters:
+db_url – The database URL to connect to.
+append_event(session, event)
+Appends an event to a session object.
+Return type:
+Event
+create_session(*, app_name, user_id, state=None, session_id=None)
+Creates a new session.
+Return type:
+Session
+Parameters:
+   * app_name – the name of the app.
+   * user_id – the id of the user.
+   * state – the initial state of the session.
+   * session_id – the client-provided id of the session. If not provided, a generated ID will be used.
+Returns:
+The newly created session instance.
+Return type:
+session
+delete_session(app_name, user_id, session_id)
+Deletes a session.
+Return type:
+None
+get_session(*, app_name, user_id, session_id, config=None)
+Gets a session.
+Return type:
+Optional[Session]
+list_events(*, app_name, user_id, session_id)
+Lists events in a session.
+Return type:
+ListEventsResponse
+list_sessions(*, app_name, user_id)
+Lists all the sessions.
+Return type:
+ListSessionsResponse
+class google.adk.sessions.InMemorySessionService
+Bases: BaseSessionService
+An in-memory implementation of the session service.
+append_event(session, event)
+Appends an event to a session object.
+Return type:
+Event
+create_session(*, app_name, user_id, state=None, session_id=None)
+Creates a new session.
+Return type:
+Session
+Parameters:
+   * app_name – the name of the app.
+   * user_id – the id of the user.
+   * state – the initial state of the session.
+   * session_id – the client-provided id of the session. If not provided, a generated ID will be used.
+Returns:
+The newly created session instance.
+Return type:
+session
+delete_session(*, app_name, user_id, session_id)
+Deletes a session.
+Return type:
+None
+get_session(*, app_name, user_id, session_id, config=None)
+Gets a session.
+Return type:
+Session
+list_events(*, app_name, user_id, session_id)
+Lists events in a session.
+Return type:
+ListEventsResponse
+list_sessions(*, app_name, user_id)
+Lists all the sessions.
+Return type:
+ListSessionsResponse
+pydantic model google.adk.sessions.Session
+Bases: BaseModel
+Represents a series of interactions between a user and agents.
+id
+The unique identifier of the session.
+app_name
+The name of the app.
+user_id
+The id of the user.
+state
+The state of the session.
+events
+The events of the session, e.g. user input, model response, function call/response, etc.
+last_update_time
+The last update time of the session.
+Show JSON schema
+Fields:
+   * app_name (str)
+   * events (list[google.adk.events.event.Event])
+   * id (str)
+   * last_update_time (float)
+   * state (dict[str, Any])
+   * user_id (str)
+field app_name: str [Required]
+The name of the app.
+field events: list[Event] [Optional]
+The events of the session, e.g. user input, model response, function call/response, etc.
+field id: str [Required]
+The unique identifier of the session.
+field last_update_time: float = 0.0
+The last update time of the session.
+field state: dict[str, Any] [Optional]
+The state of the session.
+field user_id: str [Required]
+The id of the user.
+class google.adk.sessions.State(value, delta)
+Bases: object
+A state dict that maintain the current value and the pending-commit delta.
+Parameters:
+   * value – The current value of the state dict.
+   * delta – The delta change to the current value that hasn’t been commited.
+APP_PREFIX = 'app:'
+TEMP_PREFIX = 'temp:'
+USER_PREFIX = 'user:'
+get(key, default=None)
+Returns the value of the state dict for the given key.
+Return type:
+Any
+has_delta()
+Whether the state has pending detla.
+Return type:
+bool
+to_dict()
+Returns the state dict.
+Return type:
+dict[str, Any]
+update(delta)
+Updates the state dict with the given delta.
+class google.adk.sessions.VertexAiSessionService(project=None, location=None)
+Bases: BaseSessionService
+Connects to the managed Vertex AI Session Service.
+append_event(session, event)
+Appends an event to a session object.
+Return type:
+Event
+create_session(*, app_name, user_id, state=None, session_id=None)
+Creates a new session.
+Return type:
+Session
+Parameters:
+   * app_name – the name of the app.
+   * user_id – the id of the user.
+   * state – the initial state of the session.
+   * session_id – the client-provided id of the session. If not provided, a generated ID will be used.
+Returns:
+The newly created session instance.
+Return type:
+session
+delete_session(*, app_name, user_id, session_id)
+Deletes a session.
+Return type:
+None
+get_session(*, app_name, user_id, session_id, config=None)
+Gets a session.
+Return type:
+Session
+list_events(*, app_name, user_id, session_id)
+Lists events in a session.
+Return type:
+ListEventsResponse
+list_sessions(*, app_name, user_id)
+Lists all the sessions.
+Return type:
+ListSessionsResponse
+google.adk.tools module
+class google.adk.tools.APIHubToolset(*, apihub_resource_name, access_token=None, service_account_json=None, name='', description='', lazy_load_spec=False, auth_scheme=None, auth_credential=None, apihub_client=None)
+Bases: object
+APIHubTool generates tools from a given API Hub resource.
+Examples:
+``` apihub_toolset = APIHubToolset(
+apihub_resource_name=”projects/test-project/locations/us-central1/apis/test-api”, service_account_json=”…”,
+)
+# Get all available tools agent = LlmAgent(tools=apihub_toolset.get_tools())
+# Get a specific tool agent = LlmAgent(tools=[
+… apihub_toolset.get_tool(‘my_tool’),
+])
+apihub_resource_name is the resource name from API Hub. It must include
+API name, and can optionally include API version and spec name. - If apihub_resource_name includes a spec resource name, the content of that
+spec will be used for generating the tools.
+   * If apihub_resource_name includes only an api or a version name, the first spec of the first version of that API will be used.
+Initializes the APIHubTool with the given parameters.
+Examples: ``` apihub_toolset = APIHubToolset(
+apihub_resource_name=”projects/test-project/locations/us-central1/apis/test-api”, service_account_json=”…”,
+)
+# Get all available tools agent = LlmAgent(tools=apihub_toolset.get_tools())
+# Get a specific tool agent = LlmAgent(tools=[
+… apihub_toolset.get_tool(‘my_tool’),
+])
+apihub_resource_name is the resource name from API Hub. It must include API name, and can optionally include API version and spec name. - If apihub_resource_name includes a spec resource name, the content of that
+spec will be used for generating the tools.
+   * If apihub_resource_name includes only an api or a version name, the first spec of the first version of that API will be used.
+Example: * projects/xxx/locations/us-central1/apis/apiname/… * https://console.cloud.google.com/apigee/api-hub/apis/apiname?project=xxx
+param apihub_resource_name:
+The resource name of the API in API Hub. Example: projects/test-project/locations/us-central1/apis/test-api.
+param access_token:
+Google Access token. Generate with gcloud cli gcloud auth auth print-access-token. Used for fetching API Specs from API Hub.
+param service_account_json:
+The service account config as a json string. Required if not using default service credential. It is used for creating the API Hub client and fetching the API Specs from API Hub.
+param apihub_client:
+Optional custom API Hub client.
+param name:
+Name of the toolset. Optional.
+param description:
+Description of the toolset. Optional.
+param auth_scheme:
+Auth scheme that applies to all the tool in the toolset.
+param auth_credential:
+Auth credential that applies to all the tool in the toolset.
+param lazy_load_spec:
+If True, the spec will be loaded lazily when needed. Otherwise, the spec will be loaded immediately and the tools will be generated during initialization.
+get_tool(name)
+Retrieves a specific tool by its name.
+Return type:
+Optional[RestApiTool]
+Example: ` apihub_tool = apihub_toolset.get_tool('my_tool') `
+Parameters:
+name – The name of the tool to retrieve.
+Returns:
+The tool with the given name, or None if no such tool exists.
+get_tools()
+Retrieves all available tools.
+Return type:
+List[RestApiTool]
+Returns:
+A list of all available RestApiTool objects.
+pydantic model google.adk.tools.AuthToolArguments
+Bases: BaseModel
+the arguments for the special long running function tool that is used to
+request end user credentials.
+Show JSON schema
+Fields:
+   * auth_config (google.adk.auth.auth_tool.AuthConfig)
+   * function_call_id (str)
+field auth_config: AuthConfig [Required]
+field function_call_id: str [Required]
+class google.adk.tools.BaseTool(*, name, description, is_long_running=False)
+Bases: ABC
+The base class for all tools.
+description: str
+The description of the tool.
+is_long_running: bool = False
+Whether the tool is a long running operation, which typically returns a resource id first and finishes the operation later.
+name: str
+The name of the tool.
+async process_llm_request(*, tool_context, llm_request)
+Processes the outgoing LLM request for this tool.
+Use cases: - Most common use case is adding this tool to the LLM request. - Some tools may just preprocess the LLM request before it’s sent out.
+Return type:
+None
+Parameters:
+   * tool_context – The context of the tool.
+   * llm_request – The outgoing LLM request, mutable this method.
+async run_async(*, args, tool_context)
+Runs the tool with the given arguments and context.
+NOTE :rtype: Any
+   * Required if this tool needs to run at the client side.
+   * Otherwise, can be skipped, e.g. for a built-in GoogleSearch tool for Gemini.
+Parameters:
+   * args – The LLM-filled arguments.
+   * ctx – The context of the tool.
+Returns:
+The result of running the tool.
+class google.adk.tools.ExampleTool(examples)
+Bases: BaseTool
+A tool that adds (few-shot) examples to the LLM request.
+examples
+The examples to add to the LLM request.
+async process_llm_request(*, tool_context, llm_request)
+Processes the outgoing LLM request for this tool.
+Use cases: - Most common use case is adding this tool to the LLM request. - Some tools may just preprocess the LLM request before it’s sent out.
+Return type:
+None
+Parameters:
+   * tool_context – The context of the tool.
+   * llm_request – The outgoing LLM request, mutable this method.
+class google.adk.tools.FunctionTool(func)
+Bases: BaseTool
+A tool that wraps a user-defined Python function.
+func
+The function to wrap.
+async run_async(*, args, tool_context)
+Runs the tool with the given arguments and context.
+NOTE :rtype: Any
+   * Required if this tool needs to run at the client side.
+   * Otherwise, can be skipped, e.g. for a built-in GoogleSearch tool for Gemini.
+Parameters:
+   * args – The LLM-filled arguments.
+   * ctx – The context of the tool.
+Returns:
+The result of running the tool.
+class google.adk.tools.LongRunningFunctionTool(func)
+Bases: FunctionTool
+A function tool that returns the result asynchronously.
+This tool is used for long-running operations that may take a significant amount of time to complete. The framework will call the function. Once the function returns, the response will be returned asynchronously to the framework which is identified by the function_call_id.
+Example: `python tool = LongRunningFunctionTool(a_long_running_function) `
+is_long_running
+Whether the tool is a long running operation.
+class google.adk.tools.ToolContext(invocation_context, *, function_call_id=None, event_actions=None)
+Bases: CallbackContext
+The context of the tool.
+This class provides the context for a tool invocation, including access to the invocation context, function call ID, event actions, and authentication response. It also provides methods for requesting credentials, retrieving authentication responses, listing artifacts, and searching memory.
+invocation_context
+The invocation context of the tool.
+function_call_id
+The function call id of the current tool call. This id was returned in the function call event from LLM to identify a function call. If LLM didn’t return this id, ADK will assign one to it. This id is used to map function call response to the original function call.
+event_actions
+The event actions of the current tool call.
+property actions: EventActions
+get_auth_response(auth_config)
+Return type:
+AuthCredential
+list_artifacts()
+Lists the filenames of the artifacts attached to the current session.
+Return type:
+list[str]
+request_credential(auth_config)
+Return type:
+None
+search_memory(query)
+Searches the memory of the current user.
+Return type:
+SearchMemoryResponse
+class google.adk.tools.VertexAiSearchTool(*, data_store_id=None, search_engine_id=None)
+Bases: BaseTool
+A built-in tool using Vertex AI Search.
+data_store_id
+The Vertex AI search data store resource ID.
+search_engine_id
+The Vertex AI search engine resource ID.
+Initializes the Vertex AI Search tool.
+Parameters:
+   * data_store_id – The Vertex AI search data store resource ID in the format of “projects/{project}/locations/{location}/collections/{collection}/dataStores/{dataStore}”.
+   * search_engine_id – The Vertex AI search engine resource ID in the format of “projects/{project}/locations/{location}/collections/{collection}/engines/{engine}”.
+Raises:
+   * ValueError – If both data_store_id and search_engine_id are not specified
+   * or both are specified. –
+async process_llm_request(*, tool_context, llm_request)
+Processes the outgoing LLM request for this tool.
+Use cases: - Most common use case is adding this tool to the LLM request. - Some tools may just preprocess the LLM request before it’s sent out.
+Return type:
+None
+Parameters:
+   * tool_context – The context of the tool.
+   * llm_request – The outgoing LLM request, mutable this method.
+google.adk.tools.exit_loop(tool_context)
+Exits the loop.
+Call this function only when you are instructed to do so.
+google.adk.tools.transfer_to_agent(agent_name, tool_context)
+Transfer the question to another agent.
+   30.

@@ -19,14 +19,16 @@ from google.adk.runners import Runner, RunConfig
 from google.adk import Agent # Use top-level Agent alias
 from google.adk.events import Event # Import Event from correct module
 from ai_tutor.manager import AITutorManager
-# Import Content and Part directly
-from google.generativeai.types import Content, Part # Import specific classes
-# Use types from the base google-generativeai library as used by ADK internally
-
+# Import Content and Part from the content_types submodule
+from google.genai.types import GenerateContentResponse, FunctionCall # Corrected import
+# Consolidate imports from google.genai.types
+from google.genai.types import Content, Part, FunctionResponse 
 from ai_tutor.output_logger import get_logger as get_session_logger_instance, TutorOutputLogger # Rename import
 from ai_tutor.dependencies import get_supabase_client, get_session_service
 from ai_tutor.auth import verify_token
 from google.api_core import exceptions as google_exceptions
+from google.adk.tools import FunctionTool, ToolContext
+import google.genai.errors # Add this import
 
 # Project specific imports
 from ai_tutor.session_manager import SessionManager, SupabaseSessionService, Session # Use Session from ADK session_manager
@@ -43,7 +45,7 @@ from ai_tutor.api_models import (
     ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse,
     InteractionRequestData, InteractionResponseData
 )
-from ai_tutor.context import TutorContext
+from ai_tutor.context import TutorContext, UserModelState
 
 router = APIRouter()
 # session_manager = SessionManager() # Keep for create_session? Or fully replace with service? Consider removing.
@@ -402,133 +404,157 @@ async def interact_with_tutor(
     tutor_context: TutorContext = Depends(get_tutor_context)
 ):
     # Use the standard logger for endpoint-level info
-    logger.info(f"Received interaction request for session {session_id}: {interaction_input.type}")
-    # Keep the custom session logger if needed for specific agent output logging later
-    session_logger = get_session_logger(session_id)
-    print(f"\n=== Received /interact for session {session_id} ===")
-    # Log safely in case data is complex or None
-    try:
-        data_log = json.dumps(interaction_input.data)
-    except TypeError:
-        data_log = str(interaction_input.data)
-    print(f"Input Type: {interaction_input.type}, Data: {data_log}")
+    logger.info(f"\n=== Received /interact for session {session_id} ===")
+    logger.info(f"Input Type: {interaction_input.type}, Data: {interaction_input.data}")
 
-    # --- Get or Create ADK Runner instance for this session ---
-    orchestrator_agent = create_orchestrator_agent()
-    runner_key = str(session_id) # Use string key for dict
+    # --- ADK Runner Setup ---
+    orchestrator_agent = create_orchestrator_agent() # Create the main orchestrator
 
-    # Access the runner cache from app state
-    if not hasattr(request.app.state, "adk_runners"):
-         # This should not happen if lifespan is correctly configured
-         logger.error("ADK Runner cache (app.state.adk_runners) not initialized!")
-         raise HTTPException(status_code=500, detail="Internal server error: Runner cache missing.")
+    logger.info(f"Creating/Using ADK Runner instance for session {session_id}")
+    # Note: Assuming runner caching is handled elsewhere or we create a new one per request
+    adk_runner = Runner(
+        app_name="ai_tutor",
+        agent=orchestrator_agent,
+        session_service=session_service # Use the injected service
+        # Add artifact_service and memory_service if needed by agents
+    )
 
-    # Get existing runner or create a new one for this session
-    if runner_key not in request.app.state.adk_runners:
-        print(f"Creating new ADK Runner instance for session {session_id}")
-        request.app.state.adk_runners[runner_key] = Runner(
-            app_name="ai_tutor", # Use keyword arg
-            agent=orchestrator_agent,        # Use keyword arg
-            session_service=session_service # Use keyword arg
-        )
-    adk_runner: Runner = request.app.state.adk_runners[runner_key]
-    # Use standard logger for endpoint info
-    logger.info(f"Using ADK Runner for session {session_id}")
-
-    # Use a central variable for the message to send to the ADK runner
-    message_to_runner = None
-
-    # Handle interaction input type
-    if interaction_input.type == "user_message":
-        user_input_text = interaction_input.message
-        # Ensure data is None or a valid JSON string representation
-        user_data_str = json.dumps(interaction_input.data) if interaction_input.data is not None else 'None'
-        user_input_text = f"User Action Type: {interaction_input.type}. Data: {user_data_str}"
-        # Create user input event for ADK
-        message_to_runner = Content(role="user", parts=[Part.from_text(user_input_text)]) # Use imported Content/Part
-        logger.log_user_input(user_input_text) # Log user input
-        print(f"[Interact] Running Agent: {orchestrator_agent.name}")
-
+    # Prepare the input message for the ADK Runner
+    adk_input_content = None
+    if interaction_input.type == "user_message" and interaction_input.data:
+        # Convert the input data (string) into ADK Content/Part format
+        # Ensure data is treated as a simple string for the text part
+        user_text = str(interaction_input.data) 
+        adk_input_content = Content(role="user", parts=[Part(text=user_text)])
+    elif interaction_input.type == "start":
+        logger.info(f"Handling 'start' interaction type for session {session_id}. No specific user message sent to agent.")
+        # For 'start', send no message. The orchestrator agent's logic should handle the initial state.
+        adk_input_content = None
     elif interaction_input.type == "tool_response":
-        # Validate tool_response data structure
-        if not isinstance(interaction_input.data, dict) or 'name' not in interaction_input.data or 'response' not in interaction_input.data:
-            logger.warning(f"Invalid tool_response data format for session {session_id}: {interaction_input.data}")
-            raise HTTPException(status_code=400, detail="Invalid format for tool_response data.")
-
+        # Handle tool responses needed by the ADK flow (e.g., from long-running tools)
+        logger.info(f"Handling 'tool_response' interaction type for session {session_id}.")
         try:
-            # Ensure response data is serializable if needed by FunctionResponse
-            response_data = interaction_input.data.get('response', {})
-            message_to_runner = Content( # Use imported Content/Part
-                role="function",
-                parts=[Part.from_function_response(
+            if not isinstance(interaction_input.data, dict) or 'name' not in interaction_input.data or 'response' not in interaction_input.data:
+                 raise ValueError("Invalid format for tool_response data.")
+            # Construct the ADK FunctionResponse object
+            func_response = FunctionResponse(
                     name=interaction_input.data['name'],
-                    response=response_data
-                )]
+                response=interaction_input.data['response']
             )
-            session_logger.log_function_response(interaction_input.data['name'], response_data)
-
+            adk_input_content = Content(role="function", parts=[Part(function_response=func_response)])
         except Exception as e:
-            logger.exception(f"Error constructing FunctionResponse for tool_response in session {session_id}: {e}")
-            raise HTTPException(status_code=500, detail="Error processing tool response.")
-
-    elif interaction_input.type == "system_message": # Example if needed
-        message_to_runner = Content( # Use imported Content/Part
-            role="system", # Note: Gemini often uses 'user'/'model', 'system' might be ignored unless specifically handled
-            parts=[Part.from_text(interaction_input.message)] # Use Part.from_text
-        )
-        session_logger.log_system_message(interaction_input.message) # Log system message
-
+            logger.error(f"Error processing tool_response data for session {session_id}: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid tool_response data: {e}")
     else:
-        # Default or error handling for unknown types
-        error_text = f"Unknown interaction type received: {interaction_input.type}. Data: {interaction_input.data}"
-        logger.warning(error_text) # Log as warning might be better
-        message_to_runner = Content(
-            role="user",
-            parts=[Part.from_text(error_text)]
+        # Log and raise error for truly unhandled types
+        logger.warning(f"Unsupported interaction type received: {interaction_input.type}. Data: {interaction_input.data}")
+        raise HTTPException(status_code=400, detail=f"Unsupported interaction type: {interaction_input.type}")
+
+    # --- Setup RunConfig ---
+    run_config = RunConfig(
+        # workflow_name="AI Tutor Interaction", # Optional: for tracing/logging
+        # group_id=str(session_id) # Optional: group related runs
+    )
+
+    # Stream events back to the client (or collect and return)
+    try:
+        user_id = str(request.state.user.id) # Get user ID from request state
+
+        # --- Run the ADK agent ---
+        logger.debug(f"Calling adk_runner.run_async for session {session_id}, user {user_id}")
+        event_generator = adk_runner.run_async(
+            user_id=user_id,
+            session_id=str(session_id),
+            new_message=adk_input_content, # Pass the prepared Content object (or None)
+            run_config=run_config,
         )
 
-    if not message_to_runner:
-        # This case should ideally not be reached if all interaction_input.type are handled
-        logger.error(f"Interaction resulted in no message to send to runner for session {session_id}. Type: {interaction_input.type}")
-        raise HTTPException(status_code=500, detail="Internal error processing interaction.")
+        # Process the stream of events
+        last_processed_event_data = None
+        async for event in event_generator:
+            logger.debug(f"[Interact] Raw ADK Event: ID={event.id}, Author={event.author}, Type={type(event.content)}, Actions={event.actions}")
+            processed_event_data = _process_adk_event_for_api(event, logger) # Use standard logger
 
-    # Run the agent with the constructed message
-    try:
-        run_config = RunConfig() # Remove context parameter
-        user: User = request.state.user # Get user from request state
+            # Check content_type instead of response_type
+            if processed_event_data.content_type == "error":
+                 # Access message via .data.message if data is ErrorResponse
+                 error_message = "Unknown error" # Default message
+                 if isinstance(processed_event_data.data, ErrorResponse):
+                    error_message = processed_event_data.data.message
+                 logger.error(f"ADK Runner returned an error event: {error_message}")
 
-        last_event = None
-        async for event in adk_runner.run_async(
-            user_id=str(user.id),
-            session_id=str(session_id),
-            new_message=message_to_runner, # Pass the Content object
-            run_config=run_config
-        ):
-            print(f"[Interact] Received Event: ID={event.id}, Author={event.author}, Actions={event.actions}")
-            session_logger.log_orchestrator_output(event.content) # Use the session logger instance
-            last_event = event
-            # Process events if needed during the run (e.g., log intermediate steps)
-            logger.info(f"[Interact] Received event: {event.type} - {event.action}")
+            # Store the last successfully processed event data suitable for the API response
+            # Check content_type instead of response_type
+            if processed_event_data.content_type != 'intermediate': # Filter out internal/log events
+                last_processed_event_data = processed_event_data
 
-        if not last_event:
-            logger.error(f"ADK Runner finished without producing any events for session {session_id}.")
-            raise HTTPException(status_code=500, detail="Tutor did not produce a response.")
+        # After the loop, return the data from the *last* relevant API event
+        if last_processed_event_data:
+            # Log content_type instead of response_type
+            logger.info(f"ADK Runner finished. Returning final API event data for session {session_id}: {last_processed_event_data.content_type}")
+            return last_processed_event_data
+        else:
+            logger.warning(f"ADK Runner finished but produced no events suitable for API response for session {session_id}.")
+            # Construct a proper InteractionResponseData with ErrorResponse payload
+            default_error_payload = ErrorResponse(
+                response_type="error",
+                error_type="processing_error",
+                message="Interaction complete, but no specific output generated."
+            )
+            return InteractionResponseData(
+                content_type="error",
+                data=default_error_payload,
+                user_model_state=UserModelState() # Use default state here too
+            )
 
-        logger.info(f"ADK Runner finished. Last event action: {last_event.action}")
+    except google_exceptions.ResourceExhausted as e:
+        # Existing handling for google.api_core exceptions
+        error_message = f"API Rate Limit Exceeded for session {session_id}: {e}"
+        logger.error(error_message)
+        retry_after = "unknown"
+        try:
+            if hasattr(e, 'details'):
+                for detail in e.details:
+                    if detail.get('@type') == 'type.googleapis.com/google.rpc.RetryInfo':
+                        retry_after = detail.get('retryDelay', 'unknown')
+                        break
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded. Please try again after {retry_after}.",
+            headers={"Retry-After": retry_after.replace('s', '') if retry_after != 'unknown' else "60"}
+        )
+    except google.genai.errors.ClientError as e:
+        # Add specific handling for google.genai ClientError (which includes 429)
+        if e.status_code == 429:
+            error_message = f"API Rate Limit Exceeded (ClientError) for session {session_id}: {e.message}"
+            logger.error(error_message)
+            retry_after = "unknown"
+            try:
+                # Attempt to parse retryDelay from the details
+                if isinstance(e.details, list):
+                    for detail in e.details:
+                        if detail.get('@type') == 'type.googleapis.com/google.rpc.RetryInfo':
+                            retry_after = detail.get('retryDelay', 'unknown')
+                            break
+            except Exception:
+                pass # Ignore errors parsing details
+            raise HTTPException(
+                status_code=429,
+                detail=f"Rate limit exceeded. Please try again after {retry_after}.",
+                headers={"Retry-After": retry_after.replace('s', '') if retry_after != 'unknown' else "60"}
+            )
+        else:
+            # Handle other ClientErrors as 500
+            tb_str = traceback.format_exc()
+            logger.error(f"ClientError during interaction with ADK runner for session {session_id}: {e}\nTraceback:\n{tb_str}")
+            raise HTTPException(status_code=500, detail=f"An API client error occurred: {e.message}")
 
-        # --- Process the final event to create the API response ---
-        api_response_data = _process_adk_event_for_api(last_event, session_logger)
-        return api_response_data
-
-    except google_exceptions.GoogleAPIError as e:
-        logger.exception(f"Google API Error during interaction for session {session_id}: {e}")
-        # Extract more specific details if possible
-        error_detail = f"Google API Error: {e.message}" if hasattr(e, 'message') else str(e)
-        raise HTTPException(status_code=503, detail=f"AI service unavailable. {error_detail}")
     except Exception as e:
-        logger.exception(f"Error during interaction with ADK runner for session {session_id}: {e}")
-        traceback.print_exc() # Print full traceback to console/logs
-        raise HTTPException(status_code=500, detail=f"Internal tutor error: {str(e)}")
+        tb_str = traceback.format_exc()
+        logger.error(f"Error during interaction with ADK runner for session {session_id}: {e}\nTraceback:\n{tb_str}")
+        raise HTTPException(status_code=500, detail=f"An internal error occurred: {e}")
 
 @router.post(
     "/sessions/{session_id}/answer",
@@ -564,15 +590,14 @@ async def submit_answer_to_tutor(
 
     # --- Create the FunctionResponse Event ---
     answer_event = Event(
-        author="user",
-        content=Content(
+        author="user", # Or system? Clarify ADK best practice - 'user' role with tool response is common
+        content=Content( # Use imported Content
             role="tool", # Response is for a tool
             parts=[
-                Part.from_function_response(
-                    name=ask_user_question_and_get_answer_tool.name, # Use the actual tool name
-                    id=tool_call_id, # CRUCIAL: Match the original tool call ID
-                    response={"answer_index": tool_response_data} # Pass the response data correctly
-                )
+                Part(function_response=FunctionResponse( # Correctly use FunctionResponse
+                    name=interaction_input.data['name'],
+                    response=tool_response_data
+                ))
             ]
         ),
         invocation_id=tutor_context.last_interaction_summary or f"resume_{session_id}",
@@ -586,10 +611,7 @@ async def submit_answer_to_tutor(
 
     # Process the stream *after* resuming (need to define last_event... here)
     try:
-        last_agent_event_after_resume: Optional[Event] = None
-        question_after_resume: Optional[QuizQuestion] = None
-        paused_id_after_resume: Optional[str] = None
-        
+        last_event: Optional[Event] = None # Ensure last_event is initialized
         async for event in adk_runner.run_async(
             user_id=str(user.id),
             session_id=str(session_id),
@@ -608,7 +630,7 @@ async def submit_answer_to_tutor(
         logger.info(f"ADK Runner finished after answer. Last event action: {last_event.action}")
 
         # Process the final event for the API response
-        api_response_data = _process_adk_event_for_api(last_event_after_resume, session_logger)
+        api_response_data = _process_adk_event_for_api(last_event, session_logger)
         return api_response_data
 
     except google_exceptions.GoogleAPIError as e:
@@ -621,124 +643,150 @@ async def submit_answer_to_tutor(
         raise HTTPException(status_code=500, detail=f"Internal tutor error: {str(e)}")
 
 # Helper function to process ADK events into API response data
-# (Keep this logic or adapt as needed)
 def _process_adk_event_for_api(event: Event, logger: TutorOutputLogger) -> InteractionResponseData:
-    """Processes the final ADK event and formats it for the API response."""
+    """Processes an ADK event and formats it for the API response."""
+    # Initialize response variables
+    response_type: Literal["explanation", "question", "feedback", "message", "error", "intermediate"] = "intermediate"
     response_data = None
-    response_type: Literal["explanation", "question", "feedback", "message", "error"] = "message" # Default
 
-    if event.action == EventActions.ERROR or not event.content or not event.content.parts:
-        error_text = "An error occurred in the tutor." # Default error
+    try:
+        # Handle error events first
+        if event.error_code or event.error_message:
+            error_text = event.error_message or f"An error occurred (Code: {event.error_code})"
+            logger.error(f"ADK Event error: {error_text}")
+            # Return the error response directly. Need to wrap in InteractionResponseData
+            # with appropriate state. Since we don't have context here, use default state.
+            error_payload = ErrorResponse(
+                    response_type="error",
+                    error_type="tutor_error",
+                    message=error_text
+            )
+            return InteractionResponseData(
+                content_type="error",
+                data=error_payload,
+                user_model_state=UserModelState() # Default state for error
+            )
+
+        # Process event content if available
         if event.content and event.content.parts:
-            # Try to get a more specific error from the event content
-            error_text = event.content.parts[0].text if event.content.parts[0].text else error_text
-        elif event.data and isinstance(event.data, dict) and 'error' in event.data:
-             error_text = str(event.data['error'])
+            for part in event.content.parts:
+                # Handle text content
+                if part.text:
+                    text = part.text.strip()
+                    if text:
+                        logger.info(f"Processing text content: {text[:100]}...")
+                        response_type = "message"
+                        # Add missing response_type here
+                        response_data = MessageResponse(response_type="message", text=text)
+                        break  # Text content takes precedence
 
-        logger.error(f"ADK Event indicates error: {error_text}")
-        # Use ErrorResponse model structure within InteractionResponseData
-        response_data = ErrorResponse(error_type="tutor_error", message=error_text)
-        response_type = "error"
-        # Consider raising HTTPException here if it's always fatal
-        # raise HTTPException(status_code=500, detail=error_text)
-        # Or return the structured error response:
-        return InteractionResponseData(type="error", data=response_data)
+                # Handle function calls
+                elif part.function_call:
+                    tool_name = part.function_call.name
+                    tool_args = part.function_call.args or {}
+                    logger.info(f"Processing function call: {tool_name}")
 
-    # --- Process Successful Event Content ---
-    # Extract content (handle potential missing parts)
-    part = event.content.parts[0] if event.content.parts else None
-    text_content = part.text if part and part.text else None
-    function_call = part.function_call if part and part.function_call else None
-    function_response = part.function_response if part and part.function_response else None
+                    if tool_name == "present_explanation":
+                        try:
+                            valid_args = {k: v for k, v in tool_args.items() if v is not None}
+                            response_data = ExplanationResponse.model_validate(valid_args)
+                            response_type = "explanation"
+                        except ValidationError as e:
+                            logger.error(f"Validation error in present_explanation: {e}")
+                            return InteractionResponseData(
+                                type="error",
+                                data=ErrorResponse(
+                                    response_type="error",
+                                    error_type="validation_error",
+                                    message=f"Invalid explanation data: {str(e)}"
+                                )
+                            )
 
-    # Log raw event data for debugging complex cases
-    logger.debug(f"Processing event data: {event.data}")
+                    elif tool_name == "ask_checking_question":
+                        try:
+                            if not isinstance(tool_args.get('question'), dict):
+                                raise ValueError("Question data must be a dictionary")
+                            
+                            question = QuizQuestion.model_validate(tool_args['question'])
+                            response_data = QuestionResponse(
+                                question=question,
+                                topic=tool_args.get('topic', 'General')
+                            )
+                            response_type = "question"
+                        except (ValidationError, ValueError) as e:
+                            logger.error(f"Validation error in ask_checking_question: {e}")
+                            return InteractionResponseData(
+                                type="error",
+                                data=ErrorResponse(
+                                    response_type="error",
+                                    error_type="validation_error",
+                                    message=f"Invalid question data: {str(e)}"
+                                )
+                            )
 
-    # Determine response type based on event action and data
-    if event.action == EventActions.CALL_FUNCTION and function_call:
-        tool_name = function_call.name
-        tool_args = function_call.args
-        logger.log_tool_call(tool_name, tool_args)
+                    else:
+                        # Handle other tool calls as intermediate steps
+                        response_type = "intermediate"
+                        response_data = {"tool_name": tool_name, "args": tool_args}
+                    
+                    break  # Process one function call at a time
 
-        # Map tool calls to API response types
-        if tool_name == "present_explanation":
-            response_type = "explanation"
-            response_data = ExplanationResponse.model_validate(tool_args)
-        elif tool_name == "ask_checking_question":
-            response_type = "question"
-            # Ensure args match QuestionResponse fields (QuizQuestion is nested)
-            # We might need to construct QuestionResponse from args
-            try:
-                 # Assuming args directly contain the structure needed by QuestionResponse
-                 # This might need adjustment based on actual tool_args content
-                 if 'question' in tool_args and isinstance(tool_args['question'], dict):
-                      validated_question = QuizQuestion.model_validate(tool_args['question'])
-                      response_data = QuestionResponse(question=validated_question, topic=tool_args.get('topic', 'Unknown Topic'))
-                 else:
-                     # Handle case where args don't match expected structure
-                     logger.error(f"Tool args for {tool_name} missing 'question' dict: {tool_args}")
-                     response_data = MessageResponse(text=f"Tutor wants to ask a question, but data is missing.")
-                     response_type = "message"
+                # Handle function responses
+                elif part.function_response:
+                    response_type = "intermediate"
+                    response_data = {
+                        "tool_name": part.function_response.name,
+                        "response": part.function_response.response
+                    }
 
-            except ValidationError as e:
-                logger.error(f"Validation error processing {tool_name} args: {e}. Args: {tool_args}")
-                response_data = MessageResponse(text=f"Tutor wants to ask a question, but data format is invalid.")
-                response_type = "message"
-
-        # Add other tool mappings (e.g., present_feedback -> feedback)
-        # elif tool_name == "present_feedback":
-        #     response_type = "feedback"
-        #     response_data = FeedbackResponse.model_validate(tool_args)
-
-        else:
-            # Default for unmapped tool calls (maybe log as message?)
-            logger.warning(f"Unhandled tool call in API response mapping: {tool_name}")
+        # Handle case where no meaningful response was generated
+        if response_type == "intermediate" and not response_data:
+            response_data = {"status": "processing"}
+        elif not response_data:
+            logger.warning("No response data generated from event")
             response_type = "message"
-            response_data = MessageResponse(text=f"Tutor performed action: {tool_name}")
+            response_data = MessageResponse(response_type="message", text="Processing your request...")
 
-    elif event.action == EventActions.PAUSE and event.data:
-         # Handle PAUSE specifically, e.g., for the long-running question tool
-         logger.info(f"ADK Flow Paused. Data: {event.data}")
-         # Expecting question data in event.data for AskUserQuestionTool
-         if isinstance(event.data, dict) and 'question' in event.data:
-             try:
-                 validated_question = QuizQuestion.model_validate(event.data['question'])
-                 response_type = "question" # API response indicates a question is being asked
-                 response_data = QuestionResponse(
-                     question=validated_question,
-                     topic=event.data.get('topic', 'Unknown Topic'),
-                     # Include tool_call_id if necessary for frontend to resume
-                     context={"tool_call_id": event.tool_call_id}
-                 )
-             except ValidationError as e:
-                 logger.error(f"Validation error processing PAUSE event data: {e}. Data: {event.data}")
-                 response_data = MessageResponse(text=f"Tutor paused to ask a question, but data format is invalid.")
-                 response_type = "message"
-         else:
-             logger.warning(f"PAUSE event missing expected question data: {event.data}")
-             response_data = MessageResponse(text=f"Tutor paused.")
-             response_type = "message"
+        # This return was incorrect - It should return InteractionResponseData
+        # Find the correct UserModelState to return - this function doesn't have it!
+        # For now, return intermediate if not a final type, requires refactor
+        if response_type in ["explanation", "question", "feedback", "message", "error"]:
+             # Need to get the current UserModelState somehow to return here.
+             # This function signature does not have access to the full TutorContext.
+             # Placeholder - returning default. THIS NEEDS REFACTORING.
+             logger.warning("_process_adk_event_for_api returning default UserModelState - requires refactor!")
+             return InteractionResponseData(
+                 content_type=response_type,
+                 data=response_data, # Already a validated Pydantic model or dict
+                 user_model_state=UserModelState()
+             )
+        else:
+             # Return intermediate status without user_model_state? Or default?
+             # Let's return the intermediate dict for now, main loop handles state.
+             # This also needs clarification on intended flow.
+              logger.debug(f"Returning intermediate data: {response_data}")
+              # Cannot return a dict, must be InteractionResponseData.
+              # Return default state for intermediate for now.
+              return InteractionResponseData(
+                 content_type="intermediate",
+                 data=response_data or {"status": "processing"},
+                 user_model_state=UserModelState()
+             )
 
-    elif text_content:
-        # If it's just text content, treat it as a message
-        logger.log_llm_output(text_content)
-        response_type = "message"
-        response_data = MessageResponse(text=text_content)
-
-    else:
-        # Fallback if event content is not text or a mapped tool call
-        logger.warning(f"Unhandled event content/action for API response. Action: {event.action}, Content: {event.content}")
-        response_type = "message"
-        response_data = MessageResponse(text="Tutor provided an update.")
-
-    # Ensure response_data is not None before returning
-    if response_data is None:
-        logger.error("Failed to determine response data from ADK event.")
-        # Return a generic error response instead of None
-        response_data = ErrorResponse(error_type="processing_error", message="Could not process tutor's response.")
-        response_type = "error"
-
-    return InteractionResponseData(type=response_type, data=response_data)
+    except Exception as e:
+        logger.error(f"Unexpected error processing ADK event: {str(e)}")
+        # Construct ErrorResponse first
+        error_payload = ErrorResponse(
+                response_type="error",
+                error_type="processing_error",
+                message=f"Internal error processing tutor response: {str(e)}"
+            )
+        # Now construct the InteractionResponseData wrapper
+        return InteractionResponseData(
+            content_type="error", # Use 'error' as the content type
+            data=error_payload, # Embed the ErrorResponse
+            user_model_state=UserModelState() # Provide a default UserModelState
+        )
 
 # --- Helper to update context in DB (replace direct calls) ---
 async def _update_context_in_db(session_id: UUID, user_id: UUID, context: TutorContext, supabase: Client):

@@ -13,7 +13,7 @@ def create_quiz_teacher_agent(api_key: str = None):
     """Create a quiz teacher agent that evaluates user answers and provides feedback."""
     
     # Use Gemini model via ADK
-    model_identifier = "gemini-1.5-pro"  # Using Pro for better feedback capabilities
+    model_identifier = "gemini-2.0-flash"  # Using Pro for better feedback capabilities
     
     # Create the quiz teacher agent
     quiz_teacher_agent = LlmAgent(

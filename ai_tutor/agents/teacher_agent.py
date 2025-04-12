@@ -10,11 +10,10 @@ from google.adk.runners import Runner, RunConfig
 from google.adk.tools import BaseTool, FunctionTool, ToolContext, LongRunningFunctionTool
 from google.generativeai import types
 from google.adk.models import Gemini
-from agents.extensions.handoff_prompt import prompt_with_handoff_instructions
-from agents.run_context import RunContextWrapper
 
 from ai_tutor.agents.planner_agent import FocusObjective
 from ai_tutor.context import TutorContext
+from ai_tutor.agents.models import LessonContent # Import LessonContent model
 
 logger = logging.getLogger(__name__)
 
@@ -30,18 +29,19 @@ class TeachingResponse(BaseModel):
 def create_interactive_teacher_agent() -> Agent:
     """Creates an INTERACTIVE Teacher Agent using Google ADK."""
 
-    # Use ADK models
-    model_identifier = "gemini-1.5-flash" # Or other ADK supported model
+    # Define the model identifier
+    model_identifier = "gemini-2.0-flash" # Or other ADK supported model
 
     # Import tools needed by the teacher
     from ai_tutor.tools.orchestrator_tools import read_knowledge_base, get_document_content # Keep common tools
     # Import the tool function, not the decorator result if possible
     # Or ensure the tool instance is correctly exported/imported
     from ai_tutor.tools.teacher_tools import ask_user_question_and_get_answer_tool # Import the specific tool instance
+    from google.adk.tools import FunctionTool # Import FunctionTool
 
     teacher_tools = [
-        read_knowledge_base,
-        get_document_content,
+        read_knowledge_base, # Use the imported object directly
+        get_document_content, # Use the imported object directly
         ask_user_question_and_get_answer_tool,
         # Potentially add call_quiz_creator_agent tool if needed
     ]

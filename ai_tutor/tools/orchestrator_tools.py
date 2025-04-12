@@ -1,6 +1,9 @@
 from __future__ import annotations
-from google.adk.tools import FunctionTool, ToolContext
+from google.adk.tools import FunctionTool, ToolContext, BaseTool
 from google.adk.runners import Runner, RunConfig
+# Import FunctionDeclaration and Schema from the low-level library for manual definition
+# from google.genai.types import FunctionDeclaration, Schema # Remove this
+from google.ai.generativelanguage import FunctionDeclaration, Schema, Tool
 from typing import Any, Optional, Literal, Union, cast, Dict, List
 import os
 from datetime import datetime
@@ -189,17 +192,27 @@ def determine_next_learning_step(tool_context: ToolContext) -> Dict[str, Any]:
     """DEPRECATED: The Planner agent now determines the next focus. Use call_planner_agent."""
     return {"error": "This tool is deprecated. Use call_planner_agent to get the next focus."}
 
-@FunctionTool
+# Remove decorator from the function definition
+# @FunctionTool
 async def update_user_model(
-    tool_context: ToolContext,
+    tool_context: ToolContext, # Keep in function signature for ADK injection
     topic: str,
-    outcome: Literal['correct', 'incorrect', 'mastered', 'struggled', 'explained'],
-    confusion_point: Optional[str] = None,
-    last_accessed: Optional[str] = None,
-    mastered_objective_title: Optional[str] = None, # Optional: Mark an objective as mastered
+    outcome: str,
+    confusion_point: Optional[str],
+    last_accessed: Optional[str],
+    mastered_objective_title: Optional[str]
 ) -> str:
     """Updates the user model state (within tool_context.state) with interaction outcomes and temporal data."""
     print(f"[Tool update_user_model] Updating '{topic}' with outcome '{outcome}'")
+    
+    # --- Add validation for outcome string ---
+    valid_outcomes = {'correct', 'incorrect', 'mastered', 'struggled', 'explained'}
+    if outcome not in valid_outcomes:
+        error_msg = f"Error: Invalid outcome '{outcome}' provided. Must be one of: {valid_outcomes}"
+        print(f"[Tool update_user_model] {error_msg}")
+        return error_msg
+    # --------------------------------------
+        
     state_dict = tool_context.state # Access state dict
 
     # Ensure context and user model state exist
@@ -221,11 +234,17 @@ async def update_user_model(
 
     concept_state['last_interaction_outcome'] = outcome
 
-    # Update last_accessed with ISO 8601 timestamp
-    concept_state['last_accessed'] = last_accessed or datetime.now().isoformat()
+    # Update last_accessed with ISO 8601 timestamp, handle None or str
+    if last_accessed is None:
+        concept_state['last_accessed'] = datetime.now().isoformat()
+    elif isinstance(last_accessed, str):
+        concept_state['last_accessed'] = last_accessed
+    else:
+        # Handle unexpected type for last_accessed if necessary, or default
+        concept_state['last_accessed'] = datetime.now().isoformat() 
 
-    # Add confusion point if provided
-    if confusion_point:
+    # Add confusion point if provided and is a string
+    if confusion_point and isinstance(confusion_point, str):
         confusion_points_list = concept_state.setdefault("confusion_points", [])
         if confusion_point not in confusion_points_list:
             confusion_points_list.append(confusion_point)
@@ -247,8 +266,8 @@ async def update_user_model(
             current_pace = user_model_state_dict.get("learning_pace_factor", 1.0)
             user_model_state_dict["learning_pace_factor"] = max(0.5, current_pace - 0.1)
 
-    # Update mastered objectives if provided
-    if mastered_objective_title:
+    # Update mastered objectives if provided and is a string
+    if mastered_objective_title and isinstance(mastered_objective_title, str):
         mastered_list = user_model_state_dict.setdefault("mastered_objectives_current_section", [])
         if mastered_objective_title not in mastered_list:
             mastered_list.append(mastered_objective_title)
@@ -258,16 +277,62 @@ async def update_user_model(
           f"Pace: {user_model_state_dict.get('learning_pace_factor', 1.0):.2f}")
     return f"User model updated for {topic}." # Note: state is modified in-place
 
+# Manually define the FunctionDeclaration using types from google.ai.generativelanguage
+update_user_model_declaration = FunctionDeclaration(
+    name="update_user_model",
+    description="Updates the user model state (within tool_context.state) with interaction outcomes and temporal data.",
+    parameters=Schema(
+        type="OBJECT",
+        properties={
+            "topic": Schema(type="STRING", description="The specific topic or concept being updated."),
+            "outcome": Schema(type="STRING", description="The outcome of the interaction (e.g., 'correct', 'incorrect', 'explained')."),
+            "confusion_point": Schema(type="STRING", description="Specific point of confusion noted by the user or system.", nullable=True),
+            "last_accessed": Schema(type="STRING", description="ISO 8601 timestamp of the last access (optional).", nullable=True),
+            "mastered_objective_title": Schema(type="STRING", description="Title of a learning objective now considered mastered (optional).", nullable=True),
+        },
+        required=["topic", "outcome"],
+    )
+)
+
+# --- Define custom BaseTool class --- 
+class UpdateUserModelTool(BaseTool):
+    def __init__(self):
+        super().__init__(
+            name="update_user_model", 
+            description="Updates the user model state (within tool_context.state) with interaction outcomes and temporal data."
+        )
+        # Store the manual declaration
+        self._declaration = update_user_model_declaration
+
+    async def run_async(self, *, args: Dict[str, Any], tool_context: ToolContext) -> Any:
+        """Calls the underlying update_user_model function."""
+        topic = args.get("topic")
+        outcome = args.get("outcome")
+        confusion_point = args.get("confusion_point")
+        last_accessed = args.get("last_accessed")
+        mastered_objective_title = args.get("mastered_objective_title")
+        return await update_user_model(
+            tool_context=tool_context, 
+            topic=topic, 
+            outcome=outcome, 
+            confusion_point=confusion_point,
+            last_accessed=last_accessed,
+            mastered_objective_title=mastered_objective_title
+        )
+
+# Create an instance of the custom tool
+update_user_model_tool = UpdateUserModelTool()
+
 @FunctionTool
 def update_explanation_progress(tool_context: ToolContext, segment_index: int) -> str:
     """DEPRECATED: The Orchestrator manages micro-steps directly."""
     return "Error: This tool is deprecated. Orchestrator manages micro-steps."
 
-@FunctionTool
-async def get_user_model_status(tool_context: ToolContext, topic: Optional[str] = None) -> Dict[str, Any]:
+# Remove decorator from get_user_model_status
+# @FunctionTool
+async def get_user_model_status(tool_context: ToolContext, topic: Optional[str]) -> Dict[str, Any]:
     """Retrieves detailed user model state, optionally for a specific topic."""
     print(f"[Tool get_user_model_status] Retrieving status for topic '{topic}'")
-
     state_dict = tool_context.state
     user_model_state_dict = state_dict.get("user_model_state")
 
@@ -295,16 +360,46 @@ async def get_user_model_status(tool_context: ToolContext, topic: Optional[str] 
         }
     
     # Return full state summary if no specific topic requested
-    # Already a dictionary, just return it
     return user_model_state_dict 
 
-@FunctionTool
+# Manually define the FunctionDeclaration for get_user_model_status
+get_user_model_status_declaration = FunctionDeclaration(
+    name="get_user_model_status",
+    description="Retrieves detailed user model state, optionally for a specific topic.",
+    parameters=Schema(
+        type="OBJECT",
+        properties={
+            "topic": Schema(type="STRING", description="The specific topic to get the status for (optional).", nullable=True),
+        },
+        # No required parameters as topic is optional
+    )
+)
+
+# Define custom BaseTool class for get_user_model_status
+class GetUserModelStatusTool(BaseTool):
+    def __init__(self):
+        super().__init__(
+            name="get_user_model_status",
+            description="Retrieves detailed user model state, optionally for a specific topic."
+        )
+        self._declaration = get_user_model_status_declaration
+
+    async def run_async(self, *, args: Dict[str, Any], tool_context: ToolContext) -> Any:
+        """Calls the underlying get_user_model_status function."""
+        topic = args.get("topic") # Will be None if not provided by LLM
+        return await get_user_model_status(tool_context=tool_context, topic=topic)
+
+# Create an instance of the custom tool
+get_user_model_status_tool = GetUserModelStatusTool()
+
+# Remove decorator from reflect_on_interaction
+# @FunctionTool
 async def reflect_on_interaction(
     tool_context: ToolContext,
     topic: str,
     interaction_summary: str, # e.g., "User answered checking question incorrectly."
-    user_response: Optional[str] = None, # The actual user answer/input
-    feedback_provided_data: Optional[Dict] = None # Pass feedback as dict from state
+    user_response: Optional[str],
+    feedback_provided_data: Optional[Dict]
 ) -> Dict[str, Any]:
     """
     Analyzes the last interaction for a given topic, identifies potential reasons for user difficulty,
@@ -340,22 +435,62 @@ async def reflect_on_interaction(
     print(f"[Tool reflect_on_interaction] Analysis: {analysis}. Suggestions: {suggestions}")
     return {"analysis": analysis, "suggested_next_steps": suggestions}
 
+# Manually define the FunctionDeclaration for reflect_on_interaction
+reflect_on_interaction_declaration = FunctionDeclaration(
+    name="reflect_on_interaction",
+    description="Analyzes the last interaction for a given topic, identifies potential reasons for user difficulty, and suggests adaptive next steps.",
+    parameters=Schema(
+        type="OBJECT",
+        properties={
+            "topic": Schema(type="STRING", description="The topic the interaction was about."),
+            "interaction_summary": Schema(type="STRING", description="A summary of what happened in the interaction (e.g., 'User answered correctly')."),
+            "user_response": Schema(type="STRING", description="The user's actual response or input (optional).", nullable=True),
+            "feedback_provided_data": Schema(type="OBJECT", description="The feedback item provided to the user (optional dictionary).", nullable=True),
+        },
+        required=["topic", "interaction_summary"],
+    )
+)
+
+# Define custom BaseTool class for reflect_on_interaction
+class ReflectOnInteractionTool(BaseTool):
+    def __init__(self):
+        super().__init__(
+            name="reflect_on_interaction",
+            description="Analyzes the last interaction for a given topic, identifies potential reasons for user difficulty, and suggests adaptive next steps."
+        )
+        self._declaration = reflect_on_interaction_declaration
+
+    async def run_async(self, *, args: Dict[str, Any], tool_context: ToolContext) -> Any:
+        """Calls the underlying reflect_on_interaction function."""
+        topic = args.get("topic")
+        interaction_summary = args.get("interaction_summary")
+        user_response = args.get("user_response")
+        feedback_provided_data = args.get("feedback_provided_data")
+        return await reflect_on_interaction(
+            tool_context=tool_context,
+            topic=topic,
+            interaction_summary=interaction_summary,
+            user_response=user_response,
+            feedback_provided_data=feedback_provided_data
+        )
+
+# Create an instance of the custom tool
+reflect_on_interaction_tool = ReflectOnInteractionTool()
+
 # --- NEW Tools to Call Other Agents ---
 
 @FunctionTool
 async def call_planner_agent(
     ctx: ToolContext
 ) -> Union[FocusObjective, str]:
-    """Calls the Planner Agent to determine the next learning focus objective."""
+    """Calls the Planner Agent to determine the next learning focus objective. Expects JSON output."""
     print("[Tool call_planner_agent] Calling Planner Agent...")
     # --- Prepare Input for Planner ---
-    kb_content = await read_knowledge_base(ctx) # Fetch KB content
+    kb_content = await read_knowledge_base(ctx)
     if isinstance(kb_content, str) and kb_content.startswith("Error:"):
-        return kb_content # Propagate error
+        return kb_content
 
-    # Optionally get user state summary (assuming get_user_model_status returns a suitable dict/string)
-    user_state_data = await get_user_model_status(ctx)
-    # Ensure user_state_data is serializable to JSON
+    user_state_data = await get_user_model_status_tool.run_async(args={}, tool_context=ctx) # Use the tool instance
     if isinstance(user_state_data, dict):
         try:
             user_state_summary = json.dumps(user_state_data)
@@ -372,45 +507,79 @@ async def call_planner_agent(
     User Model State Summary:
     {user_state_summary}
 
-    Based on the above information, determine the next single learning focus objective for the user. Output ONLY the FocusObjective JSON object.
+    Based on the above information, determine the next single learning focus objective for the user. Output ONLY the JSON object string matching the FocusObjective schema.
     """
     try:
-        # --- Import and Create Agent *Inside* ---
-        from ai_tutor.agents.planner_agent import create_planner_agent # Import here
-        # ----------------------------------------
+        from ai_tutor.agents.planner_agent import create_planner_agent
+        planner_agent = create_planner_agent()
+        
+        # Check if ctx.state is available and has session_id
+        session_id = None
+        if ctx.state and isinstance(ctx.state, dict):
+             session_id = ctx.state.get("session_id")
+        elif hasattr(ctx.state, 'session_id'): # Fallback if state is an object
+             session_id = getattr(ctx.state, 'session_id')
+        
+        run_config_kwargs = {}
+        if session_id:
+             run_config_kwargs['group_id'] = str(session_id)
+             run_config_kwargs['workflow_name'] = "Orchestrator_PlannerCall"
+        
+        run_config = RunConfig(**run_config_kwargs)
 
-        planner_agent = create_planner_agent() # Create planner (no longer needs vs_id)
-        run_config = RunConfig(
-            # workflow_name="Orchestrator_PlannerCall", # Remove invalid args
-            # group_id=str(ctx.state.session_id)       # Remove invalid args
-        )
-
-        # Run the planner agent with the prepared prompt
-        result = await Runner.run(
-            planner_agent,
-            planner_prompt,
-            session_id=str(ctx.state.session_id), # Pass session_id for context
-            run_config=run_config # Pass the cleaned run_config
-        )
-
-        # Check the type of the final output BEFORE trying to access attributes
-        if isinstance(result.final_output, FocusObjective):
-            focus_objective = result.final_output
-            print(f"[Tool call_planner_agent] Planner returned focus: {focus_objective.topic}")
-            # Store the new focus in context state dictionary
-            ctx.state["current_focus_objective"] = focus_objective.model_dump() # Modify state dict
-            return focus_objective
-        else:
-            error_msg = f"Error: Planner agent did not return a valid FocusObjective object. Got type: {type(result.final_output).__name__}. Raw output: {result.final_output}"
+        # Run the planner agent, expect text output
+        # --- Modified Run Call ---
+        last_event: Optional[Event] = None
+        async for event in Runner.run_async(
+            agent=planner_agent, # Correct keyword
+            new_message=planner_prompt, # Correct keyword
+            session_id=str(session_id) if session_id else None, # Correct keyword
+            user_id=str(ctx.user_id) if hasattr(ctx, 'user_id') else None, # Correct keyword
+            run_config=run_config
+        ):
+            last_event = event
+            # We only care about the final text event
+        
+        if not last_event or not last_event.content or not last_event.content.parts or not last_event.content.parts[0].text:
+            error_msg = "Error: Planner agent did not return any text output."
             print(f"[Tool call_planner_agent] {error_msg}")
-            # Return a descriptive error string that the orchestrator might understand
-            return "PLANNER_OUTPUT_ERROR: Planner failed to generate valid focus objective."
+            return "PLANNER_OUTPUT_ERROR: Planner returned no text."
+
+        planner_output_text = last_event.content.parts[0].text
+        print(f"[Tool call_planner_agent] Planner Raw Output:\n{planner_output_text}")
+
+        # --- Parse and Validate Output ---
+        try:
+            # Clean potential markdown ```json fences
+            if planner_output_text.strip().startswith('```json'):
+                 planner_output_text = planner_output_text.strip()[7:-3].strip()
+            elif planner_output_text.strip().startswith('```'):
+                 planner_output_text = planner_output_text.strip()[3:-3].strip()
+                 
+            planner_output_data = json.loads(planner_output_text)
+            focus_objective = FocusObjective.model_validate(planner_output_data)
+            print(f"[Tool call_planner_agent] Planner parsed focus: {focus_objective.topic}")
+            
+            # Store the new focus in context state dictionary if state is available
+            if ctx.state and isinstance(ctx.state, dict):
+                ctx.state["current_focus_objective"] = focus_objective.model_dump()
+            elif ctx.state and hasattr(ctx.state, 'current_focus_objective'):
+                 setattr(ctx.state, 'current_focus_objective', focus_objective.model_dump())
+                 
+            return focus_objective # Return the validated Pydantic object
+        except json.JSONDecodeError as json_err:
+            error_msg = f"Error: Planner agent output was not valid JSON. Error: {json_err}. Output: {planner_output_text[:200]}..."
+            print(f"[Tool call_planner_agent] {error_msg}")
+            return "PLANNER_OUTPUT_ERROR: Planner output was not valid JSON."
+        except ValidationError as pydantic_err:
+            error_msg = f"Error: Planner agent output did not match FocusObjective schema. Error: {pydantic_err}. Output: {planner_output_text[:200]}..."
+            print(f"[Tool call_planner_agent] {error_msg}")
+            return "PLANNER_OUTPUT_ERROR: Planner output did not match schema."
+        # -----------------------------
 
     except Exception as e:
-        # Catch any exception during the agent run or creation
         error_msg = f"EXCEPTION calling Planner Agent: {str(e)}\n{traceback.format_exc()}"
         print(f"[Tool] {error_msg}")
-        # Return a different error string for exceptions vs. wrong output type
         return "PLANNER_EXECUTION_ERROR: An exception occurred while running the planner."
 
 @FunctionTool
@@ -548,9 +717,9 @@ __all__ = [
     'call_quiz_creator_agent',
     # --- Kept ---
     'call_quiz_teacher_evaluate',
-    'reflect_on_interaction',
-    'update_user_model',
-    'get_user_model_status',
+    'reflect_on_interaction_tool', # Export the custom tool instance
+    'update_user_model_tool', # Export the tool instance, not the function
+    'get_user_model_status_tool', # Export the custom tool instance
     # --- Removed ---
     # 'call_quiz_creator_mini',
     # 'determine_next_learning_step',

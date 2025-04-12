@@ -3,7 +3,11 @@ import json
 import copy
 from decimal import Decimal
 import re
-from typing import Any, Dict, List, Union, Tuple, AsyncIterator
+from typing import Any, Dict, List, Union, Tuple, AsyncIterator, Type, Optional
+
+from pydantic import BaseModel, ValidationError
+from google.adk.events import Event
+from google.adk.agents import BaseAgent, Agent
 
 # --- Helper for recursive rounding ---
 def _recursive_round_scores(data: Any, max_decimals: int = 8):
@@ -55,69 +59,68 @@ def _recursive_round_scores(data: Any, max_decimals: int = 8):
     else:
         return data
 
-# --- Add RoundingModelWrapper Class ---
-class RoundingModelWrapper(Model):
-    """Wraps another Model to apply score rounding before API calls."""
-    def __init__(self, underlying_model: Model, max_decimals: int = 8):
-        self._underlying_model = underlying_model
-        self._max_decimals = max_decimals
-        print(f"Initialized RoundingModelWrapper for {underlying_model.__class__.__name__}")
-
-    def _clean_input(self, input_data: Union[str, List[TResponseInputItem]]) -> Union[str, List[TResponseInputItem]]:
-        """Applies recursive rounding to the input history."""
-        if isinstance(input_data, str):
-            return input_data # No scores in a simple string prompt
-
-        # Process the input without deepcopy, only modifying when needed
-        cleaned_input = _recursive_round_scores(input_data, self._max_decimals)
-        # print("DEBUG: Cleaned input history for model call.") # Optional Debug
-        return cleaned_input
-
-    async def get_response(
-        self,
-        system_instructions: str | None,
-        input: Union[str, List[TResponseInputItem]],
-        model_settings: ModelSettings,
-        tools: List[Tool],
-        output_schema: AgentOutputSchema | None,
-        handoffs: List[Handoff],
-        tracing: ModelTracing,
-    ) -> ModelResponse:
-        cleaned_input = self._clean_input(input)
-        # print("DEBUG: Calling wrapped get_response") # Optional Debug
-        return await self._underlying_model.get_response(
-            system_instructions=system_instructions,
-            input=cleaned_input,
-            model_settings=model_settings,
-            tools=tools,
-            output_schema=output_schema,
-            handoffs=handoffs,
-            tracing=tracing,
-        )
-
-    async def stream_response(
-        self,
-        system_instructions: str | None,
-        input: Union[str, List[TResponseInputItem]],
-        model_settings: ModelSettings,
-        tools: List[Tool],
-        output_schema: AgentOutputSchema | None,
-        handoffs: List[Handoff],
-        tracing: ModelTracing,
-    ) -> AsyncIterator[TResponseStreamEvent]:
-        cleaned_input = self._clean_input(input)
-        # print("DEBUG: Calling wrapped stream_response") # Optional Debug
-        # Use 'async for' correctly for an async iterator
-        async for event in self._underlying_model.stream_response(
-            system_instructions=system_instructions,
-            input=cleaned_input,
-            model_settings=model_settings,
-            tools=tools,
-            output_schema=output_schema,
-            handoffs=handoffs,
-            tracing=tracing,
-        ):
-            yield event
+# --- Remove RoundingModelWrapper Class --- 
+# The following class depends on types from the old openai-agents SDK
+# and may not be necessary with ADK/Gemini. Removing it.
+# class RoundingModelWrapper(BaseModel):
+#     """Wraps a Pydantic model to apply rounding during parsing."""
+#     model_cls: Type[BaseModel]
+# 
+#     def _clean_input(self, input_data: Union[str, List[TResponseInputItem]]) -> Union[str, List[TResponseInputItem]]:
+#         """Applies recursive rounding to the input history."""
+#         if isinstance(input_data, str):
+#             return input_data # No scores in a simple string prompt
+# 
+#         # Process the input without deepcopy, only modifying when needed
+#         cleaned_input = _recursive_round_scores(input_data, self._max_decimals)
+#         # print("DEBUG: Cleaned input history for model call.") # Optional Debug
+#         return cleaned_input
+# 
+#     async def get_response(
+#         self,
+#         system_instructions: str | None,
+#         input: Union[str, List[TResponseInputItem]],
+#         model_settings: ModelSettings,
+#         tools: List[Tool],
+#         output_schema: AgentOutputSchema | None,
+#         handoffs: List[Handoff],
+#         tracing: ModelTracing,
+#     ) -> ModelResponse:
+#         cleaned_input = self._clean_input(input)
+#         # print("DEBUG: Calling wrapped get_response") # Optional Debug
+#         return await self._underlying_model.get_response(
+#             system_instructions=system_instructions,
+#             input=cleaned_input,
+#             model_settings=model_settings,
+#             tools=tools,
+#             output_schema=output_schema,
+#             handoffs=handoffs,
+#             tracing=tracing,
+#         )
+# 
+#     async def stream_response(
+#         self,
+#         system_instructions: str | None,
+#         input: Union[str, List[TResponseInputItem]],
+#         model_settings: ModelSettings,
+#         tools: List[Tool],
+#         output_schema: AgentOutputSchema | None,
+#         handoffs: List[Handoff],
+#         tracing: ModelTracing,
+#     ) -> AsyncIterator[TResponseStreamEvent]:
+#         cleaned_input = self._clean_input(input)
+#         # print("DEBUG: Calling wrapped stream_response") # Optional Debug
+#         # Use 'async for' correctly for an async iterator
+#         async for event in self._underlying_model.stream_response(
+#             system_instructions=system_instructions,
+#             input=cleaned_input,
+#             model_settings=model_settings,
+#             tools=tools,
+#             output_schema=output_schema,
+#             handoffs=handoffs,
+#             tracing=tracing,
+#         ):
+#             yield event
 # ------------------------------------
 
 def process_handoff_data(handoff_data):

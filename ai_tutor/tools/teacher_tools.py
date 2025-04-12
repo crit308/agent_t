@@ -11,10 +11,11 @@ from ..agents.models import QuizQuestion # Use relative import
 from ai_tutor.context import TutorContext # Import TutorContext for type hint
 
 # Use ADK imports
-from google.adk.tools import LongRunningFunctionTool, ToolContext, FunctionTool # Import FunctionTool
+from google.adk.tools import LongRunningFunctionTool, ToolContext, FunctionTool
 # Use types from the base google-generativeai library as used by ADK internally
-# Import Content and Part directly
-from google.generativeai.types import Content, Part
+# Import Content and Part from the content_types submodule
+# from google.generativeai.types import FunctionResponse # Old incorrect import
+from google.genai.types import Content, Part, FunctionResponse # Corrected import including FunctionResponse
 from google.adk.events import Event, EventActions # Import Event classes
 
 from pydantic import BaseModel, Field
@@ -25,20 +26,24 @@ logger = logging.getLogger(__name__)
 
 @FunctionTool
 async def present_explanation(
-    ctx: RunContextWrapper[TutorContext],
+    ctx: ToolContext, # Use ADK ToolContext directly if RunContextWrapper is removed
     explanation_text: str,
     segment_index: int,
     is_last_segment: bool
 ) -> ExplanationResponse:
     """Presents a segment of explanation text to the user."""
-    topic = ctx.context.current_teaching_topic or "Unknown Topic"
+    # Access state via ctx.state
+    state_dict = ctx.state
+    topic = state_dict.get("current_teaching_topic", "Unknown Topic")
     print(f"[TeacherTool] Presenting explanation for '{topic}', segment {segment_index}")
 
-    # Update context state (this tool *is* the action)
-    ctx.context.user_model_state.current_topic_segment_index = segment_index + 1 # Progress index
-    ctx.context.user_model_state.pending_interaction_type = None # Clear pending interaction
-    ctx.context.user_model_state.pending_interaction_details = None
-    ctx.context.last_interaction_summary = f"Presented explanation segment {segment_index} for {topic}."
+    # Update state dictionary directly
+    user_model_state = state_dict.setdefault("user_model_state", UserModelState().model_dump())
+    user_model_state['current_topic_segment_index'] = segment_index + 1 # Progress index
+    user_model_state['pending_interaction_type'] = None # Clear pending interaction
+    user_model_state['pending_interaction_details'] = None
+    state_dict["last_interaction_summary"] = f"Presented explanation segment {segment_index} for {topic}."
+    # Note: Tool needs to signal state changes back via EventActions or rely on framework
 
     # Return the structured data the API will send
     return ExplanationResponse(
@@ -51,23 +56,25 @@ async def present_explanation(
 
 @FunctionTool
 async def ask_checking_question(
-    ctx: RunContextWrapper[TutorContext],
+    ctx: ToolContext, # Use ADK ToolContext
     question: QuizQuestion # Use the QuizQuestion model for structure
 ) -> QuestionResponse:
     """Asks the user a question to check their understanding of the current topic."""
-    topic = ctx.context.current_teaching_topic or "Unknown Topic"
+    state_dict = ctx.state
+    topic = state_dict.get("current_teaching_topic", "Unknown Topic")
     interaction_id = f"chk_{uuid.uuid4().hex[:6]}"
     print(f"[TeacherTool] Asking checking question for '{topic}': {question.question[:50]}...")
 
-    # Update context state to indicate we're waiting for an answer
-    ctx.context.user_model_state.pending_interaction_type = 'checking_question'
-    ctx.context.user_model_state.pending_interaction_details = {
+    # Update state dictionary directly
+    user_model_state = state_dict.setdefault("user_model_state", UserModelState().model_dump())
+    user_model_state['pending_interaction_type'] = 'checking_question'
+    user_model_state['pending_interaction_details'] = {
         "interaction_id": interaction_id,
         "question": question.model_dump() # Store the question details
     }
-    # Also store the question where the evaluator expects it
-    ctx.context.current_quiz_question = question
-    ctx.context.last_interaction_summary = f"Asked checking question on {topic}."
+    state_dict["current_quiz_question"] = question.model_dump() # Store as dict
+    state_dict["last_interaction_summary"] = f"Asked checking question on {topic}."
+    # Note: Tool needs to signal state changes back
 
     # Add interaction_id to the question object sent back if needed
     # (or frontend can handle correlation based on the response wrapper)
@@ -109,7 +116,7 @@ class AskUserQuestionTool(LongRunningFunctionTool):
             # Create and yield the pause event with question data
             pause_event = Event(
                 author=tool_context.agent_name, # Associate with the agent calling the tool
-                content=Content(role="tool", parts=[Part.from_text(f"Waiting for user answer to question: {question_obj.question[:30]}...")]), # Use imported Content/Part
+                content=Content(role="tool", parts=[Part.from_text(f"Waiting for user answer to question: {question_obj.question[:30]}...")]), # Use imported Content/Part factory
                 actions=EventActions(
                     # Use a custom action field to signal the pause and carry data
                     custom_action={
@@ -133,9 +140,9 @@ class AskUserQuestionTool(LongRunningFunctionTool):
             # Yield an error event
             error_event = Event(
                 author=tool_context.agent_name,
-                content=Content( # Use imported Content/Part
+                content=Content( # Use imported Content
                     role="tool",
-                    parts=[Part.from_text(error_msg)]
+                    parts=[Part(text=error_msg)]
                 ),
                 actions=EventActions(
                     custom_action={

@@ -76,7 +76,7 @@ def create_planner_agent() -> Agent:
     ]
 
     # Use Gemini model via ADK
-    model_identifier = "gemini-1.5-pro"  # Using Pro for better planning capabilities
+    model_identifier = "gemini-2.0-flash"
 
     # Create the planner agent focusing on identifying the next focus
     planner_agent = Agent(
@@ -89,20 +89,28 @@ def create_planner_agent() -> Agent:
 
         YOUR WORKFLOW **MUST** BE:
         1.  **Analyze Input:** Review the provided Knowledge Base summary and the User Model State summary.
-        2.  **Identify Next Focus:** Determine the single most important topic or concept the user should learn next. Consider prerequisites implied by the KB structure and the user's current state (e.g., last completed topic, identified struggles).
+        2.  **Identify Next Focus:** Determine the single most important topic or concept the user should learn next. Consider prerequisites implied by the KB structure and the user's current state.
         3.  **Define Learning Goal:** Formulate a clear, specific learning goal for this focus topic.
-        4.  **Output:** Generate *only* a JSON object matching the `FocusObjective` schema, containing:
-            * `topic`: The specific topic identified.
-            * `learning_goal`: The clear learning goal.
-            * `prerequisites`: (Optional) List of topics needed before this one.
-            * `suggested_approach`: (Optional) A hint for the Orchestrator.
+        4.  **Output JSON:** Generate ***ONLY*** a valid JSON object string matching the `FocusObjective` schema (see below). Do NOT include any text before or after the JSON object. Do NOT use markdown ```json formatting.
+
+        `FocusObjective` Schema:
+        {{
+            "topic": "string (The specific topic identified)",
+            "learning_goal": "string (The clear learning goal)",
+            "priority": integer (Priority 1-5, 5=highest),
+            "relevant_concepts": ["string", ...] (List of related concepts),
+            "suggested_approach": "string | null (Optional hint for Orchestrator)"
+        }}
 
         CRITICAL REMINDERS:
-        - Analyze the provided Knowledge Base and User State summaries. Do not call external tools.
-        - Your only output MUST be a single `FocusObjective` object.
+        - Analyze the provided summaries. Do not call external tools.
+        - Your *entire response* MUST be ONLY the JSON string conforming to the FocusObjective schema.
         """,
-        output_schema=FocusObjective,
+        # output_schema=FocusObjective, # REMOVED to bypass API validation
         model=model_identifier,
+        # Ensure no agent transfers are allowed when removing output_schema
+        disallow_transfer_to_parent=True,
+        disallow_transfer_to_peers=True,
     )
     
     return planner_agent
