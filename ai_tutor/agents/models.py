@@ -266,7 +266,7 @@ class FocusObjective(BaseModel):
     learning_goal: str = Field(description="A specific, measurable goal for this focus area (e.g., 'Understand local vs global scope', 'Solve quadratic equations').")
     priority: int = Field(description="Priority from 1-5 (5=highest) based on prerequisites or user need.")
     relevant_concepts: List[str] = Field(description="List of related concepts from the knowledge base.")
-    suggested_approach: Optional[str]
+    suggested_approach: str
 
 # --- NEW: Potential Result Models for Agents as Tools ---
 class TeacherTurnResult(BaseModel):

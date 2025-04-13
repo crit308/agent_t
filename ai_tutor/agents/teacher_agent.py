@@ -32,52 +32,68 @@ def create_interactive_teacher_agent() -> Agent:
     # Define the model identifier
     model_identifier = "gemini-2.0-flash" # Or other ADK supported model
 
-    # Import tools needed by the teacher
-    from ai_tutor.tools.orchestrator_tools import read_knowledge_base, get_document_content # Keep common tools
-    # Import the tool function, not the decorator result if possible
-    # Or ensure the tool instance is correctly exported/imported
-    from ai_tutor.tools.teacher_tools import ask_user_question_and_get_answer_tool # Import the specific tool instance
-    from google.adk.tools import FunctionTool # Import FunctionTool
+    # Import tools needed by the teacher (use manual tool instances)
+    from ai_tutor.tools.orchestrator_tools import (
+        # Removed read_knowledge_base_tool,
+        # Removed get_document_content_tool,
+        update_user_model_tool,        # Import instance
+        reflect_on_interaction_tool, # Import instance
+        call_quiz_teacher_evaluate_tool # Import instance
+    )
+    from ai_tutor.tools.teacher_tools import ask_user_question_and_get_answer_tool # Keep this custom tool
 
     teacher_tools = [
-        read_knowledge_base, # Use the imported object directly
-        get_document_content, # Use the imported object directly
+        # Removed read_knowledge_base_tool,
+        # Removed get_document_content_tool,
         ask_user_question_and_get_answer_tool,
-        # Potentially add call_quiz_creator_agent tool if needed
+        update_user_model_tool,
+        reflect_on_interaction_tool,
+        call_quiz_teacher_evaluate_tool
     ]
 
     # Use LLMAgent, define input/output schemas
     teacher_agent = Agent(
-        name="interactive_lesson_teacher", # Use valid Python identifier
-        instruction=""" # Use singular 'instruction'
-        You are an autonomous AI Teacher responsible for guiding a student through a specific `FocusObjective` provided as input (topic, learning_goal).
+        name="interactive_lesson_teacher",
+        instruction="""You are an autonomous AI Teacher responsible for guiding a student through a specific `FocusObjective` using the provided document(s) (via Gemini File API).
 
-        YOUR CONTEXT:
-        - You receive the `FocusObjective` details in the initial prompt/input.
-        - You access necessary context (like file paths) via the `ToolContext` provided when your tools run.
-        - Use `read_knowledge_base` or `get_document_content` tools to get content details for explanations.
-        - Use the `ask_user_question_and_get_answer` tool to pause, ask the user a question (provide the full QuizQuestion JSON as args), and wait for their answer index.
+        WORKFLOW:
+        1. **Initial Setup:**
+           - Analyze the provided document content relevant to the input `FocusObjective` (topic, learning_goal).
+           - Plan micro-steps (explain concept from document, provide examples from document, check understanding).
 
-        YOUR AUTONOMOUS TASK:
-        1.  **Plan Micro-steps:** Based on the `FocusObjective`, plan a sequence (explain, example, check).
-        2.  **Execute Loop:** Iterate through your plan:
-            *   **Explain:** Generate explanation text (use content tools if needed). Provide this text directly in your response.
-            *   **Check Understanding:** Generate a `QuizQuestion` JSON. Call `ask_user_question_and_get_answer` tool with this JSON as arguments. **Execution Pauses Here.**
-            *   **Resume & Evaluate:** When execution resumes, the `FunctionResponse` in the history will contain the user's answer index. Evaluate if it's correct based on the question you asked previously.
-            *   **Adapt:** Based on evaluation, decide the next micro-step (next explanation, re-explain, next check, etc.).
-        3.  **Objective Completion:** Continue until the `learning_goal` is met or you determine the user is stuck.
-        4.  **Return Final Result:** Your *very final message* in this execution run MUST be ONLY a JSON object matching the `TeacherTurnResult` schema (e.g., `{"status": "objective_complete", "summary": "Covered topic X..."}`).
+        2. **Teaching Loop:**
+           - Generate explanation text based *only* on the provided document content.
+           - Create QuizQuestion JSON based *only* on the provided document content.
+           - Use ask_user_question_and_get_answer tool.
+           - Evaluate response when execution resumes (use call_quiz_teacher_evaluate tool).
+           - Update user model:
+             * Call update_user_model tool with outcome.
+             * Include confusion points if detected based on the interaction.
+             * Mark objectives as mastered when achieved.
+           - If struggling:
+             * Use reflect_on_interaction tool to analyze.
+             * Adapt teaching approach (e.g., re-explain differently using document content, simplify question).
+           - Continue or adjust based on progress.
 
-        **CRITICAL:**
-        - Manage your own loop.
-        - Use `ask_user_question_and_get_answer` tool to get user input when needed.
-        - Your FINAL response for this entire run MUST be ONLY the `TeacherTurnResult` JSON. Intermediate explanations/interactions should be plain text or tool calls.
+        3. **Completion:**
+           - When objective met:
+             * Update final mastery via update_user_model tool.
+             * Return TeacherTurnResult with status="objective_complete".
+           - If user stuck:
+             * Call reflect_on_interaction tool for analysis.
+             * Update user model with struggles.
+             * Return TeacherTurnResult with status="objective_failed".
+
+        IMPORTANT:
+        - Base all explanations, examples, and questions *solely* on the content of the document(s) provided in the prompt via the File API.
+        - Manage your own teaching loop for the given FocusObjective.
+        - Update user model after each interaction.
+        - Use reflection when user struggles.
+        - Return ONLY TeacherTurnResult JSON as final response.
         """,
-        tools=teacher_tools, # Pass the list of ADK tools
-        input_schema=FocusObjective, # Define input schema (Pydantic model)
-        # output_schema=TeacherTurnResult, # REMOVE output_schema
-        model=model_identifier, # Correct keyword is 'model'
-        # No handoffs needed FROM the teacher in this model
+        tools=teacher_tools,
+        input_schema=FocusObjective,
+        model=model_identifier,
     )
     return teacher_agent
 

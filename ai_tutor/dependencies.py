@@ -60,3 +60,17 @@ async def get_session_service(supabase: Client = Depends(get_supabase_client)) -
             # This should not happen if get_supabase_client works
             raise HTTPException(status_code=503, detail="Supabase client unavailable for SessionService.")
     return _supabase_session_service_instance 
+
+# --- Dependency for TutorOutputLogger ---
+from ai_tutor.output_logger import TutorOutputLogger # Corrected import path
+
+_tutor_output_logger_instance: Optional[TutorOutputLogger] = None
+
+def get_tutor_output_logger() -> TutorOutputLogger:
+    """FastAPI dependency to get the TutorOutputLogger instance."""
+    global _tutor_output_logger_instance
+    if _tutor_output_logger_instance is None:
+        # Initialize the logger instance here. Adjust if it needs parameters.
+        _tutor_output_logger_instance = TutorOutputLogger()
+        print("TutorOutputLogger instance created.")
+    return _tutor_output_logger_instance 

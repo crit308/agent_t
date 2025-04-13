@@ -101,8 +101,28 @@ class AskUserQuestionTool(LongRunningFunctionTool):
         super().__init__(func=self.run_tool_logic)
         self.name = "ask_user_question_and_get_answer"
         self.description = "Asks the user a multiple-choice question and waits for their answer index."
-        # Define the input schema based on QuizQuestion (simplified for tool input)
-        self.input_schema = QuizQuestion # Or a subset Pydantic model if preferred
+        
+        # Define the input schema explicitly using basic types
+        # This mirrors the required fields of QuizQuestion
+        self.input_schema = {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string"},
+                "options": {"type": "array", "items": {"type": "string"}},
+                "correct_answer_index": {"type": "integer"},
+                "explanation": {"type": "string"},
+                "difficulty": {"type": "string"},
+                "related_section": {"type": "string"}
+            },
+            "required": [
+                "question", 
+                "options", 
+                "correct_answer_index", 
+                "explanation", 
+                "difficulty", 
+                "related_section"
+            ]
+        }
 
     async def run_tool_logic(self, question_data: Dict[str, Any], tool_context: ToolContext):
         """
@@ -121,7 +141,7 @@ class AskUserQuestionTool(LongRunningFunctionTool):
                     # Use a custom action field to signal the pause and carry data
                     custom_action={
                         "type": "ask_question",
-                        "data": question_obj.dict()
+                        "data": question_obj.model_dump()
                     }
                 )
             )

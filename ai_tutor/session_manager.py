@@ -34,6 +34,14 @@ _sessions: Dict[str, Dict[str, Any]] = {}
 
 logger = logging.getLogger(__name__)
 
+# --- REMOVE Explicit rebuild within this module --- 
+# try:
+#     logger.info("Rebuilding TutorContext within session_manager.py")
+#     TutorContext.model_rebuild(force=True)
+# except Exception as e:
+#     logger.exception(f"Error rebuilding TutorContext in session_manager: {e}")
+# ---------------------------------------------------------
+
 class SupabaseSessionService(BaseSessionService):
     """A session service that uses Supabase for storage."""
 

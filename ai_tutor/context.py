@@ -21,16 +21,18 @@ def _custom_json_encoder_default(self, obj):
 # (including libraries like httpx used by the tracer) will use this logic.
 json.JSONEncoder.default = _custom_json_encoder_default
 
-from pydantic import BaseModel, ConfigDict
-from datetime import datetime # Keep datetime import for conversion if needed
-from typing import Optional, List, Any, Dict, Literal, TYPE_CHECKING
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field, validator, field_validator, ValidationInfo, model_validator
+from typing import Dict, List, Optional, Any, Union, Literal
+from datetime import datetime
+from uuid import uuid4
 
-# Use TYPE_CHECKING to prevent runtime circular imports for type hints
-if TYPE_CHECKING:
-    from ai_tutor.agents.models import LessonPlan, QuizQuestion, LearningObjective, FocusObjective
-    from ai_tutor.agents.analyzer_agent import AnalysisResult
+# Import related models directly for Pydantic resolution
+from ai_tutor.agents.models import (
+    LessonPlan, QuizQuestion, LearningObjective, FocusObjective, LessonContent, Quiz, SessionAnalysis, QuizFeedbackItem
+)
+from ai_tutor.agents.analyzer_agent import AnalysisResult
 
+# State for tracking concept mastery
 class UserConceptMastery(BaseModel):
     """Tracks user's mastery of a specific concept."""
     mastery_level: float = 0.0 # e.g., 0-1 scale, assessed by quizzes/summaries
@@ -64,7 +66,9 @@ class TutorContext(BaseModel):
     model_config = ConfigDict(
         json_encoders={
             UUID: str  # Tell Pydantic to serialize UUID objects as strings
-        }
+        },
+        validate_assignment=True,
+        arbitrary_types_allowed=True
     )
     # user_id: Optional[str] = None
     user_id: UUID # User ID from Supabase Auth, now mandatory UUID
@@ -72,13 +76,40 @@ class TutorContext(BaseModel):
     folder_id: Optional[UUID] = None # Link to the folder ID
     vector_store_id: Optional[str] = None
     uploaded_file_paths: List[str] = Field(default_factory=list)
-    analysis_result: Optional['AnalysisResult'] = None # Use forward reference
+    analysis_result: Optional[AnalysisResult] = None # Use direct type hint
     knowledge_base_path: Optional[str] = None # Add path to KB file
-    lesson_plan: Optional['LessonPlan'] = None # Use forward reference
-    current_quiz_question: Optional['QuizQuestion'] = None # Use forward reference
-    current_focus_objective: Optional['FocusObjective'] = None # NEW: Store the current focus from Planner
+    lesson_plan: Optional[LessonPlan] = None # Use direct type hint
+    current_quiz_question: Optional[QuizQuestion] = None # Use direct type hint
+    current_focus_objective: Optional[FocusObjective] = None # Use direct type hint
     user_model_state: UserModelState = Field(default_factory=UserModelState)
     last_interaction_summary: Optional[str] = None # What did the tutor just do? What did user respond?
     current_teaching_topic: Optional[str] = None # Which topic is the Teacher actively explaining?
     # Add other relevant session state as needed
-    # e.g., current_lesson_progress: Optional[str] = None 
+    # e.g., current_lesson_progress: Optional[str] = None
+    gemini_file_names: List[str] = Field(default_factory=list) # Stores Google File API names (e.g., files/xxxx)
+    lesson_content: Optional[LessonContent] = None # Current content chunk being worked on?
+    quiz: Optional[Quiz] = None # Use direct type hint
+    session_analysis: Optional[SessionAnalysis] = None # Use direct type hint
+    last_interaction_timestamp: Optional[str] = Field(default_factory=lambda: datetime.now().isoformat())
+    current_agent_state: Optional[str] = None # e.g., 'PLANNING', 'TEACHING', 'ASSESSING'
+
+    @model_validator(mode='before')
+    @classmethod
+    def check_required_ids(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if 'user_id' not in data or data['user_id'] is None:
+                raise ValueError('user_id is required')
+            if 'folder_id' not in data or data['folder_id'] is None:
+                raise ValueError('folder_id is required')
+        return data
+
+    # Ensure UUIDs are handled correctly during validation/serialization
+    @field_validator('session_id', 'user_id', 'folder_id', mode='before')
+    @classmethod
+    def validate_uuid(cls, v: Union[str, UUID]) -> UUID:
+        if isinstance(v, UUID):
+            return v
+        try:
+            return UUID(v)
+        except (ValueError, TypeError):
+            raise ValueError(f'Invalid UUID format: {v}') 

@@ -5,6 +5,8 @@ import os
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from contextlib import asynccontextmanager # Import asynccontextmanager
+import logging
+import google.generativeai as genai
 
 # Load environment variables from .env file
 load_dotenv()
@@ -25,29 +27,69 @@ from ai_tutor.agents.analyzer_agent import AnalysisResult
 from ai_tutor.api_models import TutorInteractionResponse, InteractionResponseData # Add InteractionResponseData
 from ai_tutor.session_manager import SupabaseSessionService # Needed for Runner init
 
+# Import models and context to allow for rebuild
+from ai_tutor.agents import models # Ensure models are imported
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Configure Gemini client (ensure GOOGLE_API_KEY is set in .env)
+api_key = os.getenv("GOOGLE_API_KEY")
+if not api_key:
+    logger.warning("GOOGLE_API_KEY not found in environment variables.")
+    # Decide how to handle missing key: raise error, exit, or proceed with limited functionality
+    # raise ValueError("GOOGLE_API_KEY must be set in the environment.")
+else:
+    try:
+        genai.configure(api_key=api_key)
+        logger.info("Gemini client configured successfully.")
+    except Exception as e:
+         logger.error(f"Failed to configure Gemini client: {e}")
+         # Handle configuration error appropriately
+
 # --- FastAPI Lifespan for Runner Management ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # On startup: Initialize the runner cache
     app.state.adk_runners = {} # Dictionary to hold Runner instances per session_id
     print("Initialized ADK Runner cache on app startup.")
+    
+    # Startup logic
+    logger.info("Application startup...")
+    # Initialize database connections, load models, etc.
+    # Example: await database.connect()
+    
+    # --- Rebuild Pydantic models with forward references resolved ---
+    # Ensure all necessary models are defined before calling this
+    try:
+        logger.info("Rebuilding Pydantic models (TutorContext)...")
+        TutorContext.model_rebuild(force=True) # Force rebuild might help
+        logger.info("TutorContext model rebuild complete.")
+    except Exception as e:
+        logger.exception(f"Error rebuilding Pydantic models: {e}")
+        # Decide if this is a fatal error for startup
+    
     yield
     # On shutdown: Clean up runners if needed (optional)
     app.state.adk_runners.clear()
     print("Cleared ADK Runner cache on app shutdown.")
+    # Shutdown logic
+    logger.info("Application shutdown...")
+    # Example: await database.disconnect()
 
-# --- Rebuild Pydantic models after all imports ---
+# --- REMOVE Redundant Rebuild Calls --- 
 # Ensure all models potentially using forward refs are rebuilt
-UserConceptMastery.model_rebuild()
-UserModelState.model_rebuild()
+# UserConceptMastery.model_rebuild() # REMOVED
+# UserModelState.model_rebuild() # REMOVED
 # LessonPlan and LessonSection might depend on LearningObjective, rebuild them first if so.
-LearningObjective.model_rebuild() # Rebuild LearningObjective if it uses forward refs (unlikely but safe)
-AnalysisResult.model_rebuild() # Rebuild if it uses forward refs
-LessonPlan.model_rebuild() # Rebuild if it uses forward refs
-QuizQuestion.model_rebuild() # Rebuild if it uses forward refs
-QuizFeedbackItem.model_rebuild() # Add if used in TutorInteractionResponse directly or indirectly
-FocusObjective.model_rebuild() # Rebuild the newly added model if it uses forward refs (likely not, but safe)
-TutorContext.model_rebuild() # Now this should work
+# LearningObjective.model_rebuild() # REMOVED
+# AnalysisResult.model_rebuild() # REMOVED
+# LessonPlan.model_rebuild() # REMOVED
+# QuizQuestion.model_rebuild() # REMOVED
+# QuizFeedbackItem.model_rebuild() # REMOVED
+# FocusObjective.model_rebuild() # REMOVED
+# TutorContext.model_rebuild() # REMOVED - Keep the one inside lifespan
 
 app = FastAPI(
     title="AI Tutor API (ADK Backend)",

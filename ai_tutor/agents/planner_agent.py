@@ -67,12 +67,13 @@ class FocusObjective(BaseModel):
 def create_planner_agent() -> Agent:
     """Creates a planner agent that determines the next learning focus using ADK."""
 
-    # Import the common tools
-    from ai_tutor.tools.orchestrator_tools import get_document_content
+    # Import the common tools (now only user model status)
+    from ai_tutor.tools.orchestrator_tools import (
+        get_user_model_status_tool  # Import the instance
+    )
 
     planner_tools = [
-        read_knowledge_base,
-        get_document_content
+        get_user_model_status_tool   # Use the tool instance
     ]
 
     # Use Gemini model via ADK
@@ -81,34 +82,41 @@ def create_planner_agent() -> Agent:
     # Create the planner agent focusing on identifying the next focus
     planner_agent = Agent(
         name="focus_planner",
-        instruction="""You are an expert learning strategist. Your task is to determine the user's **next learning focus** based on the analyzed documents and potentially their current progress (provided in the prompt context).
+        instruction="""You are an expert learning strategist. Your task is to determine the user's **next learning focus** based on the provided documents (via Gemini File API) and their current progress.
 
-        AVAILABLE INFORMATION (Provided in Input):
-        - Knowledge Base Summary (text from document analysis).
-        - User Model State Summary (current progress, confusion points, etc.).
+        WORKFLOW:
+        1. **Get Current State:**
+           - Call get_user_model_status tool to understand user's progress
+           - Review mastery levels, confusion points, and learning pace
+           - Note any mastered objectives or ongoing challenges
 
-        YOUR WORKFLOW **MUST** BE:
-        1.  **Analyze Input:** Review the provided Knowledge Base summary and the User Model State summary.
-        2.  **Identify Next Focus:** Determine the single most important topic or concept the user should learn next. Consider prerequisites implied by the KB structure and the user's current state.
-        3.  **Define Learning Goal:** Formulate a clear, specific learning goal for this focus topic.
-        4.  **Output JSON:** Generate ***ONLY*** a valid JSON object string matching the `FocusObjective` schema (see below). Do NOT include any text before or after the JSON object. Do NOT use markdown ```json formatting.
+        2. **Analyze Content:**
+           - Analyze the content of the document(s) provided directly in the prompt (via File API).
+           - Extract key concepts, structure, and potential prerequisites.
 
-        `FocusObjective` Schema:
-        {{
-            "topic": "string (The specific topic identified)",
-            "learning_goal": "string (The clear learning goal)",
-            "priority": integer (Priority 1-5, 5=highest),
-            "relevant_concepts": ["string", ...] (List of related concepts),
-            "suggested_approach": "string | null (Optional hint for Orchestrator)"
-        }}
+        3. **Plan Next Focus:**
+           - Consider prerequisites identified from the document content.
+           - Consider user's current mastery levels from the tool call.
+           - Consider confusion points and learning pace.
+           - Identify the most appropriate next topic based on the document structure and user state.
 
-        CRITICAL REMINDERS:
-        - Analyze the provided summaries. Do not call external tools.
-        - Your *entire response* MUST be ONLY the JSON string conforming to the FocusObjective schema.
+        4. **Output Focus:**
+           - Generate a FocusObjective JSON with ALL required fields:
+             * topic: The specific topic to focus on (must be present in the document)
+             * learning_goal: Clear, achievable goal related to the document content
+             * priority: Importance (1-5)
+             * relevant_concepts: Related concepts from the document
+             * suggested_approach: Teaching hints based on document content, or "None" if no specific hints.
+
+        IMPORTANT:
+        - Base your analysis and planning *solely* on the provided document content and the user model status.
+        - Always check user's current state before planning.
+        - Respect prerequisites and learning progression suggested by the document structure.
+        - Consider user's demonstrated pace and abilities.
+        - Return ONLY the FocusObjective JSON containing ALL fields (topic, learning_goal, priority, relevant_concepts, suggested_approach).
         """,
-        # output_schema=FocusObjective, # REMOVED to bypass API validation
         model=model_identifier,
-        # Ensure no agent transfers are allowed when removing output_schema
+        tools=planner_tools, # Only includes get_user_model_status_tool now
         disallow_transfer_to_parent=True,
         disallow_transfer_to_peers=True,
     )
