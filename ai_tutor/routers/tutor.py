@@ -38,13 +38,16 @@ import google.generativeai as genai # Import Gemini library
 # Project specific imports
 from ai_tutor.session_manager import SessionManager, SupabaseSessionService, Session # Use Session from ADK session_manager
 from ai_tutor.tools.file_upload import FileUploadManager
-from ai_tutor.agents.analyzer_agent import analyze_documents, AnalysisResult
 from ai_tutor.agents.session_analyzer_agent import analyze_teaching_session
 from ai_tutor.agents.orchestrator_agent import create_orchestrator_agent
+# Import models first
 from ai_tutor.agents.models import (
     FocusObjective,
-    LessonPlan, LessonContent, Quiz, QuizUserAnswers, QuizFeedback, SessionAnalysis, QuizQuestion, QuizFeedbackItem
+    LessonPlan, LessonContent, Quiz, QuizUserAnswers, QuizFeedback, SessionAnalysis, QuizQuestion, QuizFeedbackItem, TeacherTurnResult
 )
+# Then import functions that might use them
+from ai_tutor.agents.analyzer_agent import analyze_documents, AnalysisResult
+
 from ai_tutor.api_models import (
     DocumentUploadResponse, AnalysisResponse, TutorInteractionResponse,
     ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse,
@@ -475,26 +478,42 @@ async def interact_with_tutor(
         logger.exception(f"{log_prefix} Unexpected error loading context.")
         raise HTTPException(status_code=500, detail="Internal server error loading session.")
 
-    # --- Initialize ADK Runner --- #
+    # --- Initialize ADK Runner ---
     try:
-        orchestrator_agent = create_orchestrator_agent() # Create the main orchestrator
-        adk_runner = Runner("ai_tutor", orchestrator_agent, session_service)
-        run_config = RunConfig(workflow_name="Tutor_Interaction", group_id=str(session_id))
-        logger.info(f"{log_prefix} ADK Runner initialized.")
+        logger.info("[Interact Session: {}] Initializing ADK Runner...".format(session_id))
+        # Use keyword arguments for Runner initialization
+        adk_runner = Runner(
+            app_name="ai_tutor", 
+            agent=create_orchestrator_agent(), 
+            session_service=session_service
+        )
+        logger.info("[Interact Session: {}] ADK Runner initialized successfully.".format(session_id))
     except Exception as e:
-        logger.exception(f"{log_prefix} Failed to initialize ADK agent or runner.")
-        raise HTTPException(status_code=500, detail="Internal error initializing agent.")
+        logger.exception(f"[Interact Session: {session_id}] Failed to initialize ADK agent or runner.")
+        # Construct proper ErrorResponse and InteractionResponseData
+        error_response = ErrorResponse(
+            response_type='error', # Add required field
+            error_code='AGENT_INITIALIZATION_FAILED',
+            message=f"Internal server error: Failed to initialize agent. Details: {str(e)}"
+        )
+        return InteractionResponseData(
+            content_type='error',
+            data=error_response,
+            user_model_state=UserModelState() # Provide default empty state
+        )
 
     # --- 2. Prepare ADK Input --- #
-    new_message_content = None
+    new_message_for_adk: Optional[Content] = None # Initialize as None, type hint Content
     if interaction_input.type == 'start' and interaction_input.data is None:
         # Initial message often handled by agent instruction or first tool call
         # Sending a generic start message might be useful sometimes.
-        new_message_content = "Start the tutoring session."
-        logger.info(f"{log_prefix} Preparing generic 'start' message.")
+        start_text = "Start the tutoring session."
+        new_message_for_adk = Content(parts=[Part(text=start_text)]) # Wrap in Content/Part
+        logger.info(f"{log_prefix} Preparing generic 'start' message as Content object.")
     elif interaction_input.type == 'message' and isinstance(interaction_input.data, dict) and 'text' in interaction_input.data:
-        new_message_content = interaction_input.data['text']
-        logger.info(f"{log_prefix} Preparing user message: '{new_message_content[:100]}...'")
+        user_text = interaction_input.data['text']
+        new_message_for_adk = Content(parts=[Part(text=user_text)]) # Wrap in Content/Part
+        logger.info(f"{log_prefix} Preparing user message as Content object: '{user_text[:100]}...'" )
     else:
         logger.warning(f"{log_prefix} Invalid interaction input type/data: {interaction_input}. Cannot proceed.")
         raise HTTPException(status_code=400, detail="Invalid interaction input for this endpoint.")
@@ -511,8 +530,7 @@ async def interact_with_tutor(
         async for event in adk_runner.run_async(
             user_id=str(user.id),
             session_id=str(session_id),
-            new_message=new_message_content,
-            run_config=run_config
+            new_message=new_message_for_adk # Pass the Content object
         ):
             # Improved Event Logging
             event_type = "Unknown"
@@ -540,110 +558,174 @@ async def interact_with_tutor(
             logger_dep.log_orchestrator_output(event.content) # Log content using dependency
             last_agent_event = event # Keep track of the last event processed
 
-            # --- Check for Pause/Input Request --- #
-            if event.actions and event.actions.custom_action:
-                 custom_action = event.actions.custom_action
-                 if isinstance(custom_action, dict) and custom_action.get("type") == "WAIT_FOR_USER_INPUT":
-                     # Extract question and paused_tool_call_id from custom_action
-                     question_data = custom_action.get("details", {}).get("question")
-                     paused_id = custom_action.get("details", {}).get("paused_tool_call_id")
-
-                     if question_data and paused_id:
-                         try:
-                             question_for_user = QuizQuestion.model_validate(question_data)
-                             paused_tool_call_id = paused_id
-                             logger.info(f"{log_prefix} Pausing for user input. Question: '{question_for_user.question[:50]}...', Pause ID: {paused_tool_call_id}")
-                             break # Exit the loop, we need user input
-                         except ValidationError as q_val_err:
-                             logger.error(f"{log_prefix} Failed to validate question data from custom action: {q_val_err}")
-                             # Don't break, maybe the agent can recover or send a text response
-                     else:
-                         logger.warning(f"{log_prefix} Received WAIT_FOR_USER_INPUT action but missing question or paused_id in details.")
-
+            # --- Check for Pause/Input Request (Corrected Logic) --- #
+            function_calls = event.get_function_calls()
+            if function_calls:
+                for func_call in function_calls:
+                    if func_call.name == "ask_user_question_and_get_answer":
+                        logger.info(f"{log_prefix} Detected function call for long-running tool 'ask_user_question_and_get_answer'.")
+                        # Extract question data from args
+                        question_data = func_call.args
+                        # Extract the ID needed for resuming (Check event.long_running_tool_ids)
+                        # The ID might also be implicitly linked via event history, but storing explicitly is safer.
+                        # We need *an* ID to link the answer back. Let's use the event ID for now if long_running_tool_ids isn't reliable.
+                        # NOTE: ADK documentation isn't perfectly clear on the best ID to use here.
+                        # Using the *event ID* of the function call request seems plausible.
+                        paused_id = event.id # Use the Event ID as the identifier for the pause
+                        
+                        if question_data and paused_id:
+                            try:
+                                question_for_user = QuizQuestion.model_validate(question_data)
+                                paused_tool_call_id = paused_id # Store the event ID
+                                logger.info(f"{log_prefix} Pausing for user input. Question: '{question_for_user.question[:50]}...', Pause ID (Event ID): {paused_tool_call_id}")
+                                break # Exit the inner loop (function calls)
+                            except ValidationError as q_val_err:
+                                logger.error(f"{log_prefix} Failed to validate question data from function call args: {q_val_err}")
+                                # Continue processing other function calls or parts?
+                        else:
+                            logger.warning(f"{log_prefix} Received 'ask_user...' function call but missing args or couldn't determine pause ID.")
+            
+            # If we set paused_tool_call_id in the inner loop, break the outer event loop too
+            if paused_tool_call_id:
+                break
+    except google.api_core.exceptions.ResourceExhausted as rate_limit_err:
+        logger.error(f"{log_prefix} Google AI Rate Limit Error: {rate_limit_err}")
+        retry_delay = "15s" # Default retry delay
+        try:
+            details = getattr(rate_limit_err, 'details', [])
+            for detail in details:
+                if detail.get('@type') == 'type.googleapis.com/google.rpc.RetryInfo':
+                    retry_delay = detail.get('retryDelay', retry_delay)
+                    break
+        except Exception:
+            pass 
+        error_response = ErrorResponse(
+            response_type='error',
+            error_code='RATE_LIMIT_EXCEEDED',
+            message=f"API rate limit exceeded. Please try again in {retry_delay}."
+        )
+        return InteractionResponseData(
+            content_type='error',
+            data=error_response,
+            user_model_state=tutor_context.user_model_state 
+        )
+    except google.genai.errors.ClientError as client_err:
+        if "RESOURCE_EXHAUSTED" in str(client_err) or "429" in str(client_err):
+            logger.error(f"{log_prefix} Google AI Rate Limit Error (via ClientError): {client_err}")
+            retry_delay = "15s" # Default retry delay
+            try:
+                details = getattr(client_err, 'details', [])
+                for detail in details:
+                    if detail.get('@type') == 'type.googleapis.com/google.rpc.RetryInfo':
+                        retry_delay = detail.get('retryDelay', retry_delay)
+                        break
+            except Exception:
+                pass 
+            error_response = ErrorResponse(
+                response_type='error',
+                error_code='RATE_LIMIT_EXCEEDED',
+                message=f"API rate limit exceeded. Please try again in {retry_delay}."
+            )
+            return InteractionResponseData(
+                content_type='error',
+                data=error_response,
+                user_model_state=tutor_context.user_model_state 
+            )
+        else:
+            logger.exception(f"{log_prefix} Non-rate-limit ClientError during ADK agent run: {client_err}")
+            error_response = ErrorResponse(
+                response_type='error', 
+                error_code='AGENT_EXECUTION_ERROR',
+                message=f"Internal server error during agent processing: {str(client_err)}"
+            )
+            return InteractionResponseData(
+                content_type='error',
+                data=error_response,
+                user_model_state=tutor_context.user_model_state 
+            )
     except Exception as agent_err:
-        logger.exception(f"{log_prefix} Exception during ADK agent execution: {agent_err}")
-        raise HTTPException(status_code=500, detail="Internal error during agent execution.")
-
+        logger.exception(f"{log_prefix} Error during ADK agent run: {agent_err}")
+        # Return an ErrorResponse within InteractionResponseData
+        error_response = ErrorResponse(
+            response_type='error', 
+            error_code='AGENT_EXECUTION_ERROR',
+            message=f"Internal server error during agent processing: {str(agent_err)}"
+        )
+        return InteractionResponseData(
+            content_type='error',
+            data=error_response,
+            user_model_state=tutor_context.user_model_state 
+        )
     # --- 4. Process Result & Update Final Context --- #
     logger.info(f"{log_prefix} Agent run finished or paused. Processing results...")
+    # Fetch latest context state AFTER agent run completes
+    # This ensures we capture state changes made by the agent/tools/callbacks
     try:
-        # Fetch the latest state after the run/pause using the established dependency logic
-        final_context = await get_tutor_context(session_id, request, session_service)
+        # Re-fetch context to get the absolute latest state persisted by SessionService
+        latest_context = await get_tutor_context(session_id, request, session_service)
+        final_context = latest_context # Use the latest fetched context
         logger.info(f"{log_prefix} Fetched final context state.")
+    except HTTPException as he:
+        # Handle case where session might not be found after run (unlikely)
+        logger.error(f"{log_prefix} Failed to fetch final context state: {he.detail}")
+        # Fallback to context from before the run? Or error out?
+        # Let's error out for now, as state might be inconsistent.
+        raise HTTPException(status_code=500, detail="Internal server error retrieving final session state.")
 
-        # Update context with pause details if needed
-        if paused_tool_call_id and question_for_user: # Update only if we actually paused for a question
-            if final_context.user_model_state.pending_interaction_type != 'checking_question':
-                final_context.user_model_state.pending_interaction_type = 'checking_question'
-                final_context.user_model_state.pending_interaction_details = {"paused_tool_call_id": paused_tool_call_id}
-                # Persist this update immediately so /answer can retrieve it
-                saved = await _update_context_in_db(session_id, user.id, final_context, supabase)
-                if saved:
-                    logger.info(f"{log_prefix} Stored pause state (paused_tool_call_id={paused_tool_call_id}) in context DB.")
-                else:
-                    logger.error(f"{log_prefix} Failed to store pause state in context DB!")
-                    # Raise error? Or rely on next request potentially fixing it?
-                    raise HTTPException(status_code=500, detail="Failed to save session pause state.")
-        else:
-             logger.info(f"{log_prefix} No pause detected or pause info already set.")
-
-    except Exception as context_err:
-        logger.exception(f"{log_prefix} Error fetching or updating final context: {context_err}")
-        # If context fetch fails, we can't reliably return state. Return error.
-        raise HTTPException(status_code=500, detail="Internal error retrieving final session state.")
-
-    # --- 5. Format Response --- #
-    logger.info(f"{log_prefix} Formatting API response...")
-    # --- Logic to handle the PAUSED state --- #
-    if question_for_user and paused_tool_call_id:
-        # We broke the loop because we need user input
-        final_response_data = QuestionResponse(
-            response_type="question",
-            question=question_for_user,
-            topic=question_for_user.related_section or "General Knowledge" # Use related section if available
-        )
-        logger.info(f"{log_prefix} Responding with QuestionResponse. Session is now paused.")
-
-    # --- Logic to handle the COMPLETED state (no pause detected) --- #
-    elif last_agent_event and last_agent_event.content:
-        logger.info(f"{log_prefix} Run completed normally. Processing final event from agent '{last_agent_event.author}'.")
-        # Process the event content to get the core payload
-        processed_payload = _process_adk_event_for_api(last_agent_event, logger_dep) # Use logger dependency
-        if isinstance(processed_payload, ErrorResponse):
-             final_response_data = processed_payload
-             logger.error(f"{log_prefix} Orchestrator returned an error payload: {processed_payload.message}")
-        elif isinstance(processed_payload, TutorInteractionResponse):
-             final_response_data = processed_payload
-             logger.info(f"{log_prefix} Orchestrator returned TutorInteractionResponse type: {final_response_data.response_type}")
-        else: # Fallback if helper returned unexpected type
-             fallback_text = str(processed_payload) # Convert to string as fallback
-             logger.warning(f"{log_prefix} Orchestrator returned unexpected payload type. Falling back to MessageResponse. Payload: {fallback_text[:100]}...")
-             final_response_data = MessageResponse(response_type="message", text=fallback_text)
-
+    # Check if the agent paused and needs user input
+    if paused_tool_call_id and question_for_user:
+         logger.info(f"{log_prefix} Agent paused for user input. Storing pause details.")
+         # Store pause details in the *final* context state
+         final_context.pending_interaction_details = {
+            "status": "paused",
+            "paused_tool_call_id": paused_tool_call_id,
+            "question_details": question_for_user.model_dump() # Store the question data
+         }
+         # Save context with pause details
+         await _update_context_in_db(session_id, user.id, final_context, supabase)
+         # Format response indicating pause
+         response_data = QuestionResponse(
+             status="requires_answer",
+             message="The tutor is waiting for your answer.",
+             question=question_for_user
+         )
+         return InteractionResponseData(status="requires_answer", data=response_data)
     else:
-        # No event received or last event had no content
-        error_msg = f"Agent interaction finished without a final response event."
-        logger.error(f"{log_prefix} Error: {error_msg}")
-        final_response_data = ErrorResponse(
-            error=error_msg,
-            message="There was an internal error processing your request."
-        )
+         logger.info(f"{log_prefix} No pause detected or pause info already set.")
+         # Clear any potentially stale pending interaction if run completed normally
+         if final_context.pending_interaction_details:
+              logger.info(f"{log_prefix} Clearing stale pending interaction details.")
+              final_context.pending_interaction_details = None
+              # Save context with cleared details
+              await _update_context_in_db(session_id, user.id, final_context, supabase)
 
-    # Ensure final_context is available (should be due to error handling above)
-    if not final_context:
-         logger.error(f"{log_prefix} CRITICAL: Final context is unexpectedly None before returning response.")
-         final_context = tutor_context # Use initial as last resort, likely stale
+    # --- Format Final Response --- #
+    logger.info(f"{log_prefix} Formatting API response...")
+    if not last_agent_event:
+         logger.error(f"{log_prefix} Agent run finished, but no final agent event captured.")
+         return InteractionResponseData(status='error', message="Internal error: Agent did not produce a final output.")
 
-    # Return the structured response
-    response = InteractionResponseData(
-        content_type=getattr(final_response_data, 'response_type', 'error'), # Safely get type
-        data=final_response_data, # Send the response from the final agent run
-        user_model_state=final_context.user_model_state # Send final updated state
-    )
-    logger.info(f"{log_prefix} === Endpoint End === Returning {response.content_type}")
-    return response
+    logger.info(f"{log_prefix} Run completed normally. Processing final event from agent '{last_agent_event.author}'.")
+    # Pass the output logger dependency to the processing function
+    processed_payload = await retry_with_exponential_backoff(lambda: _process_adk_event_for_api(last_agent_event, output_logger=logger_dep))
 
-# --- Endpoint to handle user answers to questions --- #
+    if isinstance(processed_payload, ErrorResponse):
+         # For errors, content_type might not be applicable or fixed to 'error'
+         # User model state might be stale, but send the latest fetched one
+         return InteractionResponseData(
+             content_type='error', # Explicitly set for errors
+             data=processed_payload, 
+             user_model_state=final_context.user_model_state
+         )
+    else:
+         # Ensure processed_payload has response_type before accessing
+         content_type = getattr(processed_payload, 'response_type', 'unknown')
+         return InteractionResponseData(
+             content_type=content_type, # Get type from the payload
+             data=processed_payload,
+             user_model_state=final_context.user_model_state # Get state from final context
+         )
+
 @router.post(
     "/sessions/{session_id}/answer",
     response_model=InteractionResponseData,
@@ -658,335 +740,403 @@ async def answer_tutor_question(
     session_service: SupabaseSessionService = Depends(get_session_service),
     logger_dep: TutorOutputLogger = Depends(get_tutor_output_logger)
 ) -> InteractionResponseData:
-    """Handles the user submitting an answer to a question posed by the agent."""
+    """Receives an answer, resumes the ADK agent, and returns the next interaction."""
     log_prefix = f"[Answer Session: {session_id}]"
     logger.info(f"{log_prefix} === Endpoint Start ===")
-    logger.info(f"{log_prefix} Received input type='{interaction_input.type}', data={interaction_input.data}")
+    logger.info(f"{log_prefix} Received input: {interaction_input}")
 
-    # --- 1. Validate Input & Retrieve Context/Pause State --- #
-    if interaction_input.type != 'answer' or not isinstance(interaction_input.data, dict) or 'answer_index' not in interaction_input.data:
-        logger.error(f"{log_prefix} Invalid input for /answer endpoint. Expected type='answer' and data={{'answer_index': int}}.")
-        raise HTTPException(status_code=400, detail="Invalid input type or data for /answer endpoint. Expected type='answer' and data={'answer_index': number}.")
+    # --- 1. Validate Input & Context --- #
+    if interaction_input.type != 'answer' or not isinstance(interaction_input.data, dict) or 'text' not in interaction_input.data:
+        raise HTTPException(status_code=400, detail="Invalid input: Expected type 'answer' with 'text' in data.")
+
+    user_answer_text = interaction_input.data['text']
 
     try:
         tutor_context = await get_tutor_context(session_id, request, session_service)
-        if not tutor_context:
-            logger.error(f"{log_prefix} Context not found or failed to load.")
-            raise HTTPException(status_code=404, detail="Session context not found.")
-        logger.info(f"{log_prefix} Context loaded successfully.")
-    except HTTPException as e:
-        raise e # Re-raise known exceptions
+        logger.info(f"{log_prefix} Context loaded.")
+        
+        # Check if context is actually paused
+        pause_details = tutor_context.pending_interaction_details
+        if not pause_details or pause_details.get("status") != "paused" or not pause_details.get("paused_tool_call_id"):
+            logger.warning(f"{log_prefix} Received answer, but session context is not in a valid paused state.")
+            return InteractionResponseData(status='error', message="Tutor was not waiting for an answer.")
+        
+        paused_tool_call_id = pause_details["paused_tool_call_id"]
+        logger.info(f"{log_prefix} Session is paused, expecting answer for tool call ID: {paused_tool_call_id}")
+        
+    except HTTPException as he:
+        raise he # Re-raise validation/auth errors
     except Exception as e:
-        logger.exception(f"{log_prefix} Unexpected error loading context.")
+        logger.exception(f"{log_prefix} Error loading session or context: {e}")
         raise HTTPException(status_code=500, detail="Internal server error loading session.")
 
-    # --- Retrieve details about the paused interaction --- #
-    if tutor_context.user_model_state.pending_interaction_type != 'checking_question' or \
-       not tutor_context.user_model_state.pending_interaction_details or \
-       'paused_tool_call_id' not in tutor_context.user_model_state.pending_interaction_details:
-        pending_type = tutor_context.user_model_state.pending_interaction_type
-        logger.warning(f"{log_prefix} Received answer, but no valid pending 'checking_question' interaction found in context. Pending type: {pending_type}")
-        raise HTTPException(status_code=400, detail=f"No pending question found for this session {session_id}. Current pending type: {pending_type}")
-
-    paused_tool_call_id = tutor_context.user_model_state.pending_interaction_details['paused_tool_call_id']
-    user_answer_index = interaction_input.data['answer_index']
-    logger.info(f"{log_prefix} Found pending interaction. Pause ID: {paused_tool_call_id}, User Answer Index: {user_answer_index}")
-
-    # --- Clear the pending state immediately (before agent run) --- #
-    logger.info(f"{log_prefix} Clearing pending interaction state in context...")
-    tutor_context.user_model_state.pending_interaction_type = None
-    tutor_context.user_model_state.pending_interaction_details = None
-    # Persist this change immediately
-    saved = await _update_context_in_db(session_id, user.id, tutor_context, supabase)
-    if saved:
-         logger.info(f"{log_prefix} Cleared and saved pending state in context DB.")
-    else:
-         logger.error(f"{log_prefix} Failed to clear and save pending state in context DB!")
-         raise HTTPException(status_code=500, detail="Failed to update session state before resuming.")
-
-    # --- 2. Prepare Resume Event --- #
-    # Create the FunctionResponse event that the long-running tool expects
-    logger.info(f"{log_prefix} Creating FunctionResponse event for tool 'ask_user_question_and_get_answer' with pause ID {paused_tool_call_id}")
-    resume_event = Event(
-        author="user", # Or maybe system? Let's use user for now
-        content=adk_types.Content(
-            parts=[
-                # ADK expects the response payload here
-                adk_types.Part.from_dict({
-                     'function_response': {
-                         'name': 'ask_user_question_and_get_answer',
-                         # 'id': paused_tool_call_id, # ID might not be needed here, ADK matches by name/call context
-                         'response': {'answer_index': user_answer_index}
-                     }
-                 })
-            ],
-            # tool_code_parts is for *requests*, not responses AFAIK
-            # tool_code_parts=[adk_types.FunctionResponse(name='ask_user_question_and_get_answer', id=paused_tool_call_id, response={'answer_index': user_answer_index})], # Pass ID here for ADK matching
-        ),
-        invocation_id=tutor_context.last_interaction_summary or f"resume_{session_id}", # Find appropriate invocation ID? Use last one?
-        # Need to manually set ID and timestamp?
-        id=Event.new_id(),
-        timestamp=time.time(),
+    # --- 2. Prepare Tool Response for ADK --- #
+    # The tool response should mimic what the `ask_user_question_and_get_answer` tool
+    # would normally return after getting the answer.
+    # Let's assume it returns a simple dictionary with the answer text.
+    tool_response_data = {
+        "user_answer": user_answer_text
+    }
+    
+    # Create the FunctionResponse part for the ADK event
+    tool_response_part = FunctionResponse(
+        name="ask_user_question_and_get_answer", # Name of the tool that paused
+        response=tool_response_data
     )
-    # Append this synthesized event to the session history
-    try:
-        logger.info(f"{log_prefix} Appending resume event to session service.")
-        session_service.append_event(session=tutor_context, event=resume_event)
-        logger.info(f"{log_prefix} Resume event appended.")
-    except Exception as append_err:
-        logger.exception(f"{log_prefix} Failed to append resume event to session service: {append_err}")
-        raise HTTPException(status_code=500, detail="Failed to record resume event.")
-
-
-    # --- 3. Resume the ADK Runner --- #
-    logger.info(f"{log_prefix} Resuming ADK Runner...")
-    final_response_data_after_resume: Optional[TutorInteractionResponse] = None
-    last_agent_event_after_resume: Optional[Event] = None
-    question_after_resume: Optional[QuizQuestion] = None
-    paused_id_after_resume: Optional[str] = None
-    final_context_after_resume: TutorContext = tutor_context # Start with current context
+    
+    # Create the ADK Event to send back to the runner
+    # We need to find the original event ID that caused the pause (stored as paused_tool_call_id)
+    # and associate this response with it.
+    # ADK typically handles this linking automatically if we structure the resume correctly.
+    # We likely need to provide the FunctionResponse as the `new_message` to `run_async`
+    # when resuming, associated with the original function call.
+    
+    # ADK needs a google.genai.types.Content object containing the FunctionResponse
+    resume_content = Content(parts=[tool_response_part])
+    
+    # --- 3. Re-initialize Runner & Resume --- #
+    final_response_data: Optional[TutorInteractionResponse] = None
+    last_agent_event: Optional[Event] = None
+    question_for_user: Optional[QuizQuestion] = None # Reset for this turn
+    new_paused_tool_call_id: Optional[str] = None # Reset for this turn
+    final_context: TutorContext = tutor_context # Start with current context
 
     try:
         # Re-initialize runner and run_async.
         # ADK's Runner should pick up from the paused state using the session history.
-        orchestrator_agent = create_orchestrator_agent()
-        adk_runner = Runner("ai_tutor", orchestrator_agent, session_service)
-        run_config = RunConfig(workflow_name="Tutor_Interaction_Resume", group_id=str(session_id))
+        adk_runner = Runner(
+            app_name="ai_tutor", 
+            agent=create_orchestrator_agent(), 
+            session_service=session_service
+        )
         logger.info(f"{log_prefix} ADK Runner re-initialized for resume.")
 
-        # Run async again. It should process the appended resume_event and continue.
         logger.info(f"{log_prefix} Calling ADK Runner run_async for resume...")
         async for event in adk_runner.run_async(
             user_id=str(user.id),
             session_id=str(session_id),
-            new_message=None, # Crucial: No new message, resume from history
-            run_config=run_config
+            new_message=resume_content # Send the tool response as the message
         ):
-            # Improved Event Logging
+            # --- Process Events (Similar to /interact loop) --- #
             event_type = "Unknown"
             event_details = ""
             if event.content:
-                if event.content.parts:
-                    part = event.content.parts[0]
-                    if part.text:
-                        event_type = "Text"
-                        event_details = f": '{part.text[:100]}...'"
-                    elif part.function_call:
-                        event_type = "Tool Call"
-                        event_details = f": {part.function_call.name} (Args: {str(part.function_call.args)[:100]}...)"
-                    elif part.function_response:
-                        event_type = "Tool Response"
-                        event_details = f": {part.function_response.name} (Result: {str(part.function_response.response)[:100]}...)"
-                elif event.content.role == "model" and not event.content.parts:
-                    event_type = "Model Content (Empty?)"
+                 if event.content.parts and event.content.parts[0].text:
+                      event_type = "Text"
+                      event_details = f": '{event.content.parts[0].text[:100]}...'"
+            elif event.get_function_calls():
+                 event_type = "Tool Call"
+                 event_details = f": {event.get_function_calls()[0].name}"
+            elif event.get_function_responses():
+                 event_type = "Tool Response"
+                 event_details = f": {event.get_function_responses()[0].name} (Result: {str(event.get_function_responses()[0].response)[:100]}...)"
             elif event.actions:
                  event_type = "Action"
-                 event_details = f": {event.actions}"
+                 # Simple action logging, needs refinement
+                 actions_summary = []
+                 if event.actions.state_delta: actions_summary.append("state_delta")
+                 if event.actions.artifact_delta: actions_summary.append("artifact_delta")
+                 if event.actions.transfer_to_agent: actions_summary.append(f"transfer({event.actions.transfer_to_agent})")
+                 if event.actions.escalate: actions_summary.append("escalate")
+                 event_details = f": {', '.join(actions_summary)}"
 
-            logger.info(f"{log_prefix} Event Received (Resume): ID={event.id}, Author={event.author}, Type={event_type}{event_details}")
+            logger.info(f"{log_prefix} Event Received: ID={event.id}, Author={event.author}, Type={event_type}{event_details}")
 
-            logger_dep.log_orchestrator_output(event.content)
-            last_agent_event_after_resume = event
+            logger_dep.log_orchestrator_output(event.content) # Log content using dependency
+            last_agent_event = event # Keep track of the last event processed
 
-            # Check if it paused AGAIN
-            if event.actions and event.actions.custom_action:
-                custom_action = event.actions.custom_action
-                if isinstance(custom_action, dict) and custom_action.get("type") == "WAIT_FOR_USER_INPUT":
-                    question_data = custom_action.get("details", {}).get("question")
-                    paused_id = custom_action.get("details", {}).get("paused_tool_call_id")
-                    if question_data and paused_id:
-                        try:
-                            question_after_resume = QuizQuestion.model_validate(question_data)
-                            paused_id_after_resume = paused_id
-                            logger.info(f"{log_prefix} Paused AGAIN after resume. Question: '{question_after_resume.question[:50]}...', New Pause ID: {paused_id_after_resume}")
-                            break # Exit loop
-                        except ValidationError as q_val_err:
-                            logger.error(f"{log_prefix} Failed to validate question data from custom action (after resume): {q_val_err}")
-                    else:
-                        logger.warning(f"{log_prefix} Received WAIT_FOR_USER_INPUT action (after resume) but missing details.")
+            # --- Check for NEW Pause/Input Request --- #
+            function_calls = event.get_function_calls()
+            if function_calls:
+                for func_call in function_calls:
+                    if func_call.name == "ask_user_question_and_get_answer":
+                        logger.info(f"{log_prefix} Detected NEW function call for 'ask_user_question_and_get_answer'.")
+                        question_data = func_call.args
+                        paused_id = event.id # Use new event ID for the new pause
+                        
+                        if question_data and paused_id:
+                            try:
+                                question_for_user = QuizQuestion.model_validate(question_data)
+                                new_paused_tool_call_id = paused_id # Store the *new* pause ID
+                                logger.info(f"{log_prefix} Agent is pausing AGAIN for user input. Question: '{question_for_user.question[:50]}...', Pause ID: {new_paused_tool_call_id}")
+                                break # Exit inner loop
+                            except ValidationError as q_val_err:
+                                logger.error(f"{log_prefix} Failed to validate question data from NEW function call: {q_val_err}")
+                        else:
+                            logger.warning(f"{log_prefix} Received NEW 'ask_user...' function call but missing args or pause ID.")
+            
+            # If we set new_paused_tool_call_id, break the outer event loop
+            if new_paused_tool_call_id:
+                break
+            # --- End Event Processing --- #
 
-    except Exception as agent_err:
-        logger.exception(f"{log_prefix} Exception during ADK agent execution (resume): {agent_err}")
-        raise HTTPException(status_code=500, detail="Internal error during agent execution after answer.")
-
-    # --- 4. Process Result & Update Final Context (After Resume) --- #
-    logger.info(f"{log_prefix} Agent run (resume) finished or paused again. Processing results...")
-    try:
-        # Reload latest context AFTER the resume run
-        final_context_after_resume = await get_tutor_context(session_id, request, session_service)
-        logger.info(f"{log_prefix} Fetched final context state after resume.")
-
-        # Update context with pause details if needed (moved for clarity)
-        if paused_id_after_resume and question_after_resume:
-            if final_context_after_resume.user_model_state.pending_interaction_type != 'checking_question':
-                final_context_after_resume.user_model_state.pending_interaction_type = 'checking_question'
-                final_context_after_resume.user_model_state.pending_interaction_details = {"paused_tool_call_id": paused_id_after_resume}
-                saved = await _update_context_in_db(session_id, user.id, final_context_after_resume, supabase)
-                if saved:
-                    logger.info(f"{log_prefix} Stored new pause state (paused_tool_call_id={paused_id_after_resume}) in context DB after resume.")
-                else:
-                    logger.error(f"{log_prefix} Failed to store new pause state in context DB after resume!")
-                    raise HTTPException(status_code=500, detail="Failed to save session pause state after resume.")
-        else:
-            logger.info(f"{log_prefix} No new pause detected after resume.")
-
-    except Exception as context_err:
-        logger.exception(f"{log_prefix} Error fetching or updating final context after resume: {context_err}")
-        raise HTTPException(status_code=500, detail="Internal error retrieving final session state after resume.")
-
-    # --- 5. Format Response (After Resume) --- #
-    logger.info(f"{log_prefix} Formatting API response after resume...")
-    # --- Logic to handle PAUSED AGAIN state --- #
-    if question_after_resume and paused_id_after_resume:
-        final_response_data_after_resume = QuestionResponse(
-            response_type="question",
-            question=question_after_resume,
-            topic=question_after_resume.related_section or "General Knowledge"
+    except google.api_core.exceptions.ResourceExhausted as rate_limit_err:
+        logger.error(f"{log_prefix} Google AI Rate Limit Error on Resume: {rate_limit_err}")
+        retry_delay = "15s" # Default retry delay
+        try:
+            details = getattr(rate_limit_err, 'details', [])
+            for detail in details:
+                if detail.get('@type') == 'type.googleapis.com/google.rpc.RetryInfo':
+                    retry_delay = detail.get('retryDelay', retry_delay)
+                    break
+        except Exception:
+            pass 
+        error_response = ErrorResponse(
+            response_type='error',
+            error_code='RATE_LIMIT_EXCEEDED',
+            message=f"API rate limit exceeded during resume. Please try again in {retry_delay}."
         )
-        logger.info(f"{log_prefix} Responding with NEW QuestionResponse. Session paused again.")
-
-    # --- Logic to handle COMPLETED state (after resume) --- #
-    elif last_agent_event_after_resume and last_agent_event_after_resume.content:
-        logger.info(f"{log_prefix} Run completed normally after resume. Processing final event from agent '{last_agent_event_after_resume.author}'.")
-        processed_payload = _process_adk_event_for_api(last_agent_event_after_resume, logger_dep)
-        if isinstance(processed_payload, ErrorResponse):
-            final_response_data_after_resume = processed_payload
-            logger.error(f"{log_prefix} Orchestrator returned an error payload after resume: {processed_payload.message}")
-        elif isinstance(processed_payload, TutorInteractionResponse):
-            final_response_data_after_resume = processed_payload
-            logger.info(f"{log_prefix} Orchestrator returned TutorInteractionResponse type after resume: {final_response_data_after_resume.response_type}")
+        return InteractionResponseData(
+            content_type='error',
+            data=error_response,
+            user_model_state=tutor_context.user_model_state # State before the failed resume call
+        )
+    except google.genai.errors.ClientError as client_err:
+        if "RESOURCE_EXHAUSTED" in str(client_err) or "429" in str(client_err):
+            logger.error(f"{log_prefix} Google AI Rate Limit Error (via ClientError) on Resume: {client_err}")
+            retry_delay = "15s" # Default retry delay
+            try:
+                details = getattr(client_err, 'details', [])
+                for detail in details:
+                    if detail.get('@type') == 'type.googleapis.com/google.rpc.RetryInfo':
+                        retry_delay = detail.get('retryDelay', retry_delay)
+                        break
+            except Exception:
+                pass 
+            error_response = ErrorResponse(
+                response_type='error',
+                error_code='RATE_LIMIT_EXCEEDED',
+                message=f"API rate limit exceeded during resume. Please try again in {retry_delay}."
+            )
+            return InteractionResponseData(
+                content_type='error',
+                data=error_response,
+                user_model_state=tutor_context.user_model_state # State before the failed resume call
+            )
         else:
-            fallback_text = str(processed_payload)
-            logger.warning(f"{log_prefix} Orchestrator returned unexpected payload type after resume. Falling back to MessageResponse. Payload: {fallback_text[:100]}...")
-            final_response_data_after_resume = MessageResponse(response_type="message", text=fallback_text)
+             logger.exception(f"{log_prefix} Non-rate-limit ClientError during ADK agent resume run: {client_err}")
+             error_response = ErrorResponse(
+                response_type='error', 
+                error_code='AGENT_EXECUTION_ERROR',
+                message=f"Internal server error during agent processing on resume: {str(client_err)}"
+             )
+             return InteractionResponseData(
+                content_type='error',
+                data=error_response,
+                user_model_state=tutor_context.user_model_state # State before the failed resume call
+             )
+    except Exception as agent_err:
+        logger.exception(f"{log_prefix} Error during ADK agent resume run: {agent_err}")
+        error_response = ErrorResponse(
+            response_type='error', 
+            error_code='AGENT_EXECUTION_ERROR',
+            message=f"Internal server error during agent processing on resume: {str(agent_err)}"
+        )
+        return InteractionResponseData(
+            content_type='error',
+            data=error_response,
+            user_model_state=tutor_context.user_model_state # State before the failed resume call
+        )
 
+    # --- 4. Process Final State & Response (Similar to /interact) --- #
+    logger.info(f"{log_prefix} Agent resume run finished or paused again. Processing results...")
+    try:
+        latest_context = await get_tutor_context(session_id, request, session_service)
+        final_context = latest_context
+        logger.info(f"{log_prefix} Fetched final context state after resume.")
+    except HTTPException as he:
+        logger.error(f"{log_prefix} Failed to fetch final context state after resume: {he.detail}")
+        raise HTTPException(status_code=500, detail="Internal server error retrieving final session state after resume.")
+
+    # Update pending interaction details based on whether it paused again
+    if new_paused_tool_call_id and question_for_user:
+         logger.info(f"{log_prefix} Agent paused AGAIN. Storing new pause details.")
+         final_context.pending_interaction_details = {
+            "status": "paused",
+            "paused_tool_call_id": new_paused_tool_call_id,
+            "question_details": question_for_user.model_dump()
+         }
+         await _update_context_in_db(session_id, user.id, final_context, supabase)
+         response_data = QuestionResponse(
+             status="requires_answer",
+             message="The tutor has another question.",
+             question=question_for_user
+         )
+         return InteractionResponseData(status="requires_answer", data=response_data)
     else:
-        # No event or content after resume
-        error_msg = f"Agent interaction finished after resume without a final response event."
-        logger.error(f"{log_prefix} Error: {error_msg}")
-        final_response_data_after_resume = ErrorResponse(error=error_msg, message="Internal processing error after submitting answer.")
+         logger.info(f"{log_prefix} Agent run completed after resume. Clearing pause details.")
+         # Clear pending interaction details as the answer was processed
+         final_context.pending_interaction_details = None
+         await _update_context_in_db(session_id, user.id, final_context, supabase)
 
-    # Ensure final_context_after_resume exists
-    if not final_context_after_resume:
-        logger.error(f"{log_prefix} CRITICAL: Final context after resume is unexpectedly None before returning response.")
-        final_context_after_resume = tutor_context # Fallback, likely stale
+    # --- Format Final Response (Same logic as /interact) --- #
+    logger.info(f"{log_prefix} Formatting final API response after resume...")
+    if not last_agent_event:
+         logger.error(f"{log_prefix} Agent resume run finished, but no final agent event captured.")
+         return InteractionResponseData(status='error', message="Internal error: Agent did not produce a final output after resuming.")
 
-    response = InteractionResponseData(
-        content_type=getattr(final_response_data_after_resume, 'response_type', 'error'),
-        data=final_response_data_after_resume,
-        user_model_state=final_context_after_resume.user_model_state # Return the LATEST state
-    )
-    logger.info(f"{log_prefix} === Endpoint End === Returning {response.content_type}")
-    return response
+    logger.info(f"{log_prefix} Resume run completed normally. Processing final event from agent '{last_agent_event.author}'.")
+    processed_payload = await retry_with_exponential_backoff(lambda: _process_adk_event_for_api(last_agent_event, output_logger=logger_dep))
 
-# --- Helper function to process ADK event content into API response payload (not InteractionResponseData) --- #
-def _process_adk_event_for_api(event: Event, logger: TutorOutputLogger) -> Union[TutorInteractionResponse, dict]:
-    """Processes an ADK event and formats it for the API response payload.
+    if isinstance(processed_payload, ErrorResponse):
+         # For errors, content_type might not be applicable or fixed to 'error'
+         # User model state might be stale, but send the latest fetched one
+         return InteractionResponseData(
+             content_type='error', # Explicitly set for errors
+             data=processed_payload, 
+             user_model_state=final_context.user_model_state
+         )
+    else:
+         # Ensure processed_payload has response_type before accessing
+         content_type = getattr(processed_payload, 'response_type', 'unknown')
+         return InteractionResponseData(
+             content_type=content_type, # Get type from the payload
+             data=processed_payload,
+             user_model_state=final_context.user_model_state # Get state from final context
+         )
 
-    Returns the specific Pydantic response model (ExplanationResponse, etc.) or a dict for errors/fallbacks.
-    """
-    log_prefix = f"[_process_adk_event_for_api Event: {event.id}]"
-    logger.info(f"{log_prefix} Processing event from author '{event.author}'...")
-    response_payload: Union[TutorInteractionResponse, dict] = MessageResponse(response_type="message", text="Processing...") # Default/fallback
+# --- Helper to process final event --- #
+# Renamed logger parameter to output_logger
+# --- Retry Helper ---
+async def retry_with_exponential_backoff(
+    operation: Callable[[], Awaitable[T]],
+    max_retries: int = 3,
+    initial_delay: float = 1.0,
+    max_delay: float = 30.0, # Adjusted max delay slightly
+    logger_instance: Optional[logging.Logger] = None
+) -> T:
+    """Retries an async operation with exponential backoff, specifically for Google AI rate limits."""
+    delay = initial_delay
+    last_exception = None
+    log = logger_instance or logging.getLogger(__name__) # Use passed logger or default
+    
+    for attempt in range(max_retries + 1):
+        try:
+            return await operation()
+        # Catch the specific ResourceExhausted error if possible, otherwise generic ClientError
+        except google.api_core.exceptions.ResourceExhausted as e:
+            last_exception = e
+            log.warning(
+                f"Rate limit hit (ResourceExhausted - attempt {attempt + 1}/{max_retries + 1}). "
+                f"Error: {e}. Retrying in {delay:.2f} seconds..."
+            )
+        except google.genai.errors.ClientError as e:
+            # Check if it's a rate limit error based on message/details
+            # The specific error might be wrapped
+            if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
+                last_exception = e
+                log.warning(
+                    f"Rate limit hit (ClientError - attempt {attempt + 1}/{max_retries + 1}). "
+                    f"Error: {e}. Retrying in {delay:.2f} seconds..."
+                )
+            else:
+                # Non-rate-limit ClientError, re-raise immediately
+                log.error(f"Non-rate-limit ClientError encountered: {e}")
+                raise e 
+        except Exception as e:
+            # Catch other unexpected exceptions
+            last_exception = e
+            log.error(f"Unexpected exception during operation: {e}")
+            raise e # Re-raise unexpected errors immediately
+            
+        # If we caught a rate limit error, wait and increase delay
+        if attempt < max_retries:
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, max_delay)
+        else:
+            log.error(f"Max retries ({max_retries}) exceeded for rate limit error.")
+            break # Exit loop after max retries
+
+    # If loop finished due to retries, raise the last caught exception
+    raise last_exception
+
+def _process_adk_event_for_api(
+    event: Event,
+    output_logger: Optional[TutorOutputLogger] = None # Make logger optional
+) -> Union[ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse, Dict[str, Any]]:
+    """Processes an ADK event and formats its content into the relevant API response payload model (or an error dict)."""
+    log_prefix = f"[_process_adk_event Session: {event.session_id[:8] if event.session_id else 'N/A'}... Event: {event.id[:8] if event.id else 'N/A'}]" # Add safety checks for IDs
+    logger_instance = output_logger or logging.getLogger(__name__) # Use passed logger or default
+    logger_instance.info(f"{log_prefix} Processing event from author '{event.author}'...")
+
+    # Initialize response variables
+    response_payload: Union[ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse, Dict[str, Any]] = {"status": "processing", "message": "No suitable payload generated from event."}
+    response_type = "intermediate" # Default
 
     # Handle error events first
     if event.error_code or event.error_message:
-        error_text = event.error_message or f"Agent error occurred (Code: {event.error_code})"
-        response_payload = ErrorResponse(response_type="error", message=error_text, error=f"AGENT_ERROR_{event.error_code}")
-        logger.log_error("AgentEventError", f"Error in event {event.id}: {error_text}")
-        logger.error(f"{log_prefix} Processed as ErrorResponse.")
-        return response_payload
-
+        error_msg = event.error_message or f"Agent error occurred (Code: {event.error_code})"
+        logger_instance.error(f"{log_prefix} Agent Error: {error_msg} (Code: {event.error_code})")
+        # CORRECT: Create ErrorResponse with response_type
+        try:
+            response_payload = ErrorResponse(response_type="error", message=error_msg, code=str(event.error_code))
+            response_type = "error"
+        except Exception as e:
+            # Fallback if ErrorResponse creation fails
+             logger_instance.error(f"{log_prefix} Failed to create ErrorResponse object: {e}")
+             response_payload = {"error": True, "message": error_msg, "code": str(event.error_code)}
+             response_type = "error"
+        return response_payload # Return immediately on error
+        
     # Process event content if available
     if event.content:
-        logger.info(f"{log_prefix} Event has content. Processing parts...")
-        for part in event.content.parts:
-            # 1. Text Part
-            if part.text:
-                text = part.text.strip()
-                if text: # Ensure there's text content
-                    logger.info(f"{log_prefix} Processing text part: '{text[:100]}...'")
-                    response_payload = MessageResponse(response_type="message", text=text)
-                    logger.info(f"{log_prefix} Processed as MessageResponse.")
-                    return response_payload # Text content takes precedence for direct response
-                else:
-                    logger.info(f"{log_prefix} Text part is empty.")
-
-            # 2. Function Call Part (Agent requesting tool use)
-            elif part.function_call:
-                tool_name = part.function_call.name
-                tool_args = part.function_call.args or {}
-                logger.info(f"{log_prefix} Processing function call part: {tool_name}")
-
-                # Check if this is the specific call to ask the user a question
-                if tool_name == "ask_user_question_and_get_answer":
+        try:
+            # Attempt to process content assuming it might be structured JSON
+            if event.content.parts:
+                # Handle text content
+                text_content = event.content.parts[0].text
+                if text_content:
+                    logger_instance.info(f"{log_prefix} Processing text part: {text_content[:100]}...")
+                    # Check if text is JSON
                     try:
-                        # Args should match QuizQuestion schema
-                        question = QuizQuestion.model_validate(tool_args)
-                        response_payload = QuestionResponse(
-                                response_type="question",
-                                question=question,
-                            topic=tool_args.get("topic", "Unknown Topic") # Assuming topic is passed
-                        )
-                        logger.info(f"{log_prefix} Processed as QuestionResponse for user.")
-                        # Note: The actual pause happens in the main loop based on custom_action
-                        # This function just formats what *would* be sent if the tool call itself was the final API response.
-                        return response_payload
-                    except (ValidationError, KeyError) as e:
-                        logger.error(f"{log_prefix} Validation failed for question tool args: {e}")
-                        response_payload = ErrorResponse(response_type="error", message=f"Invalid data from question tool: {e}", error="TOOL_ARG_VALIDATION_ERROR")
-                        logger.info(f"{log_prefix} Processed as ErrorResponse due to validation failure.")
-                        return response_payload
-                else:
-                    # Other tool calls are typically intermediate steps
-                    logger.info(f"{log_prefix} Tool call '{tool_name}' is intermediate, not formatting API response.")
-                    # Keep default payload or indicate processing
-                    response_payload = {"status": "processing_tool_call", "tool_name": tool_name}
-                    # Continue processing other parts if any (though usually only one part)
-                    continue
-
-            # 3. Function Response Part (Result from a tool execution)
-            elif part.function_response:
-                tool_name = part.function_response.name
-                tool_response = part.function_response.response if part.function_response.response is not None else {}
-                logger.info(f"{log_prefix} Processing function response for tool: {tool_name}")
-
-                # Check if this is the result from the evaluation tool
-                if tool_name == "call_quiz_teacher_evaluate":
-                    try:
-                        feedback_item = QuizFeedbackItem.model_validate(tool_response)
-                        response_payload = FeedbackResponse(
-                            response_type="feedback",
-                            feedback=feedback_item,
-                            topic=tool_response.get("topic", "Feedback Topic") # Assuming topic might be in response
-                        )
-                        logger.info(f"{log_prefix} Processed as FeedbackResponse.")
-                        return response_payload
-                    except (ValidationError, KeyError) as e:
-                        logger.error(f"{log_prefix} Validation failed for feedback tool response: {e}")
-                        response_payload = ErrorResponse(response_type="error", message=f"Invalid data from feedback tool: {e}", error="TOOL_RESPONSE_VALIDATION_ERROR")
-                        logger.info(f"{log_prefix} Processed as ErrorResponse due to validation failure.")
-                        return response_payload
-                else:
-                    # Other tool responses usually update state internally, don't form final API response
-                    logger.info(f"{log_prefix} Tool response for '{tool_name}' is intermediate, not formatting API response.")
-                    response_payload = {"status": "processing_tool_response", "tool_name": tool_name}
-                    # Continue processing other parts if any
-                    continue
+                        json_data = json.loads(text_content)
+                        logger_instance.info(f"{log_prefix} Parsed text content as JSON.")
+                        # TODO: Add logic here to validate/map JSON to known Pydantic models (ExplanationResponse, etc.)
+                        # If it matches a known model, assign it to response_payload and set response_type
+                        # Example (needs specific model checks):
+                        # if "explanation" in json_data:
+                        #     response_payload = ExplanationResponse.model_validate(json_data)
+                        #     response_type = "explanation"
+                        # else: 
+                        response_payload = json_data # For now, return the parsed JSON dict
+                        response_type = "json_data" # Indicate it's generic JSON for now
+                    except json.JSONDecodeError:
+                        # Not JSON, treat as plain message
+                        response_payload = MessageResponse(response_type="message", text=text_content)
+                        response_type = "message"
+                        logger_instance.info(f"{log_prefix} Treated as plain text message.")
+                # Handle function calls (often intermediate, maybe not final payload)
+                elif event.content.parts[0].function_call:
+                    fc = event.content.parts[0].function_call
+                    msg = f"{log_prefix} Event ended with tool call: {fc.name}"
+                    logger_instance.warning(f"{log_prefix} Event ended with tool call: {fc.name}")
+                    # Usually don't return a tool call as the final API response
+                    # Keep response_payload as the default processing message
+                    response_payload = MessageResponse(response_type="message", text=msg) # Or keep default processing message
+                    response_type = "tool_call" # Indicate intermediate state
+                    if output_logger: output_logger.log_tool_call(event.author, fc.name, fc.args)
+                # Handle function responses (also often intermediate)
+                elif event.content.parts[0].function_response:
+                    fr = event.content.parts[0].function_response
+                    msg = f"{log_prefix} Event ended after receiving tool response for: {fr.name}"
+                    logger_instance.info(f"{log_prefix} Event ended after receiving tool response for {fr.name}")
+                    # Keep response_payload as the default processing message
+                    response_payload = MessageResponse(response_type="message", text=msg) # Or keep default processing message
+                    response_type = "tool_response" # Indicate intermediate state
+                    if output_logger: output_logger.log_tool_response(event.author, fr.name, fr.response)
             else:
-                logger.info(f"{log_prefix} Unknown part type encountered.")
+                logger_instance.warning(f"{log_prefix} Event content has no parts.")
+        except Exception as e:
+             logger_instance.exception(f"{log_prefix} Error processing event content: {e}")
+             response_payload = ErrorResponse(response_type="error", message=f"Internal error processing event content: {e}", code="CONTENT_PROCESSING_ERROR")
+             response_type = "error"
     else:
-        logger.info(f"{log_prefix} Event has no content.")
+        # No error, no content? Empty response?
+        logger_instance.warning(f"{log_prefix} Event finished with no error or content.")
+        response_payload = MessageResponse(response_type="message", text="Agent finished processing.")
+        response_type = "message"
 
-    # Handle case where no specific API response was generated (e.g., only intermediate steps)
-    if isinstance(response_payload, dict) and ("status" in response_payload):
-        logger.warning(f"{log_prefix} Event processing finished with intermediate status: {response_payload}. Returning generic message.")
-        response_payload = MessageResponse(response_type="message", text="Processing complete.")
-    elif not isinstance(response_payload, TutorInteractionResponse):
-        logger.warning(f"{log_prefix} Event processing finished with unexpected payload type: {type(response_payload).__name__}. Returning generic message.")
-        response_payload = MessageResponse(response_type="message", text="Interaction processed.")
-
-    logger.info(f"{log_prefix} Final processed payload type: {getattr(response_payload, 'response_type', 'dict')}")
+    logger_instance.info(f"{log_prefix} Final processed payload type: {response_type}")
     return response_payload
 
 # --- Helper to update context in DB (replace direct calls) ---
@@ -1016,70 +1166,6 @@ async def _update_context_in_db(session_id: UUID, user_id: UUID, context: TutorC
     except Exception as e:
         logger.exception(f"{log_prefix} Exception during context save: {e}")
         return False
-
-# --- Retry Helper ---
-async def retry_with_exponential_backoff(
-    operation: Callable[[], Awaitable[T]],
-    max_retries: int = 3,
-    initial_delay: float = 1.0,
-    max_delay: float = 32.0,
-    logger: Optional[logging.Logger] = None
-) -> T:
-    """Helper function to retry operations with exponential backoff.
-    
-    Args:
-        operation: Async function to retry
-        max_retries: Maximum number of retries (default: 3)
-        initial_delay: Initial delay in seconds (default: 1.0)
-        max_delay: Maximum delay in seconds (default: 32.0)
-        logger: Optional logger instance
-    
-    Returns:
-        The result of the operation if successful
-    
-    Raises:
-        The last exception encountered if all retries fail
-    """
-    delay = initial_delay
-    last_exception = None
-    
-    for attempt in range(max_retries + 1):  # +1 for initial attempt
-        try:
-            return await operation()
-        except google.genai.errors.ClientError as e:
-            # Check if the ClientError is due to resource exhaustion by looking at the message string
-            if 'RESOURCE_EXHAUSTED' in str(e):
-                # *** Fix Indentation Start ***
-                last_exception = e
-                log_func = logger.warning if logger else print
-                log_func(
-                    f"Rate limit hit (attempt {attempt + 1}/{max_retries + 1}). "
-                    f"Retrying in {delay:.2f} seconds..."
-                )
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, max_delay)
-                continue # Go to next attempt
-                # *** Fix Indentation End ***
-            else:
-                # For other ClientErrors, raise immediately (or handle differently)
-                last_exception = e
-                log_func = logger.error if logger else print
-                log_func(f"Non-rate-limit ClientError encountered: {e}")
-                break # Exit retry loop for non-recoverable client errors
-        except google_exceptions.GoogleAPIError as e: # Catch broader Google API errors if needed
-            last_exception = e
-            log_func = logger.error if logger else print
-            log_func(f"Google API Error encountered: {e}")
-            # Decide if retry is appropriate for GoogleAPIError subtypes
-            break # Exit retry loop for now
-        except Exception as e:
-            # Catch other unexpected exceptions
-            last_exception = e
-            log_func = logger.error if logger else print
-            log_func(f"Unexpected exception during operation: {e}")
-            break # Exit retry loop for unexpected errors
-
-    raise last_exception # Raise the last exception if all retries failed
 
 # TODO: Implement endpoint for session analysis if needed:
 # POST /sessions/{session_id}/analyze-session (Full Session Analysis) 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 from google.adk.tools import FunctionTool, ToolContext, BaseTool
 from google.adk.runners import Runner, RunConfig
+from google.genai.types import Content, Part  # Correct types here
+from google.adk.events import Event          # Correct import for Event
 # Import FunctionDeclaration and Schema from the low-level library for manual definition
 # from google.genai.types import FunctionDeclaration, Schema # Remove this
 from google.ai.generativelanguage import FunctionDeclaration, Schema, Tool, Type
@@ -23,6 +25,10 @@ from ai_tutor.context import TutorContext, UserConceptMastery, UserModelState
 # Models needed by the tools themselves or for type hints
 from ai_tutor.agents.models import FocusObjective, QuizQuestion, QuizFeedbackItem, ExplanationResult, QuizCreationResult, TeacherTurnResult # Import new models
 # from ai_tutor.agents.models import LessonPlan, LessonContent, Quiz, LessonSection, LearningObjective # Remove unused models
+
+# --- Import agent functions used by manual tools --- REMOVED (these don't exist as funcs)
+# from ai_tutor.agents.teacher_agent import call_teacher_agent 
+# from ai_tutor.agents.quiz_creator_agent import call_quiz_creator_agent
 
 # Import API response models for potentially formatting tool output
 from ai_tutor.api_models import (
@@ -98,7 +104,7 @@ read_knowledge_base_declaration = FunctionDeclaration(
 class ManualReadKBTool(BaseTool):
     def __init__(self):
         self._declaration = read_knowledge_base_declaration
-        self._func = read_knowledge_base # Store the actual async function
+        self._func = read_knowledge_base # REINSTATED
         super().__init__(name=self._declaration.name, description=self._declaration.description)
 
     @property
@@ -108,6 +114,7 @@ class ManualReadKBTool(BaseTool):
 
     async def run_async(self, *, args: Dict[str, Any], tool_context: ToolContext) -> Any:
         """Executes the underlying function logic. Args are ignored."""
+        # Correctly call the stored function
         return await self._func(tool_context=tool_context)
 
 # Instantiate the custom tool
@@ -130,7 +137,7 @@ get_document_content_declaration = FunctionDeclaration(
 class ManualDocContentTool(BaseTool):
     def __init__(self):
         self._declaration = get_document_content_declaration
-        self._func = get_document_content # Store the actual async function
+        self._func = get_document_content # REINSTATED
         super().__init__(name=self._declaration.name, description=self._declaration.description)
 
     @property
@@ -143,8 +150,8 @@ class ManualDocContentTool(BaseTool):
         # Extract args based on the declaration
         file_path = args.get("file_path_in_storage")
         if file_path is None:
-             # This shouldn't happen if the LLM respects the schema, but handle defensively
              return "[Error: Missing required argument 'file_path_in_storage']"
+        # Correctly call the stored function 
         return await self._func(tool_context=tool_context, file_path_in_storage=file_path)
 
 # Remove the decorator from the function definition
@@ -199,7 +206,8 @@ get_document_content_tool = ManualDocContentTool()
 
 # --- Orchestrator Tool Implementations ---
 
-@FunctionTool
+# Remove FunctionTool decorator from deprecated function
+# @FunctionTool 
 async def call_quiz_creator_mini(
     tool_context: google.adk.tools.ToolContext,
     topic: str
@@ -249,48 +257,49 @@ async def call_quiz_teacher_evaluate(tool_context: ToolContext, user_answer_inde
             result = feedback_item
             return result
         else:
-            # The evaluate_single_answer helper should ideally return feedback or raise
-            error_msg = f"Error: Evaluation failed for question on topic '{getattr(question_to_evaluate, 'related_section', 'N/A')}'."
-            print(f"{log_prefix} {error_msg}")
-            result = error_msg # Return error string
-            return result
-            
+            print(f"{log_prefix} Evaluation helper returned no feedback item.")
+            return "Error: Failed to get evaluation feedback."
+    except ImportError as imp_err:
+        print(f"{log_prefix} Import error for evaluation function: {imp_err}")
+        return f"Error: Evaluation logic unavailable ({imp_err})."
     except Exception as e:
-        error_msg = f"Exception in evaluation: {str(e)}"
-        print(f"{log_prefix} {error_msg}")
-        result = error_msg # Return error string
-        return result
+        print(f"{log_prefix} Exception during evaluation: {e}")
+        traceback.print_exc() # Print full traceback for debugging
+        return f"Error evaluating answer: {e}"
     finally:
-        logger.info(f"{log_prefix} Finished evaluation. Result Type: {type(result).__name__}")
+        print(f"{log_prefix} Finished evaluation. Result: {result}")
 
-# --- Manual Declaration for call_quiz_teacher_evaluate ---
+# Manual Declaration for call_quiz_teacher_evaluate
 call_quiz_teacher_evaluate_declaration = FunctionDeclaration(
     name="call_quiz_teacher_evaluate",
-    description="Evaluates the user's answer (index) to the current question.",
+    description="Evaluates the user's answer to the current multiple-choice question and returns feedback.",
     parameters=Schema(
         type=Type.OBJECT,
         properties={
-            "user_answer_index": Schema(type=Type.INTEGER, description="The 0-based index of the user's selected answer.")
+            "user_answer_index": Schema(type=Type.INTEGER, description="The index (0-based) of the option selected by the user.")
         },
         required=["user_answer_index"]
     )
 )
 
-# --- Custom Tool Class for call_quiz_teacher_evaluate ---
+# Custom Tool Class using Manual Declaration
 class ManualEvaluateTool(BaseTool):
     def __init__(self):
         self._declaration = call_quiz_teacher_evaluate_declaration
-        self._func = call_quiz_teacher_evaluate
+        self._func = call_quiz_teacher_evaluate # REINSTATED
         super().__init__(name=self._declaration.name, description=self._declaration.description)
 
     @property
     def function_declaration(self) -> FunctionDeclaration:
+        """Returns the manually defined FunctionDeclaration."""
         return self._declaration
 
     async def run_async(self, *, args: Dict[str, Any], tool_context: ToolContext) -> Any:
+        """Executes the underlying function logic."""
         answer_index = args.get("user_answer_index")
-        if answer_index is None or not isinstance(answer_index, int):
-            return "[Error: Missing or invalid required argument 'user_answer_index']"
+        if answer_index is None:
+             return "[Error: Missing required argument 'user_answer_index']"
+        # Correctly call the stored function
         return await self._func(tool_context=tool_context, user_answer_index=answer_index)
 
 # Instantiate the custom tool
@@ -303,24 +312,27 @@ def determine_next_learning_step(tool_context: ToolContext) -> Dict[str, Any]:
     logger.warning(f"{log_prefix} Deprecated tool called.")
     return {"error": "This tool is deprecated. Use call_planner_agent to get the next focus."}
 
-# Add decorator back to the function definition
-@FunctionTool
+# REMOVE the FunctionTool decorator - NOW HANDLED BY ManualUpdateUserModelTool
 async def update_user_model(
-    tool_context: ToolContext, # Keep in function signature for ADK injection
+    tool_context: ToolContext,
     topic: str,
     outcome: str,
-    confusion_point: str, # Ensure this is required
-    last_accessed: str, # Ensure this is required
-    mastered_objective_title: str # Ensure this is required
+    confusion_point: str,
+    last_accessed: str,
+    mastered_objective_title: str
 ) -> str:
     """Updates the user model state (within tool_context.state) with interaction outcomes and temporal data.
 
-    Note: For parameters that are optional in practice, pass an empty string ("") when no value is available.
-    - confusion_point: Pass "" if no confusion point identified
-    - last_accessed: Pass "" to use current timestamp
-    - mastered_objective_title: Pass "" if no objective was mastered
+    Note: For parameters that are optional in practice, pass empty string or None.
+    - confusion_point: Pass None or "" if no confusion point identified
+    - last_accessed: Pass None or "" to use current timestamp
+    - mastered_objective_title: Pass None or "" if no objective was mastered
     """
     log_prefix = f"[Tool update_user_model Session: {tool_context.session_id if tool_context else 'N/A'}]"
+    # Handle optional parameters explicitly if they are None
+    confusion_point = confusion_point or "" 
+    last_accessed = last_accessed or ""
+    mastered_objective_title = mastered_objective_title or ""
     logger.info(f"{log_prefix} Starting update for topic '{topic}' with outcome '{outcome}'")
     result = f"User model update failed for {topic}."
     try:
@@ -342,6 +354,7 @@ async def update_user_model(
             return "Error: Invalid topic provided for user model update."
 
         # Initialize concept if needed within the state dictionary
+        # Use model_dump() for initial default if needed, then access as dict
         user_model_state_dict = state_dict.setdefault("user_model_state", UserModelState().model_dump())
         concepts_dict = user_model_state_dict.setdefault("concepts", {})
         # Ensure concept_state is a dictionary for modification
@@ -413,20 +426,62 @@ async def update_user_model(
 # --- Manual Declaration for update_user_model ---
 update_user_model_declaration = FunctionDeclaration(
     name="update_user_model",
-    description="Updates the user model state (within tool_context.state) with interaction outcomes and temporal data.",
+    description="Updates the user model state with interaction outcomes and temporal data. Pass empty strings ('') for optional fields if no value is available.",
     parameters=Schema(
         type=Type.OBJECT,
         properties={
-            "topic": Schema(type=Type.STRING, description="The topic the interaction was about."),
-            "outcome": Schema(type=Type.STRING, description="Outcome ('correct', 'incorrect', 'mastered', 'struggled', 'explained')."),
-            "confusion_point": Schema(type=Type.STRING, description="Specific point of confusion, or empty string."),
-            "last_accessed": Schema(type=Type.STRING, description="ISO 8601 timestamp or empty string to use current time."),
-            "mastered_objective_title": Schema(type=Type.STRING, description="Title of objective mastered, or empty string.")
+            "topic": Schema(type=Type.STRING, description="The topic the interaction related to."),
+            "outcome": Schema(type=Type.STRING, description="Result of the interaction (correct, incorrect, mastered, struggled, explained)."),
+            "confusion_point": Schema(type=Type.STRING, description="Specific point of confusion identified, or empty string."),
+            "last_accessed": Schema(type=Type.STRING, description="ISO 8601 timestamp of interaction, or empty string to use current time."),
+            "mastered_objective_title": Schema(type=Type.STRING, description="Title of the learning objective mastered, or empty string.")
         },
-        # Explicitly list all parameters as required
+        # All parameters are required by the function logic (handle empty strings inside)
         required=["topic", "outcome", "confusion_point", "last_accessed", "mastered_objective_title"]
     )
 )
+
+# --- Custom Tool Class for update_user_model ---
+class ManualUpdateUserModelTool(BaseTool):
+    def __init__(self):
+        self._declaration = update_user_model_declaration
+        self._func = update_user_model # REINSTATED
+        super().__init__(name=self._declaration.name, description=self._declaration.description)
+
+    @property
+    def function_declaration(self) -> FunctionDeclaration:
+        """Returns the manually defined FunctionDeclaration."""
+        return self._declaration
+
+    async def run_async(self, *, args: Dict[str, Any], tool_context: ToolContext) -> Any:
+        """Executes the underlying function logic, extracting args."""
+        # Extract args safely, providing empty strings as fallback if missing (though schema requires them)
+        topic = args.get("topic", "")
+        outcome = args.get("outcome", "")
+        # Pass None for optional args if missing, let the function handle defaults/None
+        confusion_point = args.get("confusion_point")
+        last_accessed = args.get("last_accessed")
+        mastered_objective_title = args.get("mastered_objective_title")
+
+        # Validate outcome here before calling the function might be slightly cleaner
+        valid_outcomes = {'correct', 'incorrect', 'mastered', 'struggled', 'explained'}
+        if outcome not in valid_outcomes:
+            error_msg = f"[Tool Error] Invalid outcome '{outcome}' provided. Must be one of: {valid_outcomes}"
+            logger.error(f"[Tool {self.name}] {error_msg}")
+            return error_msg # Return error directly from tool run
+
+        # Correctly call the stored function
+        return await self._func(
+            tool_context=tool_context,
+            topic=topic,
+            outcome=outcome,
+            confusion_point=confusion_point,
+            last_accessed=last_accessed,
+            mastered_objective_title=mastered_objective_title
+        )
+
+# Instantiate the custom tool
+update_user_model_tool = ManualUpdateUserModelTool()
 
 # Add decorator back to get_user_model_status
 # @FunctionTool # REMOVED Decorator
@@ -488,7 +543,7 @@ get_user_model_status_declaration = FunctionDeclaration(
 class ManualGetUserModelStatusTool(BaseTool):
     def __init__(self):
         self._declaration = get_user_model_status_declaration
-        self._func = get_user_model_status
+        self._func = get_user_model_status # REINSTATED
         super().__init__(name=self._declaration.name, description=self._declaration.description)
 
     @property
@@ -499,6 +554,7 @@ class ManualGetUserModelStatusTool(BaseTool):
         topic = args.get("topic")
         if topic is None or not isinstance(topic, str):
             return "[Error: Missing or invalid required argument 'topic']"
+        # Correctly call the stored function
         return await self._func(tool_context=tool_context, topic=topic)
 
 # Instantiate the custom tool
@@ -509,9 +565,9 @@ get_user_model_status_tool = ManualGetUserModelStatusTool()
 async def reflect_on_interaction(
     tool_context: ToolContext,
     topic: str,
-    interaction_summary: str, # e.g., "User answered checking question incorrectly."
-    user_response: str, # Ensure required
-    feedback_provided_data: Dict[str, Any] # Ensure required
+    interaction_summary: str, 
+    user_response: str,
+    feedback_provided_data: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
     Analyzes the last interaction for a given topic, identifies potential reasons for user difficulty,
@@ -519,6 +575,9 @@ async def reflect_on_interaction(
     (Now potentially needs manual declaration too if issues persist)
     """
     log_prefix = f"[Tool reflect_on_interaction Session: {tool_context.session_id if tool_context else 'N/A'}]"
+    # Handle optional parameters explicitly
+    user_response = user_response or ""
+    feedback_provided_data = feedback_provided_data or {}
     logger.info(f"{log_prefix} Starting reflection for topic '{topic}'. Summary: {interaction_summary}")
     result = {"error": "Reflection failed."}
     try:
@@ -586,7 +645,7 @@ reflect_on_interaction_declaration = FunctionDeclaration(
 class ManualReflectTool(BaseTool):
     def __init__(self):
         self._declaration = reflect_on_interaction_declaration
-        self._func = reflect_on_interaction
+        self._func = reflect_on_interaction # REINSTATED
         super().__init__(name=self._declaration.name, description=self._declaration.description)
 
     @property
@@ -594,19 +653,29 @@ class ManualReflectTool(BaseTool):
         return self._declaration
 
     async def run_async(self, *, args: Dict[str, Any], tool_context: ToolContext) -> Any:
-        # Retrieve args, providing defaults only if absolutely necessary and handled in func
-        return await self._func(
+        # Retrieve args, pass None if missing for optional parameters
+        topic = args.get("topic")
+        interaction_summary = args.get("interaction_summary")
+        user_response = args.get("user_response")
+        feedback_provided_data = args.get("feedback_provided_data")
+
+        # Basic validation (can be enhanced)
+        if not topic or not interaction_summary:
+             return "[Error: Missing required arguments 'topic' or 'interaction_summary']"
+        
+        # Correctly call the stored function
+        return await self._func( 
             tool_context=tool_context,
-            topic=args.get("topic", ""), # Provide empty string if missing
-            interaction_summary=args.get("interaction_summary", ""), # Provide empty string if missing
-            user_response=args.get("user_response", ""), # Provide empty string if missing
-            feedback_provided_data=args.get("feedback_provided_data", {}) # Provide empty dict if missing
+            topic=topic,
+            interaction_summary=interaction_summary,
+            user_response=user_response, # Pass potential None
+            feedback_provided_data=feedback_provided_data # Pass potential None
         )
 
 # Instantiate the custom tool
 reflect_on_interaction_tool = ManualReflectTool()
 
-@FunctionTool
+# REMOVE the FunctionTool decorator - NOW HANDLED BY ManualPlannerAgentTool
 async def call_planner_agent(
     ctx: ToolContext
 ) -> Union[FocusObjective, str]:
@@ -642,17 +711,14 @@ async def call_planner_agent(
             user_state_summary = str(user_state_data)
 
         planner_prompt = f"""
-        Knowledge Base Summary:
-        {kb_content}
-
-        User Model State Summary:
-        {user_state_summary}
-
-        Based on the above information, determine the next single learning focus objective for the user. Output ONLY the JSON object string matching the FocusObjective schema.
+        Determine the next learning focus based on the available Knowledge Base and user model status.
+        Use the `read_knowledge_base` tool first, then `get_user_model_status`.
+        Return ONLY the FocusObjective JSON object.
         """
+
         try:
             from ai_tutor.agents.planner_agent import create_planner_agent
-            planner_agent = create_planner_agent()
+            planner_agent = create_planner_agent() # TODO: Update function name if changed. Pass API key if needed.
             
             # Check if ctx.state is available and has session_id
             session_id = None
@@ -661,22 +727,22 @@ async def call_planner_agent(
             elif hasattr(ctx.state, 'session_id'): # Fallback if state is an object
                  session_id = getattr(ctx.state, 'session_id')
             
-            run_config_kwargs = {}
-            if session_id:
-                 run_config_kwargs['group_id'] = str(session_id)
-                 run_config_kwargs['workflow_name'] = "Orchestrator_PlannerCall"
-            
-            run_config = RunConfig(**run_config_kwargs)
-
-            # Run the planner agent, expect text output
-            # --- Modified Run Call ---
-            last_event: Optional[Event] = None
-            async for event in Runner.run_async(
-                agent=planner_agent, # Correct keyword
-                new_message=planner_prompt, # Correct keyword
-                session_id=str(session_id) if session_id else None, # Correct keyword
-                user_id=str(ctx.user_id) if hasattr(ctx, 'user_id') else None, # Correct keyword
-                run_config=run_config
+            # --- Correctly handle run_async generator --- #
+            # Ensure session_service is available from the calling context
+            if not ctx.session_service:
+                 return "TOOL_CONFIG_ERROR: Session service not available in ToolContext."
+                 
+            adk_runner = Runner(
+                app_name="ai_tutor", # Use consistent app name 
+                agent=planner_agent, 
+                session_service=ctx.session_service
+            )
+            final_agent_event: Optional[Event] = None
+            logger.info(f"{log_prefix} Calling Planner Agent run_async...")
+            async for event in adk_runner.run_async(
+                user_id=str(ctx.user_id) if hasattr(ctx, 'user_id') else None,
+                session_id=str(session_id) if session_id else None,
+                new_message=Content(parts=[Part(text=planner_prompt)]) # Wrap prompt
             ):
                 last_event = event
                 # We only care about the final text event
@@ -701,12 +767,6 @@ async def call_planner_agent(
                 focus_objective = FocusObjective.model_validate(planner_output_data)
                 print(f"{log_prefix} Planner parsed focus: {focus_objective.topic}")
                 
-                # Store the new focus in context state dictionary if state is available
-                if ctx.state and isinstance(ctx.state, dict):
-                    ctx.state["current_focus_objective"] = focus_objective.model_dump()
-                elif ctx.state and hasattr(ctx.state, 'current_focus_objective'):
-                     setattr(ctx.state, 'current_focus_objective', focus_objective.model_dump())
-                     
                 result = focus_objective # Return the validated Pydantic object
                 return result
             except json.JSONDecodeError as json_err:
@@ -736,250 +796,259 @@ async def call_planner_agent(
         result = "PLANNER_EXECUTION_ERROR: An exception occurred while running the planner."
         return result
     finally:
-         log_result = result.topic if isinstance(result, FocusObjective) else result
-         logger.info(f"{log_prefix} Finished execution. Result: {log_result}")
+        log_result = result.topic if isinstance(result, FocusObjective) else result
+        logger.info(f"{log_prefix} Finished execution. Result: {log_result}")
 
-@FunctionTool
-async def call_teacher_agent(
-    tool_context: ToolContext,
-    topic: str,
-    explanation_details: str # e.g., "Explain the concept generally", "Provide an example"
-) -> Union[ExplanationResult, str]:
-    """Calls the Teacher Agent to provide an explanation for a specific topic/detail."""
-    log_prefix = f"[Tool call_teacher_agent Session: {tool_context.session_id if tool_context else 'N/A'}]"
-    logger.info(f"{log_prefix} Starting execution for topic '{topic}': {explanation_details}")
-    result: Union[ExplanationResult, str] = "TEACHER_ERROR: Teacher failed unexpectedly."
-    state_dict = tool_context.state # Access state dict
-    try:
-        # --- Import and Create Agent *Inside* ---
-        from ai_tutor.agents.teacher_agent import create_interactive_teacher_agent # Naming needs update based on actual refactor
-        # ----------------------------------------
-        # Vector store ID should be part of the state dictionary
-        vector_store_id = state_dict.get("vector_store_id")
-        # !! IMPORTANT: The vector store ID requirement was likely removed from the Teacher agent
-        # !! Remove this check if the teacher no longer needs it.
-        # if not vector_store_id:
-        #     logger.error(f"{log_prefix} Vector store ID not found in context state for Teacher.")
-        #     return "Error: Vector store ID not found in context state for Teacher."
+# --- Manual Declaration for call_planner_agent ---
+call_planner_agent_declaration = FunctionDeclaration(
+    name="call_planner_agent",
+    description="Calls the Planner Agent to determine the next learning focus objective. Expects JSON output.",
+    parameters=Schema(
+        type=Type.OBJECT,
+        properties={} # No parameters needed, uses context
+    )
+)
 
-        session_id = state_dict.get("session_id") # Get session_id from state if available
-        user_id = state_dict.get("user_id") # Get user_id from state
+# --- Custom Tool Class for call_planner_agent ---
+class ManualPlannerAgentTool(BaseTool):
+    def __init__(self):
+        self._declaration = call_planner_agent_declaration
+        # self._func = call_planner_agent # REMOVED (confirming)
+        super().__init__(name=self._declaration.name, description=self._declaration.description)
 
-        # Pass vector_store_id only if the agent function still requires it
-        teacher_agent = create_interactive_teacher_agent() # Assuming no vector_store_id needed now
-        run_config = RunConfig(
-             group_id=str(session_id) if session_id else None,
-             workflow_name="Orchestrator_TeacherCall"
-        )
+    @property
+    def function_declaration(self) -> FunctionDeclaration:
+        """Returns the manually defined FunctionDeclaration."""
+        return self._declaration
 
-        teacher_prompt = f"""
-        Explain the topic: '{topic}'.
-        Specific instructions for this explanation: {explanation_details}.
-        Use the file_search tool if needed to find specific information or examples from the documents.
-        Format your response ONLY as an ExplanationResult object containing the explanation text in the 'details' field.
-        """
+    async def run_async(self, *, args: Dict[str, Any], tool_context: ToolContext) -> Any:
+        """Executes the underlying function logic."""
+        return await self._func(ctx=tool_context)
 
-        # --- Correctly handle run_async generator --- #
-        adk_runner = Runner("ai_tutor", teacher_agent, tool_context.session_service) # Use session service from context
-        final_agent_event: Optional[Event] = None
-        logger.info(f"{log_prefix} Calling Teacher Agent run_async...")
-        async for event in adk_runner.run_async(
-            user_id=str(user_id) if user_id else None,
-            session_id=str(session_id) if session_id else None,
-            new_message=teacher_prompt,
-            run_config=run_config
-            # state=state_dict, # Pass state if runner needs it directly (unlikely)
-        ):
-            logger.info(f"{log_prefix} Teacher Event: Author={event.author}, Type={type(event.content)}, Actions={event.actions}")
-            # Keep track of the last event from the agent itself
-            if event.author == teacher_agent.name:
-                final_agent_event = event
+# Instantiate the custom tool
+call_planner_agent_tool = ManualPlannerAgentTool()
 
-        # --- Process the final event --- #
-        if not final_agent_event or not final_agent_event.content:
-            error_msg = "TEACHER_OUTPUT_ERROR: Teacher agent finished without generating content."
-            logger.error(f"{log_prefix} {error_msg}")
-            result = error_msg
-            return result
+# --- Manual Declaration for call_teacher_agent ---
+call_teacher_agent_declaration = FunctionDeclaration(
+    name="call_teacher_agent",
+    description="Calls the teacher agent to generate explanations or handle student interactions.",
+    parameters=Schema(
+        type=Type.OBJECT,
+        properties={
+            "objective": Schema(type=Type.STRING, description="The learning objective or topic to focus on"),
+            "student_input": Schema(type=Type.STRING, description="The student's question or input"),
+            "interaction_type": Schema(type=Type.STRING, description="The type of interaction (explanation, question, feedback)")
+        },
+        required=["objective", "student_input", "interaction_type"]
+    )
+)
 
-        # Attempt to parse the final event's content as ExplanationResult
-        # Assuming the agent's last message follows the requested format
-        final_output_text = None
-        if final_agent_event.content.parts and final_agent_event.content.parts[0].text:
-            final_output_text = final_agent_event.content.parts[0].text
+# --- Custom Tool Class for Teacher Agent ---
+class ManualTeacherAgentTool(BaseTool):
+    def __init__(self):
+        self._declaration = call_teacher_agent_declaration
+        # self._func = call_teacher_agent # REMOVED - Agent is run via Runner
+        super().__init__(name=self._declaration.name, description=self._declaration.description)
 
-        if final_output_text:
+    @property
+    def function_declaration(self) -> FunctionDeclaration:
+        return self._declaration
+
+    async def run_async(self, *, args: Dict[str, Any], tool_context: ToolContext) -> Any:
+        """Instantiates and runs the Teacher agent via ADK Runner."""
+        log_prefix = f"[Tool {self.name} Session: {tool_context.session_id if tool_context else 'N/A'}]"
+        logger.info(f"{log_prefix} Starting teacher agent execution.")
+
+        objective = args.get("objective")
+        student_input = args.get("student_input")
+        interaction_type = args.get("interaction_type")
+        
+        if not all([objective, student_input, interaction_type]):
+            return "[Error: Missing required arguments for teacher agent tool call]"
+
+        # --- Run Teacher Agent via Runner --- #
+        try:
+            from ai_tutor.agents.teacher_agent import create_interactive_teacher_agent
+            teacher_agent = create_interactive_teacher_agent()
+            
+            # Get required context info
+            session_id = str(getattr(tool_context, 'session_id', None))
+            user_id = str(getattr(tool_context, 'user_id', None))
+            session_service = getattr(tool_context, 'session_service', None)
+
+            if not session_service:
+                 logger.error(f"{log_prefix} Session service not available in ToolContext.")
+                 return "TOOL_CONFIG_ERROR: Session service not available."
+            if not user_id:
+                 logger.error(f"{log_prefix} User ID not available in ToolContext.")
+                 return "TOOL_CONFIG_ERROR: User ID not available."
+            if not session_id:
+                 logger.error(f"{log_prefix} Session ID not available in ToolContext.")
+                 return "TOOL_CONFIG_ERROR: Session ID not available."
+
+            # Construct a prompt for the teacher agent based on tool args
+            # NOTE: This is a simplified prompt. The teacher agent expects FocusObjective.
+            # This might need refinement based on how teacher_agent processes input.
+            teacher_prompt = f"Objective: {objective}\nInteraction Type: {interaction_type}\nStudent Input: {student_input}"
+
+            adk_runner = Runner(
+                app_name="ai_tutor", 
+                agent=teacher_agent, 
+                session_service=session_service
+            )
+            
+            last_event = None
+            logger.info(f"{log_prefix} Calling Teacher Agent run_async...")
+            async for event in adk_runner.run_async(
+                user_id=user_id,
+                session_id=session_id,
+                new_message=Content(parts=[Part(text=teacher_prompt)])
+            ):
+                last_event = event
+                # Log intermediate events if needed
+                # logger.debug(f"{log_prefix} Teacher Agent Event: {event.author} - {event.content.parts[0].text[:50] if event.content and event.content.parts else 'No Text'}")
+
+            if not last_event or not last_event.content or not last_event.content.parts:
+                error_msg = "Error: Teacher agent did not return any content output."
+                logger.error(f"{log_prefix} {error_msg}")
+                return "TEACHER_OUTPUT_ERROR: Teacher returned no content."
+
+            # Extract final result (assuming text or structured output)
+            # TODO: Adapt based on Teacher Agent's actual output (TeacherTurnResult?)
+            final_output = last_event.content.parts[0].text
+            logger.info(f"{log_prefix} Teacher agent finished. Output: {final_output[:100]}...")
+            return final_output # Or parse/validate if expecting structured JSON
+
+        except Exception as e:
+            error_msg = f"EXCEPTION calling Teacher Agent via tool: {str(e)}\n{traceback.format_exc()}"
+            logger.exception(f"{log_prefix} {error_msg}")
+            return "TEACHER_EXECUTION_ERROR: An exception occurred while running the teacher agent."
+        # --- End Runner Logic --- #
+
+# --- Manual Declaration for call_quiz_creator_agent ---
+call_quiz_creator_declaration = FunctionDeclaration(
+    name="call_quiz_creator_agent",
+    description="Calls the quiz creator agent to generate quiz questions or provide feedback.",
+    parameters=Schema(
+        type=Type.OBJECT,
+        properties={
+            "objective": Schema(type=Type.STRING, description="The learning objective to test"),
+            "request_type": Schema(type=Type.STRING, description="Type of request (create_quiz or provide_feedback)"),
+            "student_response": Schema(type=Type.STRING, description="Student's answer for feedback (optional)")
+        },
+        required=["objective", "request_type"]
+    )
+)
+
+# --- Custom Tool Class for Quiz Creator Agent ---
+class ManualQuizCreatorAgentTool(BaseTool):
+    def __init__(self):
+        self._declaration = call_quiz_creator_declaration
+        # self._func = call_quiz_creator_agent # REMOVED - Agent is run via Runner
+        super().__init__(name=self._declaration.name, description=self._declaration.description)
+
+    @property
+    def function_declaration(self) -> FunctionDeclaration:
+        return self._declaration
+
+    async def run_async(self, *, args: Dict[str, Any], tool_context: ToolContext) -> Any:
+        """Instantiates and runs the Quiz Creator agent via ADK Runner."""
+        log_prefix = f"[Tool {self.name} Session: {tool_context.session_id if tool_context else 'N/A'}]"
+        logger.info(f"{log_prefix} Starting quiz creator agent execution.")
+        
+        objective = args.get("objective")
+        request_type = args.get("request_type")
+        student_response = args.get("student_response", "") # Optional
+        
+        if not all([objective, request_type]):
+            return "[Error: Missing required arguments for quiz creator agent tool call]"
+            
+        # --- Run Quiz Creator Agent via Runner --- #
+        try:
+            from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent
+            quiz_agent = create_quiz_creator_agent()
+            
+            # Get required context info
+            session_id = str(getattr(tool_context, 'session_id', None))
+            user_id = str(getattr(tool_context, 'user_id', None))
+            session_service = getattr(tool_context, 'session_service', None)
+
+            if not session_service:
+                 logger.error(f"{log_prefix} Session service not available in ToolContext.")
+                 return "TOOL_CONFIG_ERROR: Session service not available."
+            if not user_id:
+                 logger.error(f"{log_prefix} User ID not available in ToolContext.")
+                 return "TOOL_CONFIG_ERROR: User ID not available."
+            if not session_id:
+                 logger.error(f"{log_prefix} Session ID not available in ToolContext.")
+                 return "TOOL_CONFIG_ERROR: Session ID not available."
+
+            # Construct prompt for the quiz agent
+            quiz_prompt = f"Objective: {objective}\nRequest Type: {request_type}"
+            if student_response:
+                 quiz_prompt += f"\nStudent Response: {student_response}"
+            quiz_prompt += "\nPlease generate the quiz or feedback as requested."
+
+            adk_runner = Runner(
+                app_name="ai_tutor", 
+                agent=quiz_agent, 
+                session_service=session_service
+            )
+            
+            last_event = None
+            logger.info(f"{log_prefix} Calling Quiz Creator Agent run_async...")
+            async for event in adk_runner.run_async(
+                user_id=user_id,
+                session_id=session_id,
+                new_message=Content(parts=[Part(text=quiz_prompt)])
+            ):
+                last_event = event
+                # logger.debug(f"{log_prefix} Quiz Creator Event: {event.author} - {event.content.parts[0].text[:50] if event.content and event.content.parts else 'No Text'}")
+            
+            if not last_event or not last_event.content or not last_event.content.parts:
+                error_msg = "Error: Quiz Creator agent did not return any content output."
+                logger.error(f"{log_prefix} {error_msg}")
+                return "QUIZ_OUTPUT_ERROR: Quiz Creator returned no content."
+
+            # Extract final result (Quiz Creator outputs QuizCreationResult schema)
+            quiz_output_text = last_event.content.parts[0].text
+            logger.info(f"{log_prefix} Quiz Creator agent finished. Raw Output: {quiz_output_text[:100]}...")
+            
+            # Attempt to parse the JSON output according to QuizCreationResult schema
             try:
-                 # Clean potential markdown fences
-                 if final_output_text.strip().startswith('```json'):
-                      final_output_text = final_output_text.strip()[7:-3].strip()
-                 elif final_output_text.strip().startswith('```'):
-                      final_output_text = final_output_text.strip()[3:-3].strip()
-
-                 output_data = json.loads(final_output_text)
-                 explanation_result = ExplanationResult.model_validate(output_data)
-
-                 if explanation_result.status == "delivered":
-                     logger.info(f"{log_prefix} Teacher delivered structured explanation for '{topic}'.")
-                     if state_dict: # Update state only if available
-                         state_dict["last_interaction_summary"] = f"Teacher explained {topic}."
-                     result = explanation_result
-                     return result
-                 else:
-                     # Handle structured failure/skipped cases
-                     error_msg = f"TEACHER_RESULT_ERROR: Teacher agent returned status '{explanation_result.status}'. Details: {explanation_result.details}"
-                     logger.error(f"{log_prefix} {error_msg}")
-                     result = error_msg
-                     return result
+                # Clean potential markdown ```json fences
+                if quiz_output_text.strip().startswith('```json'):
+                    quiz_output_text = quiz_output_text.strip()[7:-3].strip()
+                elif quiz_output_text.strip().startswith('```'):
+                    quiz_output_text = quiz_output_text.strip()[3:-3].strip()
+                    
+                quiz_result_data = json.loads(quiz_output_text)
+                # Validate against the expected Pydantic model
+                quiz_creation_result = QuizCreationResult.model_validate(quiz_result_data)
+                logger.info(f"{log_prefix} Successfully parsed QuizCreationResult. Status: {quiz_creation_result.status}")
+                return quiz_creation_result.model_dump() # Return as dict for tool compatibility
             except json.JSONDecodeError as json_err:
-                 error_msg = f"TEACHER_OUTPUT_ERROR: Failed to decode Teacher agent output as JSON. Error: {json_err}. Output: {final_output_text[:200]}..."
-                 logger.error(f"{log_prefix} {error_msg}")
-                 result = error_msg
-                 return result
+                error_msg = f"Error: Quiz Creator output was not valid JSON. Error: {json_err}. Output: {quiz_output_text[:200]}..."
+                logger.error(f"{log_prefix} {error_msg}")
+                return {"error": "QUIZ_OUTPUT_ERROR: Quiz Creator output was not valid JSON."}
             except ValidationError as pydantic_err:
-                 error_msg = f"TEACHER_OUTPUT_ERROR: Teacher agent output did not match ExplanationResult schema. Error: {pydantic_err}. Output: {final_output_text[:200]}..."
-                 logger.error(f"{log_prefix} {error_msg}")
-                 result = error_msg
-                 return result
-        else:
-             # Handle case where final event had no text
-             error_msg = f"TEACHER_OUTPUT_ERROR: Teacher agent's final event had no text content."
-             logger.error(f"{log_prefix} {error_msg}")
-             result = error_msg
-             return result
+                error_msg = f"Error: Quiz Creator output did not match QuizCreationResult schema. Error: {pydantic_err}. Output: {quiz_output_text[:200]}..."
+                logger.error(f"{log_prefix} {error_msg}")
+                return {"error": "QUIZ_OUTPUT_ERROR: Quiz Creator output did not match schema."}
 
-    except Exception as e:
-        error_msg = f"Error calling Teacher Agent: {str(e)}\n{traceback.format_exc()}"
-        logger.exception(f"{log_prefix} {error_msg}")
-        result = error_msg
-        return result
-    finally:
-         log_status = result.status if isinstance(result, ExplanationResult) else ("Error" if isinstance(result, str) else "Unknown")
-         logger.info(f"{log_prefix} Finished execution. Result Status: {log_status}")
+        except Exception as e:
+            error_msg = f"EXCEPTION calling Quiz Creator Agent via tool: {str(e)}\n{traceback.format_exc()}"
+            logger.exception(f"{log_prefix} {error_msg}")
+            return "QUIZ_EXECUTION_ERROR: An exception occurred while running the quiz creator agent."
+        # --- End Runner Logic --- #
 
-@FunctionTool
-async def call_quiz_creator_agent(
-    tool_context: ToolContext,
-    topic: str,
-    instructions: str # e.g., "Create one medium difficulty question", "Create a 3-question quiz covering key concepts"
-) -> Union[QuizCreationResult, str]:
-    """Calls the Quiz Creator Agent to generate one or more quiz questions."""
-    log_prefix = f"[Tool call_quiz_creator_agent Session: {tool_context.session_id if tool_context else 'N/A'}]"
-    logger.info(f"{log_prefix} Starting execution for topic '{topic}': {instructions}")
-    result: Union[QuizCreationResult, str] = "QUIZ_CREATOR_ERROR: Quiz Creator failed unexpectedly."
-    state_dict = tool_context.state # Access state dict
-    try:
-        # --- Import and Create Agent *Inside* ---
-        from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent # Or the new tool function name
-        # ----------------------------------------
+# Instantiate the custom tools
+quiz_creator_tool = ManualQuizCreatorAgentTool()
 
-        session_id = state_dict.get("session_id") # Get session_id from state
-        user_id = state_dict.get("user_id") # Get user_id from state
-
-        # Assuming create_quiz_creator_agent is the function that returns the agent instance
-        quiz_creator_agent = create_quiz_creator_agent() # TODO: Update function name if changed. Pass API key if needed.
-        run_config = RunConfig(
-            group_id=str(session_id) if session_id else None,
-            workflow_name="Orchestrator_QuizCreatorCall"
-        )
-
-        quiz_creator_prompt = f"""
-        Create quiz questions based on the following instructions:
-        Topic: '{topic}'
-        Instructions: {instructions}
-        Format your response ONLY as a QuizCreationResult object. Include the created question(s) in the appropriate field ('question' or 'quiz').
-        """
-
-        # --- Correctly handle run_async generator --- #
-        adk_runner = Runner("ai_tutor", quiz_creator_agent, tool_context.session_service)
-        final_agent_event: Optional[Event] = None
-        logger.info(f"{log_prefix} Calling Quiz Creator Agent run_async...")
-        async for event in adk_runner.run_async(
-            user_id=str(user_id) if user_id else None,
-            session_id=str(session_id) if session_id else None,
-            new_message=quiz_creator_prompt,
-            run_config=run_config
-        ):
-            logger.info(f"{log_prefix} Quiz Creator Event: Author={event.author}, Type={type(event.content)}, Actions={event.actions}")
-            # Keep track of the last event from the agent itself
-            if event.author == quiz_creator_agent.name:
-                final_agent_event = event
-
-        # --- Process the final event --- #
-        if not final_agent_event or not final_agent_event.content:
-            error_msg = "QUIZ_CREATOR_OUTPUT_ERROR: Quiz Creator agent finished without generating content."
-            logger.error(f"{log_prefix} {error_msg}")
-            result = error_msg
-            return result
-
-        # Attempt to parse the final event's content as QuizCreationResult
-        final_output_text = None
-        if final_agent_event.content.parts and final_agent_event.content.parts[0].text:
-            final_output_text = final_agent_event.content.parts[0].text
-
-        if final_output_text:
-            try:
-                # Clean potential markdown fences
-                if final_output_text.strip().startswith('```json'):
-                     final_output_text = final_output_text.strip()[7:-3].strip()
-                elif final_output_text.strip().startswith('```'):
-                     final_output_text = final_output_text.strip()[3:-3].strip()
-
-                output_data = json.loads(final_output_text)
-                quiz_creation_result = QuizCreationResult.model_validate(output_data)
-
-                if quiz_creation_result.status == "created":
-                    question_count = 1 if quiz_creation_result.question else len(quiz_creation_result.quiz.questions) if quiz_creation_result.quiz else 0
-                    logger.info(f"{log_prefix} Quiz Creator created {question_count} question(s) for '{topic}'.")
-                    # Store the created question if it's a single one for evaluation
-                    if quiz_creation_result.question and state_dict:
-                         # Ensure current_quiz_question is stored as a dict
-                         state_dict["current_quiz_question"] = quiz_creation_result.question.model_dump()
-                         logger.info(f"{log_prefix} Stored single created question in context state.")
-                    result = quiz_creation_result
-                    return result
-                else:
-                    details = getattr(quiz_creation_result, 'details', 'No details provided.')
-                    error_msg = f"QUIZ_CREATOR_RESULT_ERROR: Quiz Creator agent failed for '{topic}'. Status: {getattr(quiz_creation_result, 'status', 'unknown')}. Details: {details}"
-                    logger.error(f"{log_prefix} {error_msg}")
-                    result = error_msg
-                    return result
-            except json.JSONDecodeError as json_err:
-                 error_msg = f"QUIZ_CREATOR_OUTPUT_ERROR: Failed to decode Quiz Creator agent output as JSON. Error: {json_err}. Output: {final_output_text[:200]}..."
-                 logger.error(f"{log_prefix} {error_msg}")
-                 result = error_msg
-                 return result
-            except ValidationError as pydantic_err:
-                 error_msg = f"QUIZ_CREATOR_OUTPUT_ERROR: Quiz Creator output did not match QuizCreationResult schema. Error: {pydantic_err}. Output: {final_output_text[:200]}..."
-                 logger.error(f"{log_prefix} {error_msg}")
-                 result = error_msg
-                 return result
-        else:
-             error_msg = f"QUIZ_CREATOR_OUTPUT_ERROR: Quiz Creator agent's final event had no text content."
-             logger.error(f"{log_prefix} {error_msg}")
-             result = error_msg
-             return result
-
-    except Exception as e:
-        error_msg = f"Error calling Quiz Creator Agent: {str(e)}\n{traceback.format_exc()}"
-        logger.exception(f"{log_prefix} {error_msg}")
-        result = error_msg
-        return result
-    finally:
-         log_status = result.status if isinstance(result, QuizCreationResult) else ("Error" if isinstance(result, str) else "Unknown")
-         logger.info(f"{log_prefix} Finished execution. Result Status: {log_status}")
-
-# Ensure all tools intended for the orchestrator are exported or available
+# Update __all__ to include the new tool instances
 __all__ = [
-    # --- Agent Calling Helpers (Not ADK Tools) ---
-    'call_planner_agent', # Keep if called directly from orchestrator logic
-    'call_teacher_agent',
-    'call_quiz_creator_agent',
-    # --- Manual Tool Instances ---
-    'get_user_model_status_tool',
-    'update_user_model_tool',
-    'reflect_on_interaction_tool',
-    'call_quiz_teacher_evaluate_tool',
-    # --- Deprecated/Removed --- 
-    # ...
+    'read_knowledge_base_tool',
+    'get_document_content_tool',
+    'teacher_agent_tool',
+    'quiz_creator_tool'
 ] 

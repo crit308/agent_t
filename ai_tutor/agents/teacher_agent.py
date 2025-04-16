@@ -30,15 +30,17 @@ def create_interactive_teacher_agent() -> Agent:
     """Creates an INTERACTIVE Teacher Agent using Google ADK."""
 
     # Define the model identifier
-    model_identifier = "gemini-2.0-flash" # Or other ADK supported model
+    model_identifier = "gemini-2.0-flash-lite" # Or other ADK supported model
 
     # Import tools needed by the teacher (use manual tool instances)
     from ai_tutor.tools.orchestrator_tools import (
         # Removed read_knowledge_base_tool,
         # Removed get_document_content_tool,
-        update_user_model_tool,        # Import instance
-        reflect_on_interaction_tool, # Import instance
-        call_quiz_teacher_evaluate_tool # Import instance
+        update_user_model,        # Corrected import name
+        reflect_on_interaction,   # For adapting based on interaction
+        call_quiz_teacher_evaluate_tool, # Import instance
+        quiz_creator_tool,        # CORRECT: Import the tool instance
+        get_user_model_status     # To understand current mastery
     )
     from ai_tutor.tools.teacher_tools import ask_user_question_and_get_answer_tool # Keep this custom tool
 
@@ -46,9 +48,10 @@ def create_interactive_teacher_agent() -> Agent:
         # Removed read_knowledge_base_tool,
         # Removed get_document_content_tool,
         ask_user_question_and_get_answer_tool,
-        update_user_model_tool,
-        reflect_on_interaction_tool,
-        call_quiz_teacher_evaluate_tool
+        update_user_model,
+        reflect_on_interaction,
+        call_quiz_teacher_evaluate_tool,
+        quiz_creator_tool  # ADDED: Add the imported tool to the list
     ]
 
     # Use LLMAgent, define input/output schemas

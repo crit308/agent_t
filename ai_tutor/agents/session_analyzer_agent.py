@@ -39,7 +39,7 @@ def create_session_analyzer_agent(api_key: str = None):
         print(f"Using OPENAI_API_KEY from environment for session analyzer agent")
     
     # Use Gemini model via ADK
-    model_identifier = "gemini-2.0-flash"  # Using Pro for better analysis capabilities
+    model_identifier = "gemini-2.0-flash-lite"
     
     # Create the session analyzer agent
     session_analyzer_agent = LlmAgent(

@@ -47,7 +47,7 @@ class AnalysisResult(BaseModel):
 
 def create_analyzer_agent() -> Agent:
     """Creates the Document Analyzer Agent."""
-    model_identifier = "gemini-2.0-flash"  # Using Pro for better analysis capabilities
+    model_identifier = "gemini-2.0-flash-lite"  # Using Pro for better analysis capabilities
     
     # Create the analyzer agent
     analyzer_agent = Agent( # Use Agent alias
@@ -90,6 +90,8 @@ def create_analyzer_agent() -> Agent:
         - Do not include placeholder or generic content
         """,
         model=model_identifier,
+        tools=analyzer_tools,   # Provide the tools
+        output_schema=AnalysisResult # Define the expected output schema
     )
     
     return analyzer_agent

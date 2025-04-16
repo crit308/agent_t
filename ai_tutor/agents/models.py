@@ -265,13 +265,13 @@ class FocusObjective(BaseModel):
     topic: str = Field(description="The primary topic or concept to focus on.")
     learning_goal: str = Field(description="A specific, measurable goal for this focus area (e.g., 'Understand local vs global scope', 'Solve quadratic equations').")
     priority: int = Field(description="Priority from 1-5 (5=highest) based on prerequisites or user need.")
-    relevant_concepts: List[str] = Field(description="List of related concepts from the knowledge base.")
-    suggested_approach: str
+    relevant_concepts: List[str] = Field(default_factory=list, description="List of related concepts from the knowledge base.")
+    suggested_approach: Optional[str] = Field(None, description="Teaching hints based on document content, or None.")
 
 # --- NEW: Potential Result Models for Agents as Tools ---
 class TeacherTurnResult(BaseModel):
     """Output from the Teacher Agent after completing a focus objective."""
-    status: Literal['objective_complete', 'objective_failed', 'objective_in_progress'] # In progress might not be needed if it loops internally
+    status: Literal['objective_complete', 'objective_failed', 'objective_in_progress'] = Field(description="Status of the objective handling.")
     summary: Optional[str] = Field(None, description="Summary of what was covered or why it failed.")
     next_steps_hint: Optional[str] = Field(None, description="Hint for the orchestrator about next logical steps.")
 

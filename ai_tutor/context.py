@@ -35,10 +35,10 @@ from ai_tutor.agents.analyzer_agent import AnalysisResult
 # State for tracking concept mastery
 class UserConceptMastery(BaseModel):
     """Tracks user's mastery of a specific concept."""
-    mastery_level: float = 0.0 # e.g., 0-1 scale, assessed by quizzes/summaries
+    mastery_level: Optional[float] = Field(default=None, description="e.g., 0-1 scale, assessed by quizzes/summaries")
     # Add more detail on outcomes
     last_interaction_outcome: Optional[str] = None # e.g., 'correct', 'incorrect', 'asked_question'
-    attempts: int = 0
+    attempts: Optional[int] = Field(default=None, description="Number of attempts on this concept")
     # Add tracking for specific struggles
     confusion_points: List[str] = Field(default_factory=list, description="Specific points user struggled with on this topic")
     # Change datetime to string to avoid schema validation issues with optional format
@@ -47,11 +47,11 @@ class UserConceptMastery(BaseModel):
 class UserModelState(BaseModel):
     """Represents the AI's understanding of the user's knowledge state and preferences."""
     concepts: Dict[str, UserConceptMastery] = Field(default_factory=dict)
-    overall_progress: float = 0.0 # e.g., percentage of lesson plan covered
+    overall_progress: float = Field(default=0.0, description="e.g., percentage of lesson plan covered")
     current_topic: Optional[str] = None
-    current_topic_segment_index: int = 0 # Tracks progress within the *current topic's* explanation
+    current_topic_segment_index: int = Field(default=0, description="Tracks progress within the *current topic's* explanation")
     # Add fields for personalization
-    learning_pace_factor: float = 1.0 # Controls pacing adjustment (e.g., >1 faster, <1 slower)
+    learning_pace_factor: float = Field(default=1.0, description="Controls pacing adjustment (e.g., >1 faster, <1 slower)")
     preferred_interaction_style: Optional[Literal['explanatory', 'quiz_heavy', 'socratic']] = None # Can be set or inferred
     session_summary_notes: List[str] = Field(default_factory=list) # High-level notes about session progress/user behavior
     # Add fields for tracking interaction state
@@ -92,6 +92,8 @@ class TutorContext(BaseModel):
     session_analysis: Optional[SessionAnalysis] = None # Use direct type hint
     last_interaction_timestamp: Optional[str] = Field(default_factory=lambda: datetime.now().isoformat())
     current_agent_state: Optional[str] = None # e.g., 'PLANNING', 'TEACHING', 'ASSESSING'
+    # Add the missing field to track pause state
+    pending_interaction_details: Optional[Dict[str, Any]] = Field(default=None, description="Stores details if the agent is paused waiting for user input.")
 
     @model_validator(mode='before')
     @classmethod

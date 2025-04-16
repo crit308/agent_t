@@ -15,45 +15,12 @@ import logging
 # --- Get Supabase client dependency (needed for the tool) ---
 from ai_tutor.dependencies import get_supabase_client
 
-# --- Define read_knowledge_base tool locally ---
-@FunctionTool
-async def read_knowledge_base(tool_context: ToolContext) -> str:
-    """Reads the Knowledge Base content stored in the Supabase 'folders' table associated with the current session's folder_id."""
-    folder_id = tool_context.context.folder_id
-    user_id = tool_context.context.user_id
-    print(f"Tool: read_knowledge_base called. Folder ID from context: {folder_id}")
-
-    if not folder_id:
-        return "Error: Folder ID not found in context."
-
-    # --- ADD CHECK HERE ---
-    # Check if analysis result with text is already in context from SessionManager loading
-    if tool_context.context.analysis_result and tool_context.context.analysis_result.analysis_text:
-        print(f"Tool: read_knowledge_base - Found analysis text in context. Returning cached text.")
-        return tool_context.context.analysis_result.analysis_text
-
-    try:
-        supabase = await get_supabase_client()
-        response = supabase.table("folders").select("knowledge_base").eq("id", str(folder_id)).eq("user_id", user_id).maybe_single().execute()
-
-        if response.data and response.data.get("knowledge_base"):
-            kb_content = response.data["knowledge_base"]
-            print(f"Tool: read_knowledge_base successful from Supabase. Content length: {len(kb_content)}")
-            # Store it back into context in case it wasn't there (though SessionManager should handle this on load)
-            if not tool_context.context.analysis_result:
-                 # Assuming AnalysisResult model exists and can be instantiated like this
-                 from ai_tutor.agents.analyzer_agent import AnalysisResult
-                 tool_context.context.analysis_result = AnalysisResult(analysis_text=kb_content, vector_store_id=tool_context.context.vector_store_id or "", key_concepts=[], key_terms={}, file_names=[])
-            elif not tool_context.context.analysis_result.analysis_text:
-                 tool_context.context.analysis_result.analysis_text = kb_content
-            return kb_content
-        else:
-            return f"Error: Knowledge Base not found for folder {folder_id} or query failed: {response.error}"
-    except Exception as e:
-        error_msg = f"Error reading Knowledge Base from Supabase for folder {folder_id}: {e}"
-        print(f"Tool: {error_msg}")
-        return error_msg
-# -----------------------------------------------
+# --- REMOVE Local read_knowledge_base tool definition --- 
+# @FunctionTool
+# async def read_knowledge_base(tool_context: ToolContext) -> str:
+#     """Reads the Knowledge Base content stored in the Supabase 'folders' table associated with the current session's folder_id."""
+#     ...
+# -------------------------------------------------------
 
 class FocusObjective(BaseModel):
     """Represents the next learning focus objective."""
@@ -67,17 +34,19 @@ class FocusObjective(BaseModel):
 def create_planner_agent() -> Agent:
     """Creates a planner agent that determines the next learning focus using ADK."""
 
-    # Import the common tools (now only user model status)
+    # Import the common tools 
     from ai_tutor.tools.orchestrator_tools import (
-        get_user_model_status_tool  # Import the instance
+        get_user_model_status_tool,  # Import the instance
+        read_knowledge_base_tool     # Import the instance for reading KB
     )
 
     planner_tools = [
-        get_user_model_status_tool   # Use the tool instance
+        get_user_model_status_tool,   # Use the tool instance
+        read_knowledge_base_tool      # Add the KB reading tool instance
     ]
 
     # Use Gemini model via ADK
-    model_identifier = "gemini-2.0-flash"
+    model_identifier = "gemini-2.0-flash-lite"
 
     # Create the planner agent focusing on identifying the next focus
     planner_agent = Agent(
@@ -85,22 +54,25 @@ def create_planner_agent() -> Agent:
         instruction="""You are an expert learning strategist. Your task is to determine the user's **next learning focus** based on the provided documents (via Gemini File API) and their current progress.
 
         WORKFLOW:
-        1. **Get Current State:**
+        1. **Get Knowledge Base:**
+           - Call read_knowledge_base tool to get the document analysis text.
+           
+        2. **Get Current State:**
            - Call get_user_model_status tool to understand user's progress
            - Review mastery levels, confusion points, and learning pace
            - Note any mastered objectives or ongoing challenges
 
-        2. **Analyze Content:**
-           - Analyze the content of the document(s) provided directly in the prompt (via File API).
+        3. **Analyze Content:**
+           - Analyze the content retrieved from the knowledge base.
            - Extract key concepts, structure, and potential prerequisites.
 
-        3. **Plan Next Focus:**
+        4. **Plan Next Focus:**
            - Consider prerequisites identified from the document content.
            - Consider user's current mastery levels from the tool call.
            - Consider confusion points and learning pace.
            - Identify the most appropriate next topic based on the document structure and user state.
 
-        4. **Output Focus:**
+        5. **Output Focus:**
            - Generate a FocusObjective JSON with ALL required fields:
              * topic: The specific topic to focus on (must be present in the document)
              * learning_goal: Clear, achievable goal related to the document content
@@ -109,6 +81,7 @@ def create_planner_agent() -> Agent:
              * suggested_approach: Teaching hints based on document content, or "None" if no specific hints.
 
         IMPORTANT:
+        - Call read_knowledge_base FIRST.
         - Base your analysis and planning *solely* on the provided document content and the user model status.
         - Always check user's current state before planning.
         - Respect prerequisites and learning progression suggested by the document structure.
@@ -116,7 +89,7 @@ def create_planner_agent() -> Agent:
         - Return ONLY the FocusObjective JSON containing ALL fields (topic, learning_goal, priority, relevant_concepts, suggested_approach).
         """,
         model=model_identifier,
-        tools=planner_tools, # Only includes get_user_model_status_tool now
+        tools=planner_tools, # Now includes both tools
         disallow_transfer_to_parent=True,
         disallow_transfer_to_peers=True,
     )

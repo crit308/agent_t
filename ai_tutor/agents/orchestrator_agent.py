@@ -30,7 +30,7 @@ def create_orchestrator_agent(api_key: str = None) -> Agent:
         os.environ["GOOGLE_API_KEY"] = api_key
 
     # --- ADK Model Setup ---
-    model_identifier = "gemini-2.0-flash"
+    model_identifier = "gemini-2.0-flash-lite"
     
     # --- Create Agent Instances for AgentTool ---
     planner_agent_instance: Agent = create_planner_agent()
@@ -43,38 +43,32 @@ def create_orchestrator_agent(api_key: str = None) -> Agent:
 
     orchestrator_agent = Agent(
         name="tutor_orchestrator",
-        instruction="""You are the orchestrator of an AI tutoring session, coordinating between a Planner agent that determines learning objectives and a Teacher agent that delivers instruction.
+        instruction="""Your goal is to manage the tutoring session flow between a Planner and a Teacher.
+
+        STATE:
+        - Check session state for `current_focus_objective`.
 
         WORKFLOW:
-        1. CHECK STATE:
-           - Access session state via ToolContext
-           - Look for current_focus_objective
-           - If missing -> Get from Planner
-           - If exists -> Delegate to Teacher
+        1. IF `current_focus_objective` is MISSING in state:
+           - Call the `focus_planner` tool (no arguments).
+           - It returns a `FocusObjective` JSON object.
+           - Store this **entire JSON object** in the session state under the key `current_focus_objective`.
+           - STOP your turn.
 
-        2. GET OBJECTIVE (when needed):
-           - Call call_planner_agent tool
-           - Store returned FocusObjective in state
-           - End turn
+        2. IF `current_focus_objective` EXISTS in state:
+           - Retrieve the **entire `FocusObjective` JSON object** from the state.
+           - Call the `interactive_lesson_teacher` tool.
+           - **CRITICAL JSON ARGUMENT STRUCTURE:** The `interactive_lesson_teacher` tool expects **ONE** argument named `focus_objective`. The **VALUE** of this argument MUST be the **complete `FocusObjective` JSON object** you retrieved from the state.
+           - Example of the JSON structure you must generate for the function call arguments:
+             `{ \"focus_objective\": { ... the full FocusObjective JSON object ... } }`
+           - After the `interactive_lesson_teacher` tool finishes and returns its result, clear the `current_focus_objective` key from the session state.
+           - STOP your turn.
 
-        3. TEACH OBJECTIVE:
-           - Call call_teacher_agent with objective details
-           - Teacher handles all user interaction autonomously
-           - Teacher manages user model updates and reflection
-           - Wait for TeacherTurnResult
-           - End turn
-
-        4. PROCESS RESULTS:
-           - On success: Get next objective from Planner
-           - On failure: Let Teacher handle reflection and retry
-           - End turn
-
-        IMPORTANT:
-        - Let specialist agents handle their domains
-        - Trust Teacher to manage user state and reflection
-        - End turn after delegating to allow autonomous operation
-
-        Focus on coordinating the high-level flow between Planner and Teacher agents, letting them handle their specialized tasks independently.
+        RULES:
+        - Follow the workflow precisely.
+        - When calling `interactive_lesson_teacher`, ensure the arguments JSON has exactly one key, `focus_objective`, and its value is the full JSON object from the state.
+        - Update or clear the `current_focus_objective` state key as described.
+        - Do not add conversational text, just execute the workflow step.
         """,
         tools=orchestrator_tools,
         model=model_identifier

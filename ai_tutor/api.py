@@ -78,31 +78,17 @@ async def lifespan(app: FastAPI):
     logger.info("Application shutdown...")
     # Example: await database.disconnect()
 
-# --- REMOVE Redundant Rebuild Calls --- 
-# Ensure all models potentially using forward refs are rebuilt
-# UserConceptMastery.model_rebuild() # REMOVED
-# UserModelState.model_rebuild() # REMOVED
-# LessonPlan and LessonSection might depend on LearningObjective, rebuild them first if so.
-# LearningObjective.model_rebuild() # REMOVED
-# AnalysisResult.model_rebuild() # REMOVED
-# LessonPlan.model_rebuild() # REMOVED
-# QuizQuestion.model_rebuild() # REMOVED
-# QuizFeedbackItem.model_rebuild() # REMOVED
-# FocusObjective.model_rebuild() # REMOVED
-# TutorContext.model_rebuild() # REMOVED - Keep the one inside lifespan
+app = FastAPI(lifespan=lifespan) # Apply lifespan context manager
 
-app = FastAPI(
-    title="AI Tutor API (ADK Backend)",
-    description="API for generating lessons and quizzes using AI agents.",
-    version="1.0.0",
-    lifespan=lifespan # Add the lifespan context manager
-)
+# --- CORS Middleware ---
+origins = [
+    "http://localhost:3000",  # Allow your frontend domain
+    # Add other origins if needed
+]
 
-# --- CORS Configuration ---
-# Adjust origins based on your frontend URL
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allow all origins for now, restrict in production
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
