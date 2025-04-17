@@ -5,11 +5,13 @@ from typing import Any, Optional, Literal, Union, cast, Dict, List
 import os
 from datetime import datetime
 import traceback # Import traceback for error logging
+from ai_tutor.dependencies import SUPABASE_CLIENT  # Supabase client for logging events
 
 # --- Import TutorContext directly ---
 # We need the actual class definition available for get_type_hints called by the decorator.
 # This relies on context.py being fully loaded *before* this file attempts to define the tools.
 from ai_tutor.context import TutorContext, UserConceptMastery, UserModelState
+from ai_tutor.context import is_mastered
 
 # --- Import necessary models ---
 #from ai_tutor.agents.models import LessonPlan, QuizQuestion, QuizFeedbackItem, LessonContent, Quiz, LessonSection, LearningObjective
@@ -105,6 +107,11 @@ async def update_user_model(
         ctx.context.user_model_state.concepts[topic] = UserConceptMastery()
 
     concept_state = ctx.context.user_model_state.concepts[topic]
+    # Record mastery level before update to calculate delta
+    old_mastery = concept_state.mastery
+    # Detect previous mastery state before update
+    previously_mastered = is_mastered(concept_state)
+
     concept_state.last_interaction_outcome = outcome
 
     # Update last_accessed with ISO 8601 timestamp
@@ -114,28 +121,46 @@ async def update_user_model(
     if confusion_point and confusion_point not in concept_state.confusion_points:
         concept_state.confusion_points.append(confusion_point)
 
-    # Update attempts and mastery for evaluative outcomes
+    # Update attempts and mastery with Bayesian alpha/beta update for evaluative outcomes
     if outcome in ['correct', 'incorrect', 'mastered', 'struggled']:
         concept_state.attempts += 1
-
-        # Adjust mastery level based on outcome
         if outcome in ['correct', 'mastered']:
-            concept_state.mastery_level = min(1.0, concept_state.mastery_level + 0.2)
-        elif outcome in ['incorrect', 'struggled']:
-            concept_state.mastery_level = max(0.0, concept_state.mastery_level - 0.1)
-            
+            concept_state.alpha += 1
+        else:
+            concept_state.beta += 1
             # Adjust learning pace if struggling
             if len(concept_state.confusion_points) > 2:
-                ctx.context.user_model_state.learning_pace_factor = max(0.5, 
-                    ctx.context.user_model_state.learning_pace_factor - 0.1)
+                ctx.context.user_model_state.learning_pace_factor = max(
+                    0.5, ctx.context.user_model_state.learning_pace_factor - 0.1
+                )
 
     # Update mastered objectives if provided
     if mastered_objective_title and mastered_objective_title not in ctx.context.user_model_state.mastered_objectives_current_section:
          ctx.context.user_model_state.mastered_objectives_current_section.append(mastered_objective_title)
          print(f"[Tool] Marked objective '{mastered_objective_title}' as mastered for current section.")
 
-    print(f"[Tool] Updated '{topic}' - Mastery: {concept_state.mastery_level:.2f}, "
+    print(f"[Tool] Updated '{topic}' - Mastery: {concept_state.mastery:.2f}, "
+          f"Confidence: {concept_state.confidence}, "
           f"Pace: {ctx.context.user_model_state.learning_pace_factor:.2f}")
+    # If mastery just achieved, trigger planner agent to select next focus
+    if not previously_mastered and is_mastered(concept_state):
+        print(f"[Tool update_user_model] Mastery achieved for '{topic}'. Triggering planner agent.")
+        from ai_tutor.tools.orchestrator_tools import call_planner_agent
+        await call_planner_agent(ctx)
+    # Calculate mastery delta and log concept event to Supabase
+    new_mastery = concept_state.mastery
+    delta_mastery = new_mastery - old_mastery
+    if SUPABASE_CLIENT:
+        try:
+            SUPABASE_CLIENT.table("concept_events").insert({
+                "session_id": str(ctx.context.session_id),
+                "user_id": str(ctx.context.user_id),
+                "concept": topic,
+                "outcome": outcome,
+                "delta_mastery": delta_mastery
+            }).execute()
+        except Exception as e:
+            print(f"[Tool update_user_model] Failed to log concept event: {e}")
     return f"User model updated for {topic}."
 
 @function_tool
@@ -165,7 +190,7 @@ async def get_user_model_status(ctx: RunContextWrapper[TutorContext], topic: Opt
         return {
             "topic": topic,
             "exists": True,
-            "mastery_level": concept.mastery_level,
+            "mastery_level": concept.mastery,  # Bayesian posterior mean
             "attempts": concept.attempts,
             "last_outcome": concept.last_interaction_outcome,
             "confusion_points": concept.confusion_points,

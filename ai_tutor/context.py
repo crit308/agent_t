@@ -32,8 +32,9 @@ if TYPE_CHECKING:
     from ai_tutor.agents.analyzer_agent import AnalysisResult
 
 class UserConceptMastery(BaseModel):
-    """Tracks user's mastery of a specific concept."""
-    mastery_level: float = 0.0 # e.g., 0-1 scale, assessed by quizzes/summaries
+    """Tracks user's mastery of a specific concept using a Bayesian alpha/beta model."""
+    alpha: int = 1
+    beta: int = 1
     # Add more detail on outcomes
     last_interaction_outcome: Optional[str] = None # e.g., 'correct', 'incorrect', 'asked_question'
     attempts: int = 0
@@ -41,6 +42,16 @@ class UserConceptMastery(BaseModel):
     confusion_points: List[str] = Field(default_factory=list, description="Specific points user struggled with on this topic")
     # Change datetime to string to avoid schema validation issues with optional format
     last_accessed: Optional[str] = Field(None, description="ISO 8601 timestamp of when the concept was last accessed")
+
+    @property
+    def mastery(self) -> float:
+        """Posterior mean mastery probability."""
+        return self.alpha / (self.alpha + self.beta)
+
+    @property
+    def confidence(self) -> int:
+        """Total number of observations (alpha+beta)."""
+        return self.alpha + self.beta
 
 class UserModelState(BaseModel):
     """Represents the AI's understanding of the user's knowledge state and preferences."""
@@ -82,3 +93,8 @@ class TutorContext(BaseModel):
     current_teaching_topic: Optional[str] = None # Which topic is the Teacher actively explaining?
     # Add other relevant session state as needed
     # e.g., current_lesson_progress: Optional[str] = None 
+
+# Utility helper to check if a concept is mastered
+def is_mastered(c: UserConceptMastery) -> bool:
+    """Return true if mastery probability > 0.8 and confidence (observations) >= 5."""
+    return c.mastery > 0.8 and c.confidence >= 5 

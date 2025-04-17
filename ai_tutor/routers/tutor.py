@@ -15,7 +15,7 @@ from ai_tutor.session_manager import SessionManager
 from ai_tutor.tools.file_upload import FileUploadManager
 from ai_tutor.agents.analyzer_agent import analyze_documents
 from ai_tutor.agents.session_analyzer_agent import analyze_teaching_session
-from ai_tutor.agents.orchestrator_agent import create_orchestrator_agent
+from ai_tutor.agents.orchestrator_agent import create_orchestrator_agent, run_orchestrator
 from ai_tutor.agents.teacher_agent import create_interactive_teacher_agent
 from ai_tutor.agents.analyzer_agent import AnalysisResult
 from ai_tutor.agents.models import (
@@ -446,94 +446,32 @@ async def interact_with_tutor(
     print(f"[Interact] Context BEFORE Orchestrator: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
 
     user: User = request.state.user
-    # --- Agent Execution Logic ---
-    final_response_data: TutorInteractionResponse
-
-    print(f"[Interact] Fetching context for session {session_id}...") # Log context fetch
-    run_config = RunConfig(
-        workflow_name="Tutor_Interaction",
-        group_id=session_id
-    )
-
-    # Always run the Orchestrator first to decide the next step or handle pending interactions.
-    orchestrator_agent = create_orchestrator_agent() # Doesn't need vs_id directly
-    print(f"[Interact] Orchestrator agent created.") # Log agent creation
-
-    # Prepare input for the Orchestrator
-    if tutor_context.user_model_state.pending_interaction_type:
-        # If waiting for user input, provide it clearly
-        print("[Interact] Pending interaction detected. Running Orchestrator to evaluate.")
-        orchestrator_input = f"User Response to Pending Interaction '{tutor_context.user_model_state.pending_interaction_type}' | Type: {interaction_input.type} | Data: {json.dumps(interaction_input.data)}"
-        logger.log_user_input(f"User Response (Pending): {interaction_input.type} - {interaction_input.data}") # Log user input
-    else:
-        # No pending interaction. Check if focus objective exists.
-        if not tutor_context.current_focus_objective:
-            print("[Interact] No current focus. Instructing Orchestrator to call Planner.")
-            # If focus is missing, tell orchestrator to get it first.
-            orchestrator_input = "No current focus objective set. Call the `call_planner_agent` tool to determine the initial focus objective for the user."
-            # NOTE: This requires the orchestrator to handle this specific instruction.
-        else:
-            # Focus exists, proceed normally based on user input
-            print("[Interact] Focus exists. Running Orchestrator to decide next step based on user input.")
-            orchestrator_input = f"Current Focus: {tutor_context.current_focus_objective.topic} ({tutor_context.current_focus_objective.learning_goal}). User Action | Type: {interaction_input.type} | Data: {json.dumps(interaction_input.data)}"
-        logger.log_user_input(f"User Action: {interaction_input.type} - {interaction_input.data}") # Log user input
-
-    print(f"[Interact] Running Agent: {orchestrator_agent.name}")
-    orchestrator_result = await Runner.run(
-        orchestrator_agent,
-        orchestrator_input,
-        context=tutor_context, # Context is mutable and modified by tools
-        run_config=run_config
-    )
-    orchestrator_output = orchestrator_result.final_output # This is TutorInteractionResponse type
-    # Log the raw output which might contain implicit reasoning before parsing
-    logger.log_orchestrator_output(orchestrator_output)
-    print(f"[Interact] Orchestrator Raw Output: {orchestrator_output}") # Log raw output first
-    print(f"[Interact] Orchestrator Output Type: {type(orchestrator_output)}")
-
-    # --- Handle Orchestrator Output ---
-    # The orchestrator's output *is* the final response for this turn,
-    # as it comes from the specialist agent tool call or a direct response.
-    if isinstance(orchestrator_output, TutorInteractionResponse):
-        final_response_data = orchestrator_output
-        print(f"[Interact] Orchestrator returned response of type: {final_response_data.response_type}")
-        # Convert generic MessageResponse to ExplanationResponse for UI to handle
-        if isinstance(final_response_data, MessageResponse):
-            final_response_data = ExplanationResponse(
-                response_type="explanation",
-                text=final_response_data.text,
-                topic=(tutor_context.current_focus_objective.topic if tutor_context.current_focus_objective else ""),
-                segment_index=0,
-                is_last_segment=True,
-                references=None
-            )
-        # If orchestrator called quiz creator which returned a question, update pending state
-        if isinstance(final_response_data, QuestionResponse):
-            tutor_context.user_model_state.pending_interaction_type = 'checking_question'
-            tutor_context.user_model_state.pending_interaction_details = {
-                'question': final_response_data.question.model_dump() # Store the question details
-            }
-            print(f"[Interact] Teacher asked checking question. Set pending_interaction_type='checking_question'")
-
-    else:
-        # Unexpected output type - return error
-        error_msg = f"Unexpected output type from Orchestrator: {type(orchestrator_output)}"
-        print(f"[Interact] Error: {error_msg}")
-        final_response_data = ErrorResponse(
-            error=error_msg,
-            message="There was an internal error processing your request."
-        )
+    # Run the orchestrator loop in Python for deterministic control
+    from ai_tutor.agents.orchestrator_agent import run_orchestrator
+    last_event = {"event_type": interaction_input.type, "data": interaction_input.data or {}}
+    final_response_data = await run_orchestrator(tutor_context, last_event)
 
     # --- Save Context AFTER determining the final response ---
     print(f"[Interact] Saving final context state to Supabase for session {session_id}")
     await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
     print(f"[Interact] Context saved AFTER run: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
 
-    # Return the structured response
+    # Build response, prioritizing API models with response_type
+    try:
+        content_type = final_response_data.response_type
+        data = final_response_data
+    except Exception:
+        # Fallback for raw dict events
+        if isinstance(final_response_data, dict):
+            content_type = final_response_data.get("event_type", "message")
+            data = final_response_data.get("data")
+        else:
+            content_type = "message"
+            data = final_response_data
     return InteractionResponseData(
-        content_type=final_response_data.response_type,
-        data=final_response_data, # Send the response from the final agent run
-        user_model_state=tutor_context.user_model_state # Send updated state
+        content_type=content_type,
+        data=data,
+        user_model_state=tutor_context.user_model_state
     )
 
 # --- Remove POST /quiz/submit (Legacy) ---

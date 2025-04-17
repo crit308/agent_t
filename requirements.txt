@@ -1,2 +1,5 @@
 python-multipart>=0.0.6 # For file uploads
 +supabase-py>=2.0.0  # Add supabase client 
+# Data pipeline dependencies
+clickhouse-connect>=0.6.4
+kafka-python>=2.0.2 

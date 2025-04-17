@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import List, Optional, TYPE_CHECKING, Union
+import json
 
 from agents import Agent, Runner, RunConfig, ModelProvider
 from agents.models.openai_provider import OpenAIProvider
@@ -20,14 +21,16 @@ from ai_tutor.tools.orchestrator_tools import (
     get_user_model_status,
     reflect_on_interaction,
 )
+from ai_tutor.policy import choose_action, InteractionEvent, Action
 
 # Import models needed for type hints if tools return them
 # Also import models needed for the output Union type
-from ai_tutor.agents.models import QuizQuestion, QuizFeedbackItem, LessonContent
+from ai_tutor.agents.models import QuizQuestion, QuizFeedbackItem, LessonContent, FocusObjective
 from ai_tutor.api_models import (
     TutorInteractionResponse, ExplanationResponse, QuestionResponse,
     FeedbackResponse, MessageResponse, ErrorResponse
 )
+from ai_tutor.dependencies import SUPABASE_CLIENT  # Supabase client for logging actions
 
 def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
     """Creates the Orchestrator Agent for the AI Tutor."""
@@ -52,64 +55,7 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
     orchestrator_agent = Agent['TutorContext'](
         name="TutorOrchestrator",
         instructions="""
-        You are the central conductor of an AI tutoring session. Your primary goal is to guide the user towards mastering specific learning objectives identified by the Planner Agent.
-
-        CONTEXT:
-        - You operate based on the `current_focus_objective` provided in the `TutorContext`. This objective (topic, goal) is set by the Planner Agent.
-        - If `current_focus_objective` is missing, your FIRST action MUST be to call `call_planner_agent` to get the initial focus.
-        - You manage the user's learning state via `UserModelState` using tools like `get_user_model_status` and `update_user_model`.
-        - You interact with specialist agents (Teacher, Quiz Creator) using the `call_teacher_agent` and `call_quiz_creator_agent` tools.
-        - You evaluate user answers to checking questions using `call_quiz_teacher_evaluate`.
-        - `reflect_on_interaction` helps you analyze difficulties and adapt your strategy.
-        - User's last input/action is provided in the prompt.
-        - `tutor_context.user_model_state.pending_interaction_type` indicates if you are waiting for a user response (e.g., to a 'checking_question').
-
-        **Core Responsibilities:**
-        1.  **Ensure Focus:** If no `current_focus_objective`, call `call_planner_agent`.
-        2.  **Micro-Planning:** Based on the `current_focus_objective` and `UserModelState`, devise a short sequence of steps (e.g., Explain -> Check -> Example).
-        3.  **Execute Step:** Call the appropriate agent tool (`call_teacher_agent` for explanations/examples, `call_quiz_creator_agent` for checks). Provide specific instructions to the tool.
-        4.  **Process User Input/Agent Results:** Handle user answers (using `call_quiz_teacher_evaluate`) or results from agent tools. Update `UserModelState` using `update_user_model`.
-        5.  **Evaluate Objective:** Assess if the `current_focus_objective`'s `learning_goal` has been met based on interactions and mastery levels. Use `reflect_on_interaction` if the user struggles.
-        6.  **Loop or Advance:**
-            *   If the objective is NOT met, determine the next micro-step (re-explain, different example, different question) and go back to step 3.
-            *   If the objective IS met, call `call_planner_agent` to get the *next* focus objective. If the planner indicates completion, end the session.
-
-        CORE WORKFLOW:
-        1.  **Check Focus:** Is `tutor_context.current_focus_objective` set?
-            *   **NO:** Call `call_planner_agent`. **This is your ONLY action for this turn.** The tool call result (FocusObjective) will be processed externally. -> **END TURN**
-            *   **YES:** Proceed to step 2 to handle user interaction or determine the next micro-step for the *current* focus.
-        2.  **Assess Interaction State:** Check `UserModelState` (`pending_interaction_type`).
-        3.  **Handle Pending Interaction:**
-            *   If `pending_interaction_type` is 'checking_question':
-                - Use `call_quiz_teacher_evaluate` with the user's answer and details from `pending_interaction_details`.
-                - Update state via `update_user_model` based on feedback (correct/incorrect).
-                - If incorrect, call `reflect_on_interaction`.
-                -> **END TURN**
-        4.  **Handle New User Input / Decide Next Micro-Step (No Pending Interaction):**
-            *   Analyze user input (question, request, feedback).
-            *   If user asked a complex question or made a request requiring multiple steps (e.g., "Compare X and Y", "Give me a harder problem"):
-                - **Decompose the request:** Plan the micro-steps needed.
-                - Execute the *first step* by calling the appropriate agent tool (e.g., `call_teacher_agent` to explain X).
-                -> **END TURN**
-            *   If user asked a simple clarification related to the current focus: Call `call_teacher_agent` with specific instructions.
-                -> **END TURN**
-        5.  **Execute Micro-Step:**
-            *   Execute the chosen micro-step by calling the appropriate agent tool.
-            -> **END TURN**
-
-        OBJECTIVE EVALUATION:
-        - After each relevant interaction (e.g., correct answer to checking question, successful completion of an exercise if implemented), evaluate if the `current_focus_objective.learning_goal` seems to be met. Check `UserModelState.concepts[topic].mastery_level`.
-        - If met: Call `call_planner_agent` to get the next focus. If the planner returns a completion signal, output a final success message.
-        - If not met: Continue the micro-step loop (Step 4).
-
-        PRINCIPLES:
-        - **Focus-Driven:** Always work towards the `current_focus_objective`.
-        - **Adaptive & Reflective:** Use user state and reflection to adjust micro-steps.
-        - **Agent Orchestration:** You call other agents (Planner, Teacher, Quiz Creator) as tools to perform specific tasks.
-        - **State Management:** Keep `UserModelState` updated via tools.
-        - Ensure your final output strictly adheres to the required JSON format (`TutorInteractionResponse`).
-
-        Your final output for each turn will typically be the direct result passed back from the tool you called (e.g., the feedback item from `call_quiz_teacher_evaluate`, or potentially a message you construct if signaling completion).
+        Call the `choose_action` tool with the context and last event each turn; then immediately execute the resulting action via the corresponding tool. Only exit when waiting for learner input.
         """,
         tools=orchestrator_tools,
         output_type=TutorInteractionResponse,
@@ -117,3 +63,83 @@ def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
     )
 
     return orchestrator_agent 
+
+async def run_orchestrator(ctx: TutorContext, last_event: InteractionEvent):
+    """Run a single orchestrator step and return the corresponding API model response."""
+    ctx_wrapper = RunContextWrapper(ctx)
+    # If user clicked 'next', directly generate a quiz question
+    if last_event.get("event_type") == "next":
+        instructions = f"Create a medium difficulty question"
+        payload_q = json.dumps({"topic": ctx.current_focus_objective.topic, "instructions": instructions})
+        quiz_creation = await call_quiz_creator_agent.on_invoke_tool(ctx_wrapper, payload_q)
+        ctx.user_model_state.pending_interaction_type = "checking_question"
+        if hasattr(quiz_creation, "question") and quiz_creation.question:
+            ctx.user_model_state.pending_interaction_details = {"question_id": quiz_creation.question.id}
+        return QuestionResponse(
+            response_type="question",
+            question=quiz_creation.question,
+            topic=ctx.current_focus_objective.topic,
+            context=None
+        )
+    # Map client 'start' to system_tick
+    et = last_event.get("event_type")
+    if et == "start":
+        event = InteractionEvent(event_type="system_tick", data={})
+    else:
+        event = last_event
+    # Decide next action via policy
+    action: Action = choose_action(ctx, event)  # type: ignore
+    # Execute and format response
+    if action["type"] == "explain":
+        # Explain current segment
+        segment_index = ctx.user_model_state.current_topic_segment_index or 0
+        payload = json.dumps({"topic": action["topic"], "explanation_details": f"Segment {segment_index}"})
+        explanation_result = await call_teacher_agent.on_invoke_tool(ctx_wrapper, payload)
+        # Advance to next segment
+        ctx.user_model_state.current_topic_segment_index = segment_index + 1
+        return ExplanationResponse(
+            response_type="explanation",
+            text=(explanation_result.details if hasattr(explanation_result, "details") else str(explanation_result)),
+            topic=action["topic"],
+            segment_index=segment_index,
+            is_last_segment=False,
+            references=None
+        )
+    if action["type"] == "ask_mcq":
+        # Create a quiz question
+        instructions = f"Create a {action['difficulty']} difficulty question"
+        if action.get("misconception_focus"):
+            instructions += f" probing {action['misconception_focus']}"
+        quiz_payload = json.dumps({"topic": action["topic"], "instructions": instructions})
+        quiz_creation = await call_quiz_creator_agent.on_invoke_tool(ctx_wrapper, quiz_payload)
+        ctx.user_model_state.pending_interaction_type = "checking_question"
+        if hasattr(quiz_creation, 'question') and quiz_creation.question:
+            ctx.user_model_state.pending_interaction_details = {"question_id": quiz_creation.question.id}
+        return QuestionResponse(
+            response_type="question",
+            question=quiz_creation.question,
+            topic=action["topic"],
+            context=None
+        )
+    if action["type"] == "evaluate":
+        # Evaluate learner's answer
+        eval_payload = json.dumps({"user_answer_index": action["user_answer_index"]})
+        feedback = await call_quiz_teacher_evaluate.on_invoke_tool(ctx_wrapper, eval_payload)
+        return FeedbackResponse(
+            response_type="feedback",
+            feedback=feedback,
+            topic=(ctx.current_teaching_topic or action.get("topic", "")),
+            correct_answer=getattr(feedback, "correct_option", None),
+            explanation=getattr(feedback, "explanation", None)
+        )
+    if action["type"] == "advance":
+        # Mark topic mastered
+        um_payload = json.dumps({"topic": action["mastered_topic"], "outcome": "mastered"})
+        await update_user_model.on_invoke_tool(ctx_wrapper, um_payload)
+        return MessageResponse(
+            response_type="message",
+            text=f"Advanced to next focus.",
+            message_type="info"
+        )
+    # Fallback unknown action
+    return ErrorResponse(response_type="error", message=f"Unknown action type: {action.get('type')}") 

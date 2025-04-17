@@ -268,3 +268,63 @@ When you create a function tool via `@function_tool`, you can pass a `failure_er
 -   If you explicitly pass `None`, then any tool call errors will be re-raised for you to handle. This could be a `ModelBehaviorError` if the model produced invalid JSON, or a `UserError` if your code crashed, etc.
 
 If you are manually creating a `FunctionTool` object, then you must handle errors inside the `on_invoke_tool` function.
+
+## Data Pipeline for Analytical Logging
+
+To enable detailed analytics on user interactions and orchestrator decisions, we have added a CDC pipeline to sync Supabase logs to ClickHouse:
+
+1. Supabase CDC → Kafka: Use Supabase change data capture to publish inserts on `public.concept_events` and `public.actions` to Kafka topics `concept_events` and `actions`.
+2. Kafka → ClickHouse: Use ClickHouse Kafka engine tables to ingest data from the Kafka topics into `analytics.concept_events` and `analytics.actions` tables in ClickHouse.
+3. Nightly Weight Update: Run `scripts/update_action_weights.py` as a nightly job (e.g., via cron) to compute the softmax bandit weights and upsert into `public.action_weights`.
+
+### Example Supabase CDC Setup
+```sql
+-- Enable replication for concept_events and actions
+ALTER TABLE public.concept_events REPLICATE ON CHANGE;
+ALTER TABLE public.actions REPLICATE ON CHANGE;
+```
+
+### Kafka Engine Tables in ClickHouse
+```sql
+CREATE TABLE analytics.concept_events (
+    id UInt64,
+    session_id UUID,
+    user_id UUID,
+    concept String,
+    outcome String,
+    timestamp DateTime64(3),
+    delta_mastery Float64
+) ENGINE = Kafka SETTINGS
+    kafka_broker_list = 'localhost:9092',
+    kafka_topic_list = 'concept_events',
+    kafka_group_name = 'clickhouse_consumer',
+    kafka_format = 'JSONEachRow',
+    kafka_num_consumers = 1;
+
+CREATE TABLE analytics.actions (
+    id UInt64,
+    session_id UUID,
+    user_id UUID,
+    action_type String,
+    action_details String,
+    timestamp DateTime64(3)
+) ENGINE = Kafka SETTINGS
+    kafka_broker_list = 'localhost:9092',
+    kafka_topic_list = 'actions',
+    kafka_group_name = 'clickhouse_consumer',
+    kafka_format = 'JSONEachRow',
+    kafka_num_consumers = 1;
+```
+
+### Materialize to MergeTree
+```sql
+CREATE TABLE analytics.concept_events_mt AS analytics.concept_events
+ENGINE = MergeTree()
+ORDER BY (session_id, timestamp);
+
+CREATE TABLE analytics.actions_mt AS analytics.actions
+ENGINE = MergeTree()
+ORDER BY (session_id, timestamp);
+```
+
+Add these statements to your ClickHouse setup to enable real-time and analytical queries.

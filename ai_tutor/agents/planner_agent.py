@@ -52,7 +52,21 @@ async def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
         error_msg = f"Error reading Knowledge Base from Supabase for folder {folder_id}: {e}"
         print(f"Tool: {error_msg}")
         return error_msg
-# -----------------------------------------------
+
+@function_tool
+async def dag_query(ctx: RunContextWrapper[TutorContext], mastered: list[str]) -> list[str]:
+    """Returns next learnable concepts based on the concept_graph table and user's mastered concepts."""
+    supabase = await get_supabase_client()
+    # Fetch all prerequisite relationships between concepts
+    response = supabase.table("concept_graph").select("prereq, concept").execute()
+    edges = response.data or []
+    # Build prerequisite map: concept -> list of prereqs
+    prereq_map: Dict[str, List[str]] = {}
+    for e in edges:
+        prereq_map.setdefault(e["concept"], []).append(e["prereq"])
+    # Identify next learnable concepts: not yet mastered and all prereqs satisfied
+    candidates = [c for c, prereqs in prereq_map.items() if c not in mastered and all(p in mastered for p in prereqs)]
+    return candidates
 
 def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
     """Creates a planner agent that can search through files and create a lesson plan."""
@@ -67,7 +81,7 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
     print(f"Created FileSearchTool for vector store: {vector_store_id}")
 
     # Include the read_knowledge_base tool
-    planner_tools = [file_search_tool, read_knowledge_base]
+    planner_tools = [file_search_tool, read_knowledge_base, dag_query]
 
     # Instantiate the base model provider and get the base model
     provider: OpenAIProvider = OpenAIProvider()
@@ -76,19 +90,21 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
     # Create the planner agent specifying context type generically and output_type via parameter
     planner_agent = Agent[TutorContext](
         name="Focus Planner",
-        instructions="""You are an expert learning strategist. Your task is to determine the user's **next learning focus** based on the analyzed documents and potentially their current progress (provided in the prompt context).
+        instructions="""You are an expert learning strategist. Your task is to determine the user's **next learning focus** based on the analyzed documents and their current progress (provided in the prompt context).
 
         AVAILABLE INFORMATION:
-        - You have a `read_knowledge_base` tool to get the document analysis summary stored in the database.
+        - You have a `read_knowledge_base` tool to retrieve the document analysis summary stored in the database.
         - You have a `file_search` tool to look up specific details within the source documents (vector store).
-        - The prompt may contain information about the user's current state (`UserModelState` summary).
+        - You have a `dag_query` tool that accepts a list of mastered concepts and returns the next learnable concepts from the concept graph.
+        - The prompt may contain information about the user's current state (`UserModelState` summary), including a list of mastered concepts.
 
         YOUR WORKFLOW **MUST** BE:
-        1.  **Read Knowledge Base ONCE:** Call the `read_knowledge_base` tool *exactly one time* at the beginning to get the document analysis summary (key concepts, terms, etc.).
-        2.  **Confirm KB Received & Analyze Summary:** Once you have the Knowledge Base summary from the tool, **DO NOT call `read_knowledge_base` again**. Analyze the KB and any provided user state summary.
-        3.  **Identify Next Focus:** Determine the single most important topic or concept the user should learn next. Consider prerequisites implied by the KB structure and the user's current state (e.g., last completed topic, identified struggles).
-        4.  **Define Learning Goal:** Formulate a clear, specific learning goal for this focus topic.
-        5.  **Use `file_search` Sparingly:** If needed to clarify the goal or identify crucial related concepts for the chosen focus topic, use `file_search`.
+        1.  **Read Knowledge Base ONCE:** Call the `read_knowledge_base` tool *exactly one time* at the beginning to obtain the document analysis summary (key concepts, terms, etc.).
+        2.  **Obtain Candidate Concepts:** Call the `dag_query` tool with the list of mastered concepts from the user model state to retrieve next learnable concepts based on prerequisites.
+        3.  **Analyze KB and Candidates:** Once you have the Knowledge Base summary and candidate concepts, **DO NOT** call `read_knowledge_base` again. Analyze the KB, candidate list, and any provided user state summary.
+        4.  **Identify Next Focus:** Determine the single most important topic or concept the user should learn next, selecting from candidate concepts and considering prerequisites and user progress.
+        5.  **Define Learning Goal:** Formulate a clear, specific learning goal for this focus topic.
+        6.  **Use `file_search` Sparingly:** If needed to clarify the goal or identify crucial related concepts for the chosen focus topic, use `file_search`.
 
         OUTPUT:
         - Your output **MUST** be a single, valid JSON object matching the `FocusObjective` schema. Do NOT add any other text before or after the JSON object.

@@ -117,6 +117,10 @@ ON public.sessions
 FOR DELETE
 USING (auth.uid() = user_id);
 
+-- Ensure sessions.id is uniquely indexed for FK references from concept_events/actions
+ALTER TABLE public.sessions
+  ADD CONSTRAINT sessions_id_unique UNIQUE (id);
+
 
 -- ==========================================
 -- RLS POLICIES FOR folders TABLE
@@ -198,6 +202,65 @@ USING (
     bucket_id = 'document_uploads'
     AND auth.uid() = (storage.foldername(name))[1]::uuid
 );
+
+-- ==========================================
+-- 4. Concept Graph Table
+-- ==========================================
+CREATE TABLE public.concept_graph (
+    id SERIAL PRIMARY KEY,
+    prereq TEXT NOT NULL,
+    concept TEXT NOT NULL
+);
+
+COMMENT ON TABLE public.concept_graph IS 'Stores prerequisite relationships between concepts';
+COMMENT ON COLUMN public.concept_graph.prereq IS 'Prerequisite concept';
+COMMENT ON COLUMN public.concept_graph.concept IS 'Target concept';
+
+-- Enable RLS for concept_graph table
+ALTER TABLE public.concept_graph ENABLE ROW LEVEL SECURITY;
+
+-- Grant basic permissions for concept_graph table
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.concept_graph TO authenticated;
+
+-- ==========================================
+-- 5. CONCEPT EVENTS & ACTIONS LOGGING TABLES
+-- ==========================================
+CREATE TABLE public.concept_events (
+    id SERIAL PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES public.sessions(id),
+    user_id UUID NOT NULL,
+    concept TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    delta_mastery FLOAT NOT NULL
+);
+COMMENT ON TABLE public.concept_events IS 'Stores user interactions with concepts and changes in mastery';
+ALTER TABLE public.concept_events ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT ON public.concept_events TO authenticated;
+
+CREATE TABLE public.actions (
+    id SERIAL PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES public.sessions(id),
+    user_id UUID NOT NULL,
+    action_type TEXT NOT NULL,
+    action_details JSONB,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+COMMENT ON TABLE public.actions IS 'Stores orchestrator actions taken during tutoring sessions';
+ALTER TABLE public.actions ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT ON public.actions TO authenticated;
+
+-- ==========================================
+-- 6. ACTION WEIGHTS TABLE
+-- ==========================================
+CREATE TABLE public.action_weights (
+    action_type TEXT PRIMARY KEY,
+    weight FLOAT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+COMMENT ON TABLE public.action_weights IS 'Stores sampling weights for orchestrator actions';
+ALTER TABLE public.action_weights ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT, UPDATE ON public.action_weights TO authenticated;
 
 -- ==========================================
 -- END OF SCHEMA INITIALIZATION
