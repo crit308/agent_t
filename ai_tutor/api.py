@@ -38,7 +38,7 @@ if not api_key:
     # exit(1) # Or raise an exception
 else:
     set_default_openai_key(api_key)
-    set_default_openai_api("responses") # Ensure using API needed for models like o3-mini
+    set_default_openai_api("responses") # Ensure using API needed for models like o4-mini
     print("OpenAI API key configured for agents SDK.")
 
 # --- Supabase Client Initialization is now handled in dependencies.py ---

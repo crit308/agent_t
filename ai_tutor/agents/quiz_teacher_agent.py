@@ -44,7 +44,7 @@ def create_quiz_teacher_agent(api_key: str = None):
     
     # Instantiate the base model provider and get the base model
     provider: ModelProvider = OpenAIProvider()
-    base_model = provider.get_model("o3-mini")
+    base_model = provider.get_model("o4-mini")
     
     # Create the quiz teacher agent
     quiz_teacher_agent = Agent(
