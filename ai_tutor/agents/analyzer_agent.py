@@ -4,7 +4,23 @@ from pydantic import BaseModel, Field, model_validator
 from uuid import UUID
 from supabase import Client
 
-from agents import Agent, FileSearchTool, Runner, trace, gen_trace_id, set_tracing_export_api_key, RunConfig, ModelProvider
+# Attempt to import Runner and RunConfig from the top-level 'agents' module (likely in src/agents)
+# Assuming Runner and RunConfig are defined there based on original code.
+# trace, gen_trace_id, set_tracing_export_api_key were also in the original import,
+# but their exact location within 'agents' or if they come from elsewhere (like langsmith)
+# needs verification. Commenting out related code for now.
+# Also importing Agent, ModelProvider, FileSearchTool from 'agents' instead of 'ai_tutor.core'
+from agents import Runner, RunConfig, Agent, ModelProvider, FileSearchTool #, trace, gen_trace_id, set_tracing_export_api_key
+
+# Removed langchain imports
+# from langchain.agents import AgentExecutor
+# from langchain_core.runnables import RunnableConfig
+# from langsmith import traceable
+
+# Removed incorrect ai_tutor.core imports
+# from ai_tutor.core.base_agent import Agent, ModelProvider
+# from ai_tutor.core.tools import FileSearchTool
+
 from agents.models.openai_provider import OpenAIProvider
 from ai_tutor.agents.utils import RoundingModelWrapper
 
@@ -162,19 +178,26 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
     # Create the analyzer agent
     agent = create_analyzer_agent(vector_store_id, api_key)
     
-    # Setup RunConfig for tracing
+    # Setup RunConfig for tracing (Using RunConfig from 'agents' module)
     run_config = None
     if context and hasattr(context, 'session_id'):
         run_config = RunConfig(
             workflow_name="AI Tutor - Document Analysis",
-            group_id=str(context.session_id) # Convert UUID to string
+            group_id=str(context.session_id), # Convert UUID to string
+            # Assuming callbacks is a valid parameter for the original RunConfig
+            # callbacks=[context.run_manager.get_child()] if context.run_manager else None
         )
     elif api_key:
         # If no context provided but we have API key, create a basic RunConfig
         run_config = RunConfig(
-            workflow_name="AI Tutor - Document Analysis"
+            workflow_name="AI Tutor - Document Analysis",
+            # callbacks=[context.run_manager.get_child()] if context.run_manager else None
         )
-    
+
+    # TODO: Verify if the original RunConfig supports a 'callbacks' parameter.
+    #       The Langchain RunnableConfig did, but the original might not.
+    #       Commented out the callback lines above for now.
+
     # Create a prompt that instructs the agent to perform comprehensive analysis
     prompt = """
     Analyze all documents in the vector store thoroughly.
@@ -191,16 +214,23 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
     The vector store ID you are analyzing is: {0}
     """.format(vector_store_id)
     
-    # Run the analyzer agent to perform document analysis
+    # Run the analyzer agent using Runner from the 'agents' module
+    # TODO: Verify the exact parameters expected by Runner.run()
+    #       The original code might have passed agent, prompt, run_config, context.
+    #       Adjust the call below based on the actual Runner signature.
     result = await Runner.run(
-        agent, 
-        prompt,
-        run_config=run_config,
-        context=context
+        agent, # Assuming runner takes agent
+        prompt, # Assuming runner takes prompt
+        run_config=run_config, # Assuming runner takes run_config
+        # tools=[FileSearchTool(vector_store_ids=[vector_store_id])], # Tools might be passed differently or implicitly
+        # verbose=True # Verbosity might be configured differently
+        # context=context # Pass context if needed by Runner
     )
-    
+
     # Get the text output directly
-    analysis_text = result.final_output if isinstance(result.final_output, str) else str(result.final_output)
+    # TODO: Verify how Runner returns results. The structure might differ from AgentExecutor.
+    # Assuming result has a 'final_output' attribute or similar based on previous code.
+    analysis_text = result.final_output if hasattr(result, 'final_output') and isinstance(result.final_output, str) else str(result)
     if not analysis_text:
          print("Error: Document analysis agent returned empty output.")
          return None

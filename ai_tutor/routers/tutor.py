@@ -497,6 +497,16 @@ async def interact_with_tutor(
     if isinstance(orchestrator_output, TutorInteractionResponse):
         final_response_data = orchestrator_output
         print(f"[Interact] Orchestrator returned response of type: {final_response_data.response_type}")
+        # Convert generic MessageResponse to ExplanationResponse for UI to handle
+        if isinstance(final_response_data, MessageResponse):
+            final_response_data = ExplanationResponse(
+                response_type="explanation",
+                text=final_response_data.text,
+                topic=(tutor_context.current_focus_objective.topic if tutor_context.current_focus_objective else ""),
+                segment_index=0,
+                is_last_segment=True,
+                references=None
+            )
         # If orchestrator called quiz creator which returned a question, update pending state
         if isinstance(final_response_data, QuestionResponse):
             tutor_context.user_model_state.pending_interaction_type = 'checking_question'

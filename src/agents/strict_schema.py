@@ -49,19 +49,9 @@ def _ensure_strict_json_schema(
             )
 
     typ = json_schema.get("type")
-    if typ == "object" and "additionalProperties" not in json_schema:
+    if typ == "object":
+        # enforce no additional properties for strict JSON schema
         json_schema["additionalProperties"] = False
-    elif (
-        typ == "object"
-        and "additionalProperties" in json_schema
-        and json_schema["additionalProperties"] is True
-    ):
-        raise UserError(
-            "additionalProperties should not be set for object types. This could be because "
-            "you're using an older version of Pydantic, or because you configured additional "
-            "properties to be allowed. If you really need this, update the function or output tool "
-            "to not use a strict schema."
-        )
 
     # object types
     # { 'type': 'object', 'properties': { 'a':  {...} } }

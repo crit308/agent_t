@@ -7,8 +7,13 @@ from dotenv import load_dotenv # Import dotenv
 load_dotenv() # Load environment variables from .env file at the start
 
 import asyncio # Import asyncio
-# Add this directory to the system path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add project src directory to sys.path so local 'agents' overrides pip-installed package
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+src_path = os.path.join(project_root, "src")
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
+if project_root not in sys.path:
+    sys.path.append(project_root)
 
 # Import SDK configuration functions directly from 'agents'
 from agents import (
