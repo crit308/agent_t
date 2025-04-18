@@ -5,4 +5,4 @@ clickhouse-connect>=0.6.4
 kafka-python>=2.0.2
 fastapi-utils>=0.2.0
 typing-inspect>=0.9.0
-pydantic>=2.6 
+pydantic>=2.10 

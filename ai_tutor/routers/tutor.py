@@ -88,7 +88,7 @@ async def upload_session_documents(
     """
     Uploads one or more documents to the specified session.
     Stores files temporarily, uploads them to Supabase Storage & OpenAI, adds to vector store,
-    and synchronously triggers document analysis.
+    and defers embedding to a background worker.
     """
     user: User = request.state.user # Get user from request state populated by verify_token dependency
     logger = get_session_logger(session_id)
@@ -101,6 +101,7 @@ async def upload_session_documents(
     temp_file_paths = []
     vector_store_id = tutor_context.vector_store_id
     existing_files = tutor_context.uploaded_file_paths
+    job_ids = []
 
     for file in files:
         filename = file.filename
@@ -119,11 +120,10 @@ async def upload_session_documents(
     if not temp_file_paths:
         raise HTTPException(status_code=400, detail="No files were successfully saved.")
 
-    # Upload to OpenAI and add to Vector Store
+    # Upload to Supabase Storage and queue embedding
     message = ""
     try:
         for i, temp_path in enumerate(temp_file_paths):
-            # Pass user_id and folder_id to file upload manager
             uploaded_file = await file_upload_manager.upload_and_process_file(
                 file_path=temp_path,
                 user_id=user.id,
@@ -131,12 +131,16 @@ async def upload_session_documents(
                 existing_vector_store_id=vector_store_id, # Pass current VS ID
                 queue_embedding=True
             )
+            # Fetch the job_id (file id) from the uploaded_files table
+            # Use supabase_path to find the row
+            resp = supabase.table("uploaded_files").select("id").eq("supabase_path", uploaded_file.supabase_path).order("created_at", desc=True).limit(1).execute()
+            job_id = resp.data[0]["id"] if resp.data else None
+            job_ids.append(job_id)
             if not vector_store_id:
                 vector_store_id = uploaded_file.vector_store_id
-            message += f"Uploaded {uploaded_filenames[i]} (Supabase: {uploaded_file.supabase_path}, OpenAI ID: {uploaded_file.file_id}). "
+            message += f"Queued {uploaded_filenames[i]} for embedding (job_id: {job_id}). "
 
         if vector_store_id:
-            # Update context object and save it
             tutor_context.vector_store_id = vector_store_id
             tutor_context.uploaded_file_paths.extend(uploaded_filenames) # Append new files
             await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
@@ -146,48 +150,18 @@ async def upload_session_documents(
 
     except Exception as e:
         logger.log_error("VectorStoreUpload", e)
-        # Clean up any temp files on failure
         for temp_path in temp_file_paths:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
-        raise HTTPException(status_code=500, detail=f"Failed to upload files to OpenAI: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload files to Supabase: {e}")
 
-    # Trigger analysis synchronously
-    analysis_status = "failed"
-    try:
-        print(f"Starting synchronous analysis for session {session_id}, vs_id {vector_store_id}")
-        # Create context for analysis call (might be simpler than full TutorContext)
-        # context already fetched via Depends
-        user: User = request.state.user
-
-        analysis_result: Optional[AnalysisResult] = await analyze_documents(
-            vector_store_id,
-            context=tutor_context,
-            supabase=supabase # Pass supabase client to save KB
-        )
-
-        if analysis_result:
-            analysis_status = "completed"
-            # Store analysis result (as dict or object) - Keep storing the object
-            tutor_context.analysis_result = analysis_result # Store the Pydantic object
-            await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
-            message += "Analysis completed."
-
-        else:
-            message += "Analysis finished but produced no result."
-            analysis_status = "completed_empty" # Or "failed" depending on expectation
-
-    except Exception as e:
-        logger.log_error("AnalysisTrigger", e)
-        message += f"Analysis trigger failed: {e}"
-        analysis_status = "failed"
-        # Don't raise HTTPException here, report status in response
-
+    # Return 202 Accepted with job_id(s) and pending status
     return DocumentUploadResponse(
         vector_store_id=vector_store_id,
         files_received=uploaded_filenames,
-        analysis_status=analysis_status,
-        message=message
+        analysis_status="pending",
+        message=message,
+        job_id=job_ids[0] if len(job_ids) == 1 else str(job_ids) # If multiple, return as stringified list
     )
 
 @router.get(

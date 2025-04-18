@@ -40,6 +40,7 @@ class DocumentUploadResponse(BaseModel):
     files_received: List[str]
     analysis_status: str # e.g., "completed", "failed", "pending" (if async)
     message: str
+    job_id: Optional[str] = None  # Add job_id for async embedding jobs
 
 class AnalysisResponse(BaseModel):
     status: str # "pending", "completed", "failed", "not_started"

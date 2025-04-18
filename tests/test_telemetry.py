@@ -45,4 +45,5 @@ async def test_log_tool_inserts_edge_log():
         assert payload['tool'] == 'dummy_tool'
         assert payload['prompt_tokens'] == 10
         assert payload['completion_tokens'] == 20
-        assert isinstance(payload['latency_ms'], int) 
+        assert isinstance(payload['latency_ms'], int)
+        assert payload['trace_id'] is not None 

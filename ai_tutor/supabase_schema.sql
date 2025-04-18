@@ -273,11 +273,26 @@ CREATE TABLE public.edge_logs (
     latency_ms int,
     prompt_tokens int,
     completion_tokens int,
-    created_at timestamptz DEFAULT now()
+    created_at timestamptz DEFAULT now(),
+    trace_id uuid
 );
 COMMENT ON TABLE public.edge_logs IS 'Fine-grained telemetry for tool usage, latency, and token counts.';
 ALTER TABLE public.edge_logs ENABLE ROW LEVEL SECURITY;
 GRANT SELECT, INSERT ON public.edge_logs TO authenticated;
+
+-- ==========================================
+-- 8. EMBEDDINGS CACHE TABLE
+-- ==========================================
+BEGIN;
+CREATE TABLE IF NOT EXISTS public.embeddings_cache (
+    hash        text primary key,
+    vector_id   text not null,
+    metadata    jsonb default '{}'::jsonb,
+    created_at  timestamptz default now()
+);
+COMMENT ON TABLE public.embeddings_cache IS
+  'Deduplicates embeddings by SHA‑256 hash of chunk text.';
+COMMIT;
 
 -- ==========================================
 -- END OF SCHEMA INITIALIZATION
