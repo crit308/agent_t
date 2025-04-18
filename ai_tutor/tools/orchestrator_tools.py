@@ -147,8 +147,16 @@ async def update_user_model(
         print(f"[Tool update_user_model] Mastery achieved for '{topic}'. Triggering planner agent.")
         from ai_tutor.tools.orchestrator_tools import call_planner_agent
         await call_planner_agent(ctx)
+    # Emit mastery update to websocket if available
+    mastery = concept_state.mastery
+    confidence = concept_state.confidence
+    if hasattr(ctx.context, "ws"):
+        try:
+            await ctx.context.ws.send_json({"type": "mastery_update", "topic": topic, "mastery": mastery, "confidence": confidence})
+        except Exception:
+            pass
     # Calculate mastery delta and log concept event to Supabase
-    new_mastery = concept_state.mastery
+    new_mastery = mastery
     delta_mastery = new_mastery - old_mastery
     if SUPABASE_CLIENT:
         try:

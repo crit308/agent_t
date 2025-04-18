@@ -113,6 +113,7 @@ class LessonContent(BaseModel):
     is_last_segment: bool = Field(description="Indicates if this is the last segment for the current topic.")
     topic: Optional[str] = Field(None, description="Specific topic being explained in this chunk")
     text: str = Field(description="The full text content of the lesson")
+    total_segments: Optional[int] = Field(None, description="Total number of segments in the lesson content.")
 
 
 class QuizQuestion(BaseModel):

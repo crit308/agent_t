@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from uuid import UUID
+from typing import Optional, List, Any, Dict, Literal, TYPE_CHECKING, Union
 
 # Store original default method from the JSONEncoder class
 _original_json_encoder_default = json.JSONEncoder.default
@@ -23,7 +24,6 @@ json.JSONEncoder.default = _custom_json_encoder_default
 
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime # Keep datetime import for conversion if needed
-from typing import Optional, List, Any, Dict, Literal, TYPE_CHECKING
 from pydantic import Field
 
 # Use TYPE_CHECKING to prevent runtime circular imports for type hints
@@ -77,8 +77,8 @@ class TutorContext(BaseModel):
             UUID: str  # Tell Pydantic to serialize UUID objects as strings
         }
     )
-    # user_id: Optional[str] = None
-    user_id: UUID # User ID from Supabase Auth, now mandatory UUID
+    # user_id: User ID from Supabase Auth, can be string or UUID
+    user_id: Union[str, UUID]
     session_id: UUID # Use UUID
     folder_id: Optional[UUID] = None # Link to the folder ID
     vector_store_id: Optional[str] = None

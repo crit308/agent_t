@@ -11,6 +11,8 @@ from ai_tutor.agents.orchestrator_agent import create_orchestrator_agent
 from ai_tutor.context import TutorContext
 from ai_tutor.auth import verify_token  # Re‑use existing auth logic for header token verification
 from agents import Runner, RunConfig
+import json
+from fastapi_utils.tasks import repeat_every
 
 router = APIRouter()
 
@@ -77,18 +79,12 @@ async def tutor_stream(
         await ws.close(code=1011)
         return
 
-    # All good – ensure initial focus objective has been generated via the Plan endpoint
-    if tutor_ctx.current_focus_objective is None:
-        # Inform client to call the Plan endpoint before streaming
-        await ws.accept()
-        await ws.send_json({
-            "type": "error",
-            "detail": "Initial planning incomplete. Please call POST /sessions/{session_id}/plan and then reconnect."
-        })
-        await ws.close(code=1008)
-        return
     # Accept the connection
     await ws.accept()
+    # Heartbeat: send system_tick every 60 seconds to keep connection alive
+    @repeat_every(seconds=60)
+    async def heartbeat():
+        await ws.send_json({"event_type": "system_tick"})
 
     # Snapshot mastery values to detect later updates
     mastery_prev = {topic: state.mastery for topic, state in tutor_ctx.user_model_state.concepts.items()}
@@ -99,7 +95,11 @@ async def tutor_stream(
     try:
         while True:
             try:
-                incoming: Dict[str, Any] = await ws.receive_json()
+                # Read raw payload text and normalize fields
+                payload = json.loads(await ws.receive_text())
+                if 'event_type' not in payload and 'type' in payload:
+                    payload = {'event_type': payload['type'], **payload.get('data', {})}
+                incoming: Dict[str, Any] = payload
                 # Handle pace slider change: update learning_pace_factor
                 if incoming.get("type") == "pace_change":
                     value = incoming.get("value")

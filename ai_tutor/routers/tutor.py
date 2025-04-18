@@ -449,7 +449,11 @@ async def interact_with_tutor(
     # Run the orchestrator loop in Python for deterministic control
     from ai_tutor.agents.orchestrator_agent import run_orchestrator
     last_event = {"event_type": interaction_input.type, "data": interaction_input.data or {}}
-    final_response_data = await run_orchestrator(tutor_context, last_event)
+    try:
+        final_response_data = await run_orchestrator(tutor_context, last_event)
+    except Exception as exc:
+        logger.exception("run_orchestrator failed")
+        raise HTTPException(status_code=500, detail=str(exc))
 
     # --- Save Context AFTER determining the final response ---
     print(f"[Interact] Saving final context state to Supabase for session {session_id}")

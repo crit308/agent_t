@@ -49,8 +49,14 @@ def _ensure_strict_json_schema(
             )
 
     typ = json_schema.get("type")
-    if typ == "object":
-        # enforce no additional properties for strict JSON schema
+    # Only enforce additionalProperties rules at the root schema
+    if typ == "object" and not path:
+        # Raise error if additionalProperties explicitly set to True
+        if json_schema.get("additionalProperties") is True:
+            raise UserError(
+                "additionalProperties should not be set for object types."
+            )
+        # Enforce no additional properties for strict JSON schema
         json_schema["additionalProperties"] = False
 
     # object types

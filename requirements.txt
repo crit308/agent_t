@@ -1,5 +1,7 @@
 python-multipart>=0.0.6 # For file uploads
-+supabase-py>=2.0.0  # Add supabase client 
+supabase>=2.0.0  # Add supabase client
 # Data pipeline dependencies
 clickhouse-connect>=0.6.4
-kafka-python>=2.0.2 
+kafka-python>=2.0.2
+fastapi-utils>=0.2.0
+typing-inspect>=0.9.0 
