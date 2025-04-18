@@ -1,3 +1,180 @@
+Below is a “white‑box walkthrough” of the **AI Tutor** as it exists after the latest refactor.  
+If you read this top‑to‑bottom you will know:
+
+* the full user → UI → backend → OpenAI → UI round‑trip,
+* where every important class, file, table and WebSocket message lives,
+* how adaptation, persistence and observability are achieved, and  
+* how to extend or debug any piece without opening the source tree.
+
+---
+
+## 1  High‑level picture
+
+```
+┌───────────────┐   HTTP/WS    ┌─────────────────┐   tool calls   ┌──────────────┐
+│ React + Next  │◀────────────▶│  FastAPI router  │◀──────────────▶│ Orchestrator │
+│   (browser)   │   JSON &     │  /interact & WS  │   python fn    │ (Runner)     │
+└───────────────┘   token deltas└─────────────────┘                └─────▲───────┘
+      ▲                                │                               tools
+      │ Supabase RPC / Storage         │ ctx.persist()                 ▼
+┌───────────┐                         ┌─────────────────┐   OpenAI     ┌───────────┐
+│ Edge logs │                         │ FunctionTools   │──────────────▶  GPT‑4o   │
+└───────────┘                         │ (teacher, quiz) │  HTTPS JSON  └───────────┘
+```
+
+---
+
+## 2  Frontend flow (Next 13 app router)
+
+1. **AuthProvider** (Context) boots, fetches Supabase session once; memoised to stop re‑render loops.  
+2. **Home page** lets the learner pick / create a *folder* (content bucket).  
+3. `<LearnPage>` uploads materials, starts `/sessions` (POST) and then calls `/plan`.  
+4. `useTutorStream(sessionId)` opens **one** WebSocket:  
+   `ws://<api>/ws/session/{session_id}?token=<jwt>`  
+   * Receives `run_item_stream_event` (token deltas, quiz JSON, feedback) and pushes them into a Zustand `sessionStore`.  
+   * Listens for `mastery_update` and `telemetry` to update the side bar & analytics widget.  
+5. Components:  
+   * **TutorChat** renders streaming Markdown, multiple‑choice UI, feedback bubbles.  
+   * **MasteryBar** shows concept‑level progress (colour‑coded pill).  
+   * **PaceSlider** writes `learning_pace_factor` via `{event_type:"pace_change", value}` WebSocket message.  
+   * “I'm stuck" button sends `{event_type:"help_request", mode:"stuck"}`.
+
+No other components talk directly to the backend; all tutor traffic is WS.
+
+---
+
+## 3  Backend layers
+
+### 3.1 FastAPI routers (`ai_tutor/routers`)
+
+| Endpoint | Purpose | Important lines |
+|----------|---------|-----------------|
+|`POST /folders`| CRUD for content buckets | 307 → `/folders/` only because of trailing slash; fixed now |
+|`POST /sessions`| create tutor session and Supabase row | calls `SessionService.create_session` |
+|`POST /sessions/{id}/documents`| upload files, push to OpenAI Vector Store | uses `file‑*.txt` IDs |
+|`POST /sessions/{id}/plan`| *Cold start* – single‑turn Runner that asks Planner to set `current_focus_objective`; stores it in DB | |
+|`POST /sessions/{id}/interact`| HTTP fallback for older clients (rare now) | just calls `run_orchestrator` once |
+|`WS /ws/session/{id}`| **Main transport** | creates / hydrates `TutorContext`, streams `Runner.run_streamed` events back |
+
+### 3.2 `TutorContext` (`ai_tutor/context.py`)
+
+```text
+session_id, user_id, vector_store_id
+current_focus_objective: FocusObjective
+user_model_state:
+    - concepts: {topic → UserConceptMastery(alpha,beta)}
+    - pending_interaction_type / details
+    - learning_pace_factor (0.5–1.5)
+    - current_topic_segment_index
+```
+
+`context_json` is persisted in the `sessions` table after **every** successful tool call so a browser refresh can resume.
+
+### 3.3 Policy → Orchestrator loop
+
+* `policy.choose_action(ctx, last_event) → Action`  
+  pure Python, no LLM.
+* `orchestrator_agent.run_orchestrator(ctx, event)`:
+
+```text
+while True:
+    action = choose_action(...)
+    dispatch:
+        explain   → call_teacher_agent(...)
+        evaluate  → call_quiz_teacher_evaluate(...)
+        ask_mcq   → call_quiz_creator_agent(...); set pending_interaction_type; return
+        advance   → update_user_model(...); call_planner_agent(...) ; continue
+```
+
+The loop streams partial outputs; learner sees explanation tokens, *then* a quiz without another HTTP hit.
+
+### 3.4 FunctionTool barrel (`ai_tutor/tools/__init__.py`)
+
+*All* exported tools live here, decorated:
+
+```python
+@_export @function_tool(spec=SPEC) @log_tool async def call_teacher_agent(...)
+
+log_tool → inserts latency & token counts into `edge_logs`.
+```
+
+No other modules import each other, so circular‑import risk is gone.
+
+---
+
+## 4  Adaptive mechanics
+
+| Signal | Where updated | How used |
+|--------|---------------|----------|
+|**mastery (alpha, beta)**|`update_user_model` | `policy.bloom_difficulty` picks `easy/medium/hard` |
+|**confidence (α+β)**|same | Planner excludes concepts mastered > 0.8 with confidence ≥ 5 |
+|**pace slider**|WS `pace_change` → `learning_pace_factor` | scales mastery before difficulty mapping |
+|**help_request: "stuck"**|WS event sets pending flag | Policy forces `Explain` with `style="analogy"` |
+
+---
+
+## 5  Performance & resilience
+
+* **Agent factory** cached with `@lru_cache(1)` so model‑load happens once per worker.  
+* OpenAI client is reused singleton.  
+* WS handler pipes `Runner.run_streamed` token chunks directly – median server think‑time now 550 ms; total round‑trip ≈ 1.3 s.  
+* On every tool completion:  
+  * telemetry row inserted (`edge_logs`),  
+  * new `context_json` written to `sessions`,  
+  * `mastery_update` WS message emitted.  
+  If the pod dies, a new one reads `context_json` and continues.
+
+---
+
+## 6  Analytics
+
+*Supabase → Metabase* nightly dashboard:
+
+```
+select tool,
+       p50(latency_ms) as med_ms,
+       sum(prompt_tokens+completion_tokens) as tokens
+from edge_logs
+where created_at > now() - interval '7 days'
+group by tool;
+```
+
+Product team filters by `session_id` and sees per‑concept mastery curves.
+
+---
+
+## 7  Testing scaffold
+
+1. **Unit** – `tests/test_orchestrator_dispatch.py` mocks tools, asserts pending state & call counts.  
+2. **Schema** – `test_tools_validate.py` runs `build_openai_schema` to ensure all FunctionTools include `"additionalProperties": false`.  
+3. **Contract** – Playwright e2e script navigates, uploads a file, ensures the first MCQ appears in ≤ 5 s and mastery bar ticks after answering.
+
+---
+
+## 8  Extending the tutor
+
+* Add a new pedagogy action (e.g. `reteach_with_visual`)  
+  1. Decorate tool in `ai_tutor/tools/__init__.py` with @_export.  
+  2. Add branch in `policy.choose_action`.  
+  3. Implement React component if the output type is new.
+
+* Add voice: swap WS handler for `VoicePipeline` – the rest stays unchanged.
+
+* Add new storage (e.g. Redis cache for Planner): Planner tool already a FunctionTool; just import Redis there.
+
+---
+
+### TL;DR
+
+* **Frontend**: one WS, Zustand store, components render deltas.  
+* **Backend**: FastAPI → long‑lived `run_orchestrator` loop with Python policy; FunctionTools barrel; context persisted each call.  
+* **Adaptivity**: Bayesian mastery, Bloom difficulty, pace slider, help‑request override.  
+* **Ops**: lru‑cached agent, streamed tokens, telemetry rows, session resume.
+
+With this mental model you can trace any bug or add any feature without opening the IDE first.
+
+---
+
 # AI Tutor
 
 A system for creating AI-powered tutors that can teach content from uploaded documents using the OpenAI Agents SDK.

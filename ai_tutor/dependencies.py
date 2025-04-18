@@ -3,6 +3,7 @@ import os
 from fastapi import HTTPException, status
 from supabase import create_client, Client
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
 
 # Load environment variables specifically for dependencies if needed,
 # though they should be loaded by the main app process already.
@@ -36,3 +37,8 @@ async def get_supabase_client() -> Client:
             detail="Supabase client is not available. Check backend configuration and logs."
         )
     return SUPABASE_CLIENT 
+
+openai_client = AsyncOpenAI()
+
+def get_openai():
+    return openai_client 

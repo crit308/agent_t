@@ -3,6 +3,7 @@ from ai_tutor.context import TutorContext
 from ai_tutor.agents.models import FocusObjective
 import random
 from ai_tutor.dependencies import SUPABASE_CLIENT  # Supabase client for policy weights
+from ai_tutor.utils.difficulty import bloom_difficulty
 
 
 class Explain(TypedDict):
@@ -95,7 +96,13 @@ def choose_action(ctx: TutorContext, last_event: InteractionEvent) -> Action:
     if selected == "explain":
         return {"type": "explain", "topic": ctx.current_focus_objective.topic, "segment_index": ctx.user_model_state.current_topic_segment_index, "style": None}
     if selected == "ask_mcq":
-        return {"type": "ask_mcq", "topic": ctx.current_focus_objective.topic, "difficulty": "medium", "misconception_focus": None}
+        s = ctx.user_model_state
+        topic = ctx.current_focus_objective.topic
+        c = s.concepts.get(topic)
+        if c and c.mastery < 0.8:
+            diff = bloom_difficulty(c.mastery, s.learning_pace_factor)
+            return {"type": "ask_mcq", "topic": topic, "difficulty": diff, "misconception_focus": None}
+        return {"type": "ask_mcq", "topic": topic, "difficulty": "medium", "misconception_focus": None}
     if selected == "evaluate":
         data = last_event.get("data", {})
         return {"type": "evaluate", "user_answer_index": data.get("user_answer_index"), "question_id": data.get("question_id")}

@@ -8,6 +8,7 @@ from ai_tutor.agents.orchestrator_agent import run_orchestrator
 import ai_tutor.tools.orchestrator_tools as tools
 from ai_tutor.api_models import QuestionResponse, FeedbackResponse, MessageResponse
 from ai_tutor.agents.models import QuizFeedbackItem, QuizQuestion
+from agents.utils import build_openai_schema
 
 
 @pytest.mark.asyncio
@@ -81,4 +82,8 @@ async def test_loop_exits_on_ask_mcq(monkeypatch):
 
     # Verify we exited on ask_mcq and returned a QuestionResponse
     assert isinstance(result, QuestionResponse)
-    assert result.response_type == "question" 
+    assert result.response_type == "question"
+
+def test_all_tools_validate():
+    for tool in tools.__all__:
+        build_openai_schema(getattr(tools, tool))  # raises on error 

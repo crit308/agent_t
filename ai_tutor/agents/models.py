@@ -268,6 +268,8 @@ class FocusObjective(BaseModel):
     priority: int = Field(description="Priority from 1-5 (5=highest) based on prerequisites or user need.")
     relevant_concepts: List[str] = Field(default_factory=list, description="List of related concepts from the knowledge base.")
     suggested_approach: Optional[str] = Field(None, description="Optional hint for the Orchestrator (e.g., 'Needs examples', 'Requires practice quiz').")
+    target_mastery: float = 0.8  # default
+    initial_difficulty: Optional[str] = None
 
 # --- NEW: Potential Result Models for Agents as Tools ---
 class ExplanationResult(BaseModel):

@@ -1,14 +1,15 @@
 from __future__ import annotations
 from uuid import UUID
 from typing import Any, Dict
+from functools import lru_cache
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from supabase import Client
 
-from ai_tutor.dependencies import get_supabase_client
+from ai_tutor.dependencies import get_supabase_client, get_openai
 from ai_tutor.session_manager import SessionManager
 from ai_tutor.agents.orchestrator_agent import create_orchestrator_agent
-from ai_tutor.context import TutorContext
+from ai_tutor.context import TutorContext, UserModelState
 from ai_tutor.auth import verify_token  # Re‑use existing auth logic for header token verification
 from agents import Runner, RunConfig
 import json
@@ -50,6 +51,9 @@ async def _authenticate_ws(ws: WebSocket, supabase: Client) -> Any:
         await ws.close(code=1008, reason="Could not validate credentials")
         raise RuntimeError("Unauthorized") from exc
 
+@lru_cache(maxsize=1)
+def get_orchestrator_agent():
+    return create_orchestrator_agent(client=get_openai())
 
 @router.websocket("/ws/session/{session_id}")
 async def tutor_stream(
@@ -74,10 +78,20 @@ async def tutor_stream(
         supabase=supabase, session_id=session_id, user_id=user.id  # type: ignore[arg-type]
     )
     if tutor_ctx is None:
-        await ws.accept()
-        await ws.send_json({"type": "error", "detail": "Session not found or not authorized."})
-        await ws.close(code=1011)
-        return
+        # Try to fetch folder_id from the session row to build a fresh context
+        session_row = supabase.table("sessions").select("folder_id").eq("id", str(session_id)).eq("user_id", user.id).maybe_single().execute()
+        folder_id = None
+        if session_row.data and session_row.data.get("folder_id"):
+            folder_id = session_row.data["folder_id"]
+        # Build a fresh TutorContext as today
+        tutor_ctx = TutorContext(
+            session_id=session_id,
+            user_id=user.id,
+            folder_id=folder_id,
+            user_model_state=UserModelState()
+        )
+        # Optionally, update the session row with the new context
+        supabase.table("sessions").update({"context_data": tutor_ctx.model_dump(mode='json')}).eq("id", str(session_id)).eq("user_id", user.id).execute()
 
     # Accept the connection
     await ws.accept()
@@ -89,8 +103,8 @@ async def tutor_stream(
     # Snapshot mastery values to detect later updates
     mastery_prev = {topic: state.mastery for topic, state in tutor_ctx.user_model_state.concepts.items()}
 
-    # Create orchestrator agent once per connection. If you later need per‑message config, re‑create.
-    orchestrator_agent = create_orchestrator_agent()
+    # Create orchestrator agent once per process (cached).
+    agent = get_orchestrator_agent()
 
     try:
         while True:
@@ -142,15 +156,12 @@ async def tutor_stream(
 
             # Run the orchestrator in streaming mode
             try:
-                stream_result = Runner.run_streamed(
-                    orchestrator_agent,
-                    input=incoming,
-                    context=tutor_ctx,
+                stream = Runner.run_streamed(
+                    agent, input=incoming, context=tutor_ctx,
                     run_config=RunConfig(workflow_name="TutorSession", group_id=str(session_id)),
                 )
-
-                async for evt in stream_result.stream_events():
-                    await ws.send_json(evt.model_dump())  # Pydantic BaseModel -> dict for JSON serialisation
+                async for evt in stream.stream_events():
+                    await ws.send_json(evt.model_dump())   # token‑level latency
             except Exception as exc:  # noqa: BLE001
                 # Relay the exception back and continue (or you could terminate)
                 await ws.send_json({"type": "error", "detail": str(exc)})

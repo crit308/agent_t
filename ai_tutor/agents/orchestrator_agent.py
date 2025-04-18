@@ -12,7 +12,7 @@ from agents.run_context import RunContextWrapper
 if TYPE_CHECKING:
     from ai_tutor.context import TutorContext # Use the enhanced context
 # Import tool functions (assuming they will exist in a separate file)
-from ai_tutor.tools.orchestrator_tools import (
+from ai_tutor.tools import (
     call_planner_agent,
     call_teacher_agent,
     call_quiz_creator_agent,
@@ -32,14 +32,15 @@ from ai_tutor.api_models import (
     FeedbackResponse, MessageResponse, ErrorResponse
 )
 from ai_tutor.dependencies import SUPABASE_CLIENT  # Supabase client for logging actions
+from ai_tutor.errors import ToolExecutionError, ErrorResponse
 
-def create_orchestrator_agent(api_key: str = None) -> Agent['TutorContext']:
-    """Creates the Orchestrator Agent for the AI Tutor."""
+def create_orchestrator_agent(api_key: str = None, client=None) -> Agent['TutorContext']:
+    """Creates the Orchestrator Agent for the AI Tutor. Optionally accepts an OpenAI client for reuse."""
 
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
 
-    provider: ModelProvider = OpenAIProvider()
+    provider: ModelProvider = OpenAIProvider(openai_client=client) if client else OpenAIProvider()
     # Use the specified model version
     base_model = provider.get_model("gpt-4o-2024-08-06")  # Using exact model version
 
@@ -67,7 +68,7 @@ async def run_orchestrator(ctx: TutorContext, last_event: InteractionEvent):
     """Run micro-steps of the orchestrator until awaiting learner input, then return that response."""
     # Import tools at runtime to allow monkeypatched stubs
     from ai_tutor.policy import choose_action
-    from ai_tutor.tools.orchestrator_tools import (
+    from ai_tutor.tools import (
         call_teacher_agent,
         call_quiz_teacher_evaluate,
         call_quiz_creator_agent,
@@ -81,22 +82,28 @@ async def run_orchestrator(ctx: TutorContext, last_event: InteractionEvent):
 
         if action["type"] == "explain":
             segment_index = ctx.user_model_state.current_topic_segment_index or 0
-            explanation_result = await invoke(
-                call_teacher_agent,
-                ctx,
-                topic=action["topic"],
-                explanation_details=f"Segment {segment_index}",
-            )
+            try:
+                explanation_result = await invoke(
+                    call_teacher_agent,
+                    ctx,
+                    topic=action["topic"],
+                    explanation_details=f"Segment {segment_index}",
+                )
+            except ToolExecutionError as e:
+                return ErrorResponse(tool="call_teacher_agent", detail=e.detail, code=e.code)
             ctx.user_model_state.current_topic_segment_index = segment_index + 1
             event = {"event_type": "system_explanation", "data": explanation_result.model_dump()}
             continue
 
         if action["type"] == "evaluate":
-            feedback = await invoke(
-                call_quiz_teacher_evaluate,
-                ctx,
-                user_answer_index=action["user_answer_index"],
-            )
+            try:
+                feedback = await invoke(
+                    call_quiz_teacher_evaluate,
+                    ctx,
+                    user_answer_index=action["user_answer_index"],
+                )
+            except ToolExecutionError as e:
+                return ErrorResponse(tool="call_quiz_teacher_evaluate", detail=e.detail, code=e.code)
             event = {"event_type": "system_feedback", "data": feedback.model_dump()}
             continue
 
@@ -104,13 +111,15 @@ async def run_orchestrator(ctx: TutorContext, last_event: InteractionEvent):
             instructions = f"Create a {action['difficulty']} difficulty question"
             if action.get("misconception_focus"):
                 instructions += f" probing {action['misconception_focus']}"
-            quiz_resp = await invoke(
-                call_quiz_creator_agent,
-                ctx,
-                topic=action["topic"],
-                instructions=instructions,
-            )
-            # If stub returns QuestionResponse, return directly
+            try:
+                quiz_resp = await invoke(
+                    call_quiz_creator_agent,
+                    ctx,
+                    topic=action["topic"],
+                    instructions=instructions,
+                )
+            except ToolExecutionError as e:
+                return ErrorResponse(tool="call_quiz_creator_agent", detail=e.detail, code=e.code)
             if isinstance(quiz_resp, QuestionResponse):
                 return quiz_resp
             ctx.user_model_state.pending_interaction_type = "checking_question"
@@ -128,12 +137,15 @@ async def run_orchestrator(ctx: TutorContext, last_event: InteractionEvent):
             )
 
         if action["type"] == "advance":
-            await invoke(
-                update_user_model,
-                ctx,
-                topic=action["mastered_topic"],
-                outcome="mastered",
-            )
+            try:
+                await invoke(
+                    update_user_model,
+                    ctx,
+                    topic=action["mastered_topic"],
+                    outcome="mastered",
+                )
+            except ToolExecutionError as e:
+                return ErrorResponse(tool="update_user_model", detail=e.detail, code=e.code)
             ctx.user_model_state.current_topic_segment_index = 0
             return MessageResponse(
                 response_type="message",

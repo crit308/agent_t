@@ -67,7 +67,7 @@ app = FastAPI(
 # Adjust origins based on your frontend URL
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allow all origins for now, restrict in production
+    allow_origins=["http://localhost:3000"],  # Restrict to frontend origin in dev
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -83,5 +83,22 @@ app.include_router(tutor_ws.router, prefix="/api/v1")  # Mount WebSocket router 
 @app.get("/", tags=["Root"])
 async def read_root():
     return {"message": "Welcome to the AI Tutor API!"}
+
+# Global exception handlers to return JSON ErrorResponse
+from fastapi import Request, HTTPException
+from fastapi.responses import JSONResponse
+from ai_tutor.api_models import ErrorResponse
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    # Return structured JSON error response
+    err = ErrorResponse(response_type="error", message=str(exc.detail))
+    return JSONResponse(status_code=exc.status_code, content=err.dict())
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    # Return generic internal server error
+    err = ErrorResponse(response_type="error", message="Internal server error")
+    return JSONResponse(status_code=500, content=err.dict())
 
 # To run the API: uvicorn ai_tutor.api:app --reload 
