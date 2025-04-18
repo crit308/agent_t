@@ -7,7 +7,7 @@ from supabase import Client
 from uuid import UUID
 
 from agents import function_tool
-from ai_tutor.telemetry import log_tool
+from ai_tutor.utils.decorators import function_tool_logged
 
 if TYPE_CHECKING:
     from ai_tutor.api import get_supabase_client
@@ -33,13 +33,13 @@ class FileUploadManager:
         self.supabase = supabase
         self.bucket_name = "document_uploads"
     
-    async def upload_and_process_file(self, file_path: str, user_id: UUID, folder_id: UUID, existing_vector_store_id: Optional[str] = None) -> UploadedFile:
+    async def upload_and_process_file(self, file_path: str, user_id: UUID, folder_id: UUID, existing_vector_store_id: Optional[str] = None, queue_embedding: bool = False) -> UploadedFile:
         """
         Upload a file to Supabase Storage, then to OpenAI, and add to Vector Store.
         Uses existing_vector_store_id if provided, otherwise creates a new one.
         Updates the corresponding folder record with the vector store ID.
+        If queue_embedding is True, mark the file for async embedding and return early.
         """
-        # Use provided existing ID or the manager's stored ID
         self.vector_store_id = existing_vector_store_id or self.vector_store_id
 
         filename = os.path.basename(file_path)
@@ -56,6 +56,22 @@ class FileUploadManager:
             print(f"Successfully uploaded {filename} to Supabase Storage at {supabase_path}")
         except Exception as e:
             raise Exception(f"Failed to upload {filename} to Supabase Storage: {e}")
+
+        if queue_embedding:
+            # Mark the file as pending embedding in the DB (pseudo-code, adapt to your schema)
+            self.supabase.table("uploaded_files").insert({
+                "supabase_path": supabase_path,
+                "user_id": str(user_id),
+                "folder_id": str(folder_id),
+                "embedding_status": "pending"
+            }).execute()
+            print(f"Queued {filename} for async embedding.")
+            return UploadedFile(
+                supabase_path=supabase_path,
+                file_id=None,
+                filename=filename,
+                vector_store_id=self.vector_store_id
+            )
 
         # 2. Upload the file content to OpenAI for assistants
         with open(file_path, "rb") as file:
@@ -126,8 +142,7 @@ class FileUploadManager:
         return self.uploaded_files
 
 
-@log_tool
-@function_tool
+@function_tool_logged()
 async def upload_document(file_path: str, user_id: str) -> str:
     """
     DEPRECATED: Uploads happen via API. Uploads document to Supabase and OpenAI.

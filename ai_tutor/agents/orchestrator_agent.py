@@ -147,6 +147,11 @@ async def run_orchestrator(ctx: TutorContext, last_event: InteractionEvent):
             except ToolExecutionError as e:
                 return ErrorResponse(tool="call_quiz_creator_agent", detail=e.detail, code=e.code)
             if isinstance(quiz_resp, QuestionResponse):
+                # Persist the question as current_question_json for resume
+                if SUPABASE_CLIENT:
+                    SUPABASE_CLIENT.table("sessions").update({
+                        "current_question_json": quiz_resp.model_dump_json()
+                    }).eq("id", str(ctx.session_id)).execute()
                 return quiz_resp
             ctx.user_model_state.pending_interaction_type = "checking_question"
             if hasattr(quiz_resp, "question") and quiz_resp.question:
@@ -189,3 +194,7 @@ async def run_orchestrator(ctx: TutorContext, last_event: InteractionEvent):
 def get_orchestrator():
     """Return a cached orchestrator agent instance (singleton per process)."""
     return create_orchestrator_agent(client=get_openai()) 
+
+@lru_cache(maxsize=8)
+def get_orchestrator_cached(model_name: str = "o4-mini", temperature: float = 0.2):
+    return create_orchestrator_agent(model_name=model_name, temperature=temperature) 

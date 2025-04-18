@@ -2,6 +2,7 @@ from __future__ import annotations
 from uuid import UUID
 from typing import Any, Dict
 from functools import lru_cache
+import os
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from supabase import Client
@@ -9,7 +10,7 @@ from postgrest.exceptions import APIError
 
 from ai_tutor.dependencies import get_supabase_client, get_openai
 from ai_tutor.session_manager import SessionManager
-from ai_tutor.agents.orchestrator_agent import create_orchestrator_agent, get_orchestrator
+from ai_tutor.agents.orchestrator_agent import create_orchestrator_agent, get_orchestrator_cached
 from ai_tutor.context import TutorContext, UserModelState
 from ai_tutor.auth import verify_token  # Re‑use existing auth logic for header token verification
 from agents import Runner, RunConfig
@@ -22,6 +23,8 @@ router = APIRouter()
 session_manager = SessionManager()
 
 # Helper to authenticate a websocket connection and return the Supabase user
+ALLOW_URL_TOKEN = os.getenv("ENV", "prod") != "prod"
+
 async def _authenticate_ws(ws: WebSocket, supabase: Client) -> Any:
     """Validate the `Authorization` header for a WebSocket connection.
 
@@ -30,7 +33,7 @@ async def _authenticate_ws(ws: WebSocket, supabase: Client) -> Any:
     # Try Authorization header first
     auth_header = ws.headers.get("authorization")  # headers keys are lower‑cased
     # Fallback: allow token via query param (for browser clients)
-    if not auth_header:
+    if not auth_header and ALLOW_URL_TOKEN:
         token = ws.query_params.get("token")
         if token:
             auth_header = f"Bearer {token}"
@@ -74,7 +77,7 @@ async def tutor_stream(
     try:
         row = (
             supabase.table("sessions")
-            .select("context_json", "last_event_json")
+            .select("context_json", "last_event_json", "current_question_json")
             .eq("id", str(session_id))
             .eq("user_id", str(user.id))
             .maybe_single()
@@ -89,12 +92,18 @@ async def tutor_stream(
     if row and row["context_json"]:
         ctx = TutorContext.model_validate_json(row["context_json"])
         last_event = json.loads(row["last_event_json"])
+        current_question_json = row.get("current_question_json")
     else:
         ctx = TutorContext(session_id=session_id, user_id=user.id)
         last_event = None
+        current_question_json = None
 
     # Accept the connection
     await ws.accept()
+
+    # --- Send current_question_json if present (for race-free resume) ---
+    if current_question_json:
+        await ws.send_json({"type": "run_item_stream_event", "item": current_question_json})
 
     # --- Resume pending question if needed (D-3) ---
     if ctx.user_model_state.pending_interaction_type == "checking_question":
@@ -111,7 +120,7 @@ async def tutor_stream(
     mastery_prev = {topic: state.mastery for topic, state in ctx.user_model_state.concepts.items()}
 
     # Create orchestrator agent once per process (cached).
-    agent = get_orchestrator()
+    agent = get_orchestrator_cached()
 
     tutor_ctx = ctx  # Use hydrated context for rest of handler
 

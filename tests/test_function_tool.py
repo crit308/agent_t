@@ -255,3 +255,11 @@ async def test_async_custom_error_function_works():
 
     result = await tool.on_invoke_tool(ctx, '{"a": 1, "b": 2}')
     assert result == "error_ValueError"
+
+
+def test_all_tools_are_function_tools():
+    import ai_tutor.tools as tools_mod
+    from src.agents.tool import FunctionTool
+    for name in getattr(tools_mod, "__all__", []):
+        obj = getattr(tools_mod, name)
+        assert isinstance(obj, FunctionTool), f"{name} is not a FunctionTool, got {type(obj)}"

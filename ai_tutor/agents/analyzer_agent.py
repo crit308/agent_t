@@ -1,6 +1,6 @@
 import os
 from typing import Dict, List, Optional, Any
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, field_validator
 from uuid import UUID
 from supabase import Client
 

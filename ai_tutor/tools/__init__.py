@@ -18,6 +18,7 @@ from ai_tutor.errors import ToolExecutionError
 import json
 from ai_tutor.telemetry import log_tool
 from pydantic import BaseModel
+from ai_tutor.utils.decorators import function_tool_logged
 
 _exports: List[str] = []
 def _export(obj):
@@ -32,15 +33,13 @@ def _export(obj):
 # --- Orchestrator Tool Implementations ---
 
 @_export
-@log_tool
-@function_tool(strict_mode=True)
+@function_tool_logged()
 def update_explanation_progress(ctx: RunContextWrapper[TutorContext], segment_index: int) -> str:
     """DEPRECATED: The Orchestrator manages micro-steps directly."""
     return "Error: This tool is deprecated. Orchestrator manages micro-steps."
 
 @_export
-@log_tool
-@function_tool(strict_mode=True)
+@function_tool_logged()
 async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_answer_index: int) -> Union[QuizFeedbackItem, str]:
     """Evaluates the user's answer to the current question using the Quiz Teacher logic (via helper function)."""
     print(f"[Tool call_quiz_teacher_evaluate] Evaluating user answer index '{user_answer_index}'.")
@@ -73,8 +72,7 @@ async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_
         raise ToolExecutionError(error_msg, code="exception")
 
 @_export
-@log_tool
-@function_tool(strict_mode=True)
+@function_tool_logged()
 async def update_user_model(
     ctx: RunContextWrapper[TutorContext],
     topic: str,
@@ -142,8 +140,7 @@ async def update_user_model(
     return f"User model updated for {topic}."
 
 @_export
-@log_tool
-@function_tool(strict_mode=True)
+@function_tool_logged()
 async def get_user_model_status(ctx: RunContextWrapper[TutorContext], topic: Optional[str] = None) -> Dict[str, Any]:
     """Retrieves detailed user model state, optionally for a specific topic."""
     print(f"[Tool] Retrieving user model status for topic '{topic}'")
@@ -170,8 +167,7 @@ async def get_user_model_status(ctx: RunContextWrapper[TutorContext], topic: Opt
     return state.model_dump(mode='json')
 
 @_export
-@log_tool
-@function_tool(strict_mode=True)
+@function_tool_logged()
 async def reflect_on_interaction(
     ctx: RunContextWrapper[TutorContext],
     topic: str,
@@ -205,8 +201,7 @@ async def reflect_on_interaction(
     return {"analysis": analysis, "suggested_next_steps": suggestions}
 
 @_export
-@log_tool
-@function_tool(strict_mode=True)
+@function_tool_logged()
 async def call_planner_agent(
     ctx: RunContextWrapper[TutorContext],
     user_state_summary: Optional[str] = None
@@ -252,8 +247,7 @@ async def call_planner_agent(
         raise ToolExecutionError("PLANNER_EXECUTION_ERROR: An exception occurred while running the planner.", code="planner_exception")
 
 @_export
-@log_tool
-@function_tool(strict_mode=True)
+@function_tool_logged()
 async def call_teacher_agent(
     ctx: RunContextWrapper[TutorContext],
     topic: str,
@@ -306,8 +300,7 @@ async def call_teacher_agent(
         raise ToolExecutionError(error_msg, code="teacher_exception")
 
 @_export
-@log_tool
-@function_tool(strict_mode=True)
+@function_tool_logged()
 async def call_quiz_creator_agent(
     ctx: RunContextWrapper[TutorContext],
     topic: str,

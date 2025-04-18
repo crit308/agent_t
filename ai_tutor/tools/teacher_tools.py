@@ -7,12 +7,11 @@ import uuid
 from ai_tutor.api_models import ExplanationResponse, QuestionResponse, MessageResponse # Add others if needed
 from ai_tutor.agents.models import QuizQuestion # If asking structured questions
 from ai_tutor.context import TutorContext # Import TutorContext for type hint
-from agents.decorators import log_tool
+from ai_tutor.utils.decorators import function_tool_logged
 
 # Tool implementations now return the data structure the API needs
 
-@log_tool
-@function_tool
+@function_tool_logged()
 async def present_explanation(
     ctx: RunContextWrapper[TutorContext],
     explanation_text: str,
@@ -38,8 +37,7 @@ async def present_explanation(
         is_last_segment=is_last_segment,
     )
 
-@log_tool
-@function_tool
+@function_tool_logged()
 async def ask_checking_question(
     ctx: RunContextWrapper[TutorContext],
     question: QuizQuestion # Use the QuizQuestion model for structure

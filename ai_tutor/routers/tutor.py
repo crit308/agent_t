@@ -128,7 +128,8 @@ async def upload_session_documents(
                 file_path=temp_path,
                 user_id=user.id,
                 folder_id=folder_id,
-                existing_vector_store_id=vector_store_id # Pass current VS ID
+                existing_vector_store_id=vector_store_id, # Pass current VS ID
+                queue_embedding=True
             )
             if not vector_store_id:
                 vector_store_id = uploaded_file.vector_store_id

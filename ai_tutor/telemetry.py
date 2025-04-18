@@ -24,6 +24,7 @@ def log_tool(fn):
                 "latency_ms": ms,
                 "prompt_tokens": getattr(usage, "prompt_tokens", None),
                 "completion_tokens": getattr(usage, "completion_tokens", None),
+                "trace_id": getattr(ctx, "trace_id", None),
             }).execute()
             # Persist context after every successful tool
             if hasattr(ctx, "context") and isinstance(ctx.context, TutorContext):
