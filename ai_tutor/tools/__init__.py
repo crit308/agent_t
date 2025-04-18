@@ -34,6 +34,12 @@ def _export(obj):
 
 @_export
 @function_tool_logged()
+async def healthz(ctx) -> str:
+    """Ping‑pong tool so orchestrator traces always include a baseline call."""
+    return "ok"
+
+@_export
+@function_tool_logged()
 def update_explanation_progress(ctx: RunContextWrapper[TutorContext], segment_index: int) -> str:
     """DEPRECATED: The Orchestrator manages micro-steps directly."""
     return "Error: This tool is deprecated. Orchestrator manages micro-steps."

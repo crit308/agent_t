@@ -21,6 +21,7 @@ from agents import (
     trace,
 )
 from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
+from ai_tutor.utils.decorators import function_tool_logged
 
 ### CONTEXT
 
@@ -35,6 +36,7 @@ class AirlineAgentContext(BaseModel):
 ### TOOLS
 
 
+@function_tool_logged()
 @function_tool(
     name_override="faq_lookup_tool", description_override="Lookup frequently asked questions."
 )
@@ -56,6 +58,7 @@ async def faq_lookup_tool(question: str) -> str:
     return "I'm sorry, I don't know the answer to that question."
 
 
+@function_tool_logged()
 @function_tool
 async def update_seat(
     context: RunContextWrapper[AirlineAgentContext], confirmation_number: str, new_seat: str

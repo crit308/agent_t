@@ -15,4 +15,10 @@ from ai_tutor.api_models import (
 )
 
 # All orchestrator tools have been moved to ai_tutor.tools.__init__.py as the single barrel file.
-# This file now only contains imports and helpers if needed. 
+# This file now only contains imports and helpers if needed.
+
+# Re-export tool functions from ai_tutor.tools barrel
+import ai_tutor.tools as _barrel
+for _name in _barrel.__all__:
+    globals()[_name] = getattr(_barrel, _name)
+__all__ = _barrel.__all__ 

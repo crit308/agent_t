@@ -1,8 +1,17 @@
 import time
+import asyncio
 from ai_tutor.dependencies import SUPABASE_CLIENT
 from openai.types import CompletionUsage
 from ai_tutor.context import TutorContext
 from functools import wraps
+
+# --- Background queue for Supabase writes ---
+def enqueue(table: str, data: dict):
+    if SUPABASE_CLIENT:
+        async def write():
+            SUPABASE_CLIENT.table(table).insert(data).execute()
+        # Fire and forget
+        asyncio.create_task(write())
 
 def log_tool(fn):
     """
@@ -17,7 +26,7 @@ def log_tool(fn):
         ctx   = args[0]               # every tool receives ctx first
         if SUPABASE_CLIENT:
             usage = getattr(res, "usage", None)
-            SUPABASE_CLIENT.table("edge_logs").insert({
+            enqueue("edge_logs", {
                 "session_id": str(getattr(ctx, "session_id", None)),
                 "user_id": str(getattr(ctx, "user_id", None)),
                 "tool": fn.__name__,
@@ -25,8 +34,8 @@ def log_tool(fn):
                 "prompt_tokens": getattr(usage, "prompt_tokens", None),
                 "completion_tokens": getattr(usage, "completion_tokens", None),
                 "trace_id": getattr(ctx, "trace_id", None),
-            }).execute()
-            # Persist context after every successful tool
+            })
+            # Persist context after every successful tool (still sync)
             if hasattr(ctx, "context") and isinstance(ctx.context, TutorContext):
                 SUPABASE_CLIENT.table("sessions").update({
                     "context_json": ctx.context.model_dump()

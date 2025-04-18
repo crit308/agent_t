@@ -16,6 +16,7 @@ from ai_tutor.auth import verify_token  # Re‑use existing auth logic for heade
 from agents import Runner, RunConfig
 import json
 from fastapi_utils.tasks import repeat_every
+import structlog
 
 router = APIRouter()
 
@@ -24,6 +25,8 @@ session_manager = SessionManager()
 
 # Helper to authenticate a websocket connection and return the Supabase user
 ALLOW_URL_TOKEN = os.getenv("ENV", "prod") != "prod"
+
+log = structlog.get_logger(__name__)
 
 async def _authenticate_ws(ws: WebSocket, supabase: Client) -> Any:
     """Validate the `Authorization` header for a WebSocket connection.
@@ -159,7 +162,7 @@ async def tutor_stream(
                                 "action_details": {"mode": mode}
                             }).execute()
                         except Exception as e:
-                            print(f"[WS help_request] Failed to log help_request event: {e}")
+                            log.warning("ws_help_request_log_failed", error=str(e))
                         await session_manager.update_session_context(supabase, session_id, user.id, tutor_ctx)
                         # Acknowledge reception
                         await ws.send_json({"type": "help_request_ack"})

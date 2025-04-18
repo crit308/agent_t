@@ -18,6 +18,7 @@ from .run_context import RunContextWrapper, TContext
 from .tool import FunctionToolResult, Tool, function_tool
 from .util import _transforms
 from .util._types import MaybeAwaitable
+from ai_tutor.utils.decorators import function_tool_logged
 
 if TYPE_CHECKING:
     from .lifecycle import AgentHooks
@@ -173,6 +174,7 @@ class Agent(Generic[TContext]):
                 provided, the last message from the agent will be used.
         """
 
+        @function_tool_logged()
         @function_tool(
             name_override=tool_name or _transforms.transform_string_function_style(self.name),
             description_override=tool_description or "",

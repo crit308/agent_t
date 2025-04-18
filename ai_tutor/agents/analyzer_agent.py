@@ -3,6 +3,7 @@ from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field, model_validator, field_validator
 from uuid import UUID
 from supabase import Client
+import structlog
 
 # Attempt to import Runner and RunConfig from the top-level 'agents' module (likely in src/agents)
 # Assuming Runner and RunConfig are defined there based on original code.
@@ -24,6 +25,7 @@ from agents import Runner, RunConfig, Agent, ModelProvider, FileSearchTool #, tr
 from agents.models.openai_provider import OpenAIProvider
 from ai_tutor.agents.utils import RoundingModelWrapper
 
+log = structlog.get_logger(__name__)
 
 class FileMetadata(BaseModel):
     """Metadata for a single file."""
@@ -96,9 +98,9 @@ def create_analyzer_agent(vector_store_id: str, api_key: str = None):
     # Ensure OPENAI_API_KEY is set in the environment
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        print("WARNING: OPENAI_API_KEY environment variable is not set for analyzer agent!")
+        log.warning("openai_key_not_set", msg="OPENAI_API_KEY environment variable is not set for analyzer agent!")
     else:
-        print(f"Using OPENAI_API_KEY from environment for analyzer agent")
+        log.info("openai_key_found", msg="Using OPENAI_API_KEY from environment for analyzer agent")
     
     # Create a FileSearchTool that can search the vector store containing the uploaded documents
     file_search_tool = FileSearchTool(
@@ -107,7 +109,7 @@ def create_analyzer_agent(vector_store_id: str, api_key: str = None):
         include_search_results=True,
     )
     
-    print(f"Created FileSearchTool for analyzer agent using vector store: {vector_store_id}")
+    log.info("created_file_search_tool", store_id=vector_store_id)
     
     # Instantiate the base model provider and get the base model
     provider = OpenAIProvider()
@@ -232,10 +234,10 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
     # Assuming result has a 'final_output' attribute or similar based on previous code.
     analysis_text = result.final_output if hasattr(result, 'final_output') and isinstance(result.final_output, str) else str(result)
     if not analysis_text:
-         print("Error: Document analysis agent returned empty output.")
+         log.error("empty_analysis_output", msg="Document analysis agent returned empty output.")
          return None
 
-    print("Successfully completed document analysis")
+    log.info("analysis_complete", msg="Successfully completed document analysis")
     
     # --- Save analysis text (Knowledge Base) to Supabase folders table ---
     if supabase and context and context.folder_id:
@@ -246,11 +248,11 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
             ).eq("id", folder_id_to_update).execute()
 
             if update_response.data:
-                print(f"Knowledge Base saved to Supabase for folder {context.folder_id}")
+                log.info("knowledge_base_saved", folder_id=str(context.folder_id))
             elif update_response.error: # Check for explicit error
-                print(f"Error saving Knowledge Base to Supabase folder {context.folder_id}: {update_response.error}")
+                log.error("knowledge_base_save_error", folder_id=str(context.folder_id), error=str(update_response.error))
         except Exception as e:
-            print(f"Exception saving Knowledge Base to Supabase folder {context.folder_id}: {e}")
+            log.exception("knowledge_base_save_exception", folder_id=str(context.folder_id), error=str(e))
     # --- End Supabase KB saving ---
     
     # Extract key concepts for use in other parts of the application
@@ -292,7 +294,7 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
             file_names = [f.strip() for f in files_section.strip().split("\n") if f.strip()]
         
     except Exception as e:
-        print(f"Warning: Could not parse key concepts from analysis: {e}")
+        log.warning("parse_key_concepts_failed", error=str(e))
     
     # Return the structured result
     return AnalysisResult(
