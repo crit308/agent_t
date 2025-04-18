@@ -91,6 +91,9 @@ class TutorContext(BaseModel):
     user_model_state: UserModelState = Field(default_factory=UserModelState)
     last_interaction_summary: Optional[str] = None # What did the tutor just do? What did user respond?
     current_teaching_topic: Optional[str] = None # Which topic is the Teacher actively explaining?
+    # Add for session resume:
+    last_event: Optional[dict] = None # Store the last event for session resume
+    pending_interaction_type: Optional[str] = None # Store pending interaction type for resume
     # Add other relevant session state as needed
     # e.g., current_lesson_progress: Optional[str] = None 
 

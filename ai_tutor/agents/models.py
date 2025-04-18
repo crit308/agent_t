@@ -284,3 +284,8 @@ class QuizCreationResult(BaseModel):
     quiz: Optional[Quiz] = None # Could contain the full quiz if multiple questions requested
     question: Optional[QuizQuestion] = None # Could contain a single question
     details: Optional[str] = None 
+
+__all__ = [
+    # ... all other exports ...
+    # 'PrecisionControlEncoder',  # Deprecated, do not export by default
+] 

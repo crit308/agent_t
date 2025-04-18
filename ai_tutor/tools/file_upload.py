@@ -7,6 +7,7 @@ from supabase import Client
 from uuid import UUID
 
 from agents import function_tool
+from ai_tutor.telemetry import log_tool
 
 if TYPE_CHECKING:
     from ai_tutor.api import get_supabase_client
@@ -125,6 +126,7 @@ class FileUploadManager:
         return self.uploaded_files
 
 
+@log_tool
 @function_tool
 async def upload_document(file_path: str, user_id: str) -> str:
     """

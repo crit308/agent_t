@@ -24,6 +24,7 @@ from ai_tutor.output_logger import get_logger
 # Keep a reference to the original methods
 import json as _stdlib_json
 
+from fastapi.middleware.cors import CORSMiddleware
 
 if __name__ == "__main__":
     # Import the parser object defined in cli.py
@@ -81,4 +82,18 @@ if __name__ == "__main__":
         asyncio.run(cli_main(args))
     else: # Should ideally be caught by argparse, but good to have a fallback
         print(f"Unknown command received in main.py: {args.command}")
-        sys.exit(1) 
+        sys.exit(1)
+
+# If this file creates the FastAPI app, add CORS here. If not, instruct user to add to their app entrypoint.
+try:
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:3000"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+except ImportError:
+    pass 

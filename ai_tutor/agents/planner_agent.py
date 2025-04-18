@@ -14,7 +14,36 @@ import os
 # --- Get Supabase client dependency (needed for the tool) ---
 from ai_tutor.dependencies import get_supabase_client
 
+from functools import lru_cache, wraps
+import asyncio
+from ai_tutor.telemetry import log_tool
+
+# Global cache for concept graph edges and last updated timestamp
+_dag_cache = {
+    "edges": None,
+    "updated_at": None
+}
+_dag_cache_lock = asyncio.Lock()
+
+async def _get_concept_graph_edges(supabase):
+    """Fetch edges and updated_at from Supabase, with cache."""
+    async with _dag_cache_lock:
+        # Check updated_at timestamp
+        updated_resp = supabase.table("concept_graph").select("updated_at").order("updated_at", desc=True).limit(1).execute()
+        updated_at = None
+        if updated_resp.data:
+            updated_at = updated_resp.data[0].get("updated_at")
+        if _dag_cache["edges"] is not None and _dag_cache["updated_at"] == updated_at:
+            return _dag_cache["edges"]
+        # Fetch all edges
+        response = supabase.table("concept_graph").select("prereq, concept, updated_at").execute()
+        edges = response.data or []
+        _dag_cache["edges"] = edges
+        _dag_cache["updated_at"] = updated_at
+        return edges
+
 # --- Define read_knowledge_base tool locally ---
+@log_tool
 @function_tool
 async def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
     """Reads the Knowledge Base content stored in the Supabase 'folders' table associated with the current session's folder_id."""
@@ -53,13 +82,13 @@ async def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
         print(f"Tool: {error_msg}")
         return error_msg
 
+@log_tool
 @function_tool
 async def dag_query(ctx: RunContextWrapper[TutorContext], mastered: list[str]) -> list[str]:
     """Returns next learnable concepts based on the concept_graph table and user's mastered concepts."""
     supabase = await get_supabase_client()
-    # Fetch all prerequisite relationships between concepts
-    response = supabase.table("concept_graph").select("prereq, concept").execute()
-    edges = response.data or []
+    # Fetch all prerequisite relationships between concepts, using cache
+    edges = await _get_concept_graph_edges(supabase)
     # Build prerequisite map: concept -> list of prereqs
     prereq_map: Dict[str, List[str]] = {}
     for e in edges:

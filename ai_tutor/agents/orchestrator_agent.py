@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import List, Optional, TYPE_CHECKING, Union, Any
 import json
+from functools import lru_cache
 
 from agents import Agent, Runner, RunConfig, ModelProvider
 from agents.models.openai_provider import OpenAIProvider
@@ -31,8 +32,16 @@ from ai_tutor.api_models import (
     TutorInteractionResponse, ExplanationResponse, QuestionResponse,
     FeedbackResponse, MessageResponse, ErrorResponse
 )
-from ai_tutor.dependencies import SUPABASE_CLIENT  # Supabase client for logging actions
+from ai_tutor.dependencies import SUPABASE_CLIENT, get_openai  # Supabase client for logging actions
 from ai_tutor.errors import ToolExecutionError, ErrorResponse
+
+# Import model name from settings, with fallback
+def get_orchestrator_model_name():
+    try:
+        from ai_tutor.settings import ORCHESTRATOR_MODEL_NAME
+        return ORCHESTRATOR_MODEL_NAME
+    except (ImportError, AttributeError):
+        return "gpt-4o-2024-08-06"  # fallback
 
 def create_orchestrator_agent(api_key: str = None, client=None) -> Agent['TutorContext']:
     """Creates the Orchestrator Agent for the AI Tutor. Optionally accepts an OpenAI client for reuse."""
@@ -40,6 +49,12 @@ def create_orchestrator_agent(api_key: str = None, client=None) -> Agent['TutorC
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
 
+    # Always prefer a shared async OpenAI client for HTTP pool reuse
+    if client is None:
+        try:
+            client = get_openai()
+        except Exception:
+            client = None
     provider: ModelProvider = OpenAIProvider(openai_client=client) if client else OpenAIProvider()
     # Use the specified model version
     base_model = provider.get_model("gpt-4o-2024-08-06")  # Using exact model version
@@ -63,6 +78,14 @@ def create_orchestrator_agent(api_key: str = None, client=None) -> Agent['TutorC
     )
 
     return orchestrator_agent 
+
+# --- Add persist_ctx helper ---
+def persist_ctx(ctx, last_event):
+    if SUPABASE_CLIENT:
+        SUPABASE_CLIENT.table("sessions").update({
+            "context_json": ctx.model_dump_json(),
+            "last_event_json": json.dumps(last_event)
+        }).eq("id", str(ctx.session_id)).execute()
 
 async def run_orchestrator(ctx: TutorContext, last_event: InteractionEvent):
     """Run micro-steps of the orchestrator until awaiting learner input, then return that response."""
@@ -89,6 +112,7 @@ async def run_orchestrator(ctx: TutorContext, last_event: InteractionEvent):
                     topic=action["topic"],
                     explanation_details=f"Segment {segment_index}",
                 )
+                persist_ctx(ctx, event)
             except ToolExecutionError as e:
                 return ErrorResponse(tool="call_teacher_agent", detail=e.detail, code=e.code)
             ctx.user_model_state.current_topic_segment_index = segment_index + 1
@@ -102,6 +126,7 @@ async def run_orchestrator(ctx: TutorContext, last_event: InteractionEvent):
                     ctx,
                     user_answer_index=action["user_answer_index"],
                 )
+                persist_ctx(ctx, event)
             except ToolExecutionError as e:
                 return ErrorResponse(tool="call_quiz_teacher_evaluate", detail=e.detail, code=e.code)
             event = {"event_type": "system_feedback", "data": feedback.model_dump()}
@@ -118,6 +143,7 @@ async def run_orchestrator(ctx: TutorContext, last_event: InteractionEvent):
                     topic=action["topic"],
                     instructions=instructions,
                 )
+                persist_ctx(ctx, event)
             except ToolExecutionError as e:
                 return ErrorResponse(tool="call_quiz_creator_agent", detail=e.detail, code=e.code)
             if isinstance(quiz_resp, QuestionResponse):
@@ -144,6 +170,7 @@ async def run_orchestrator(ctx: TutorContext, last_event: InteractionEvent):
                     topic=action["mastered_topic"],
                     outcome="mastered",
                 )
+                persist_ctx(ctx, event)
             except ToolExecutionError as e:
                 return ErrorResponse(tool="update_user_model", detail=e.detail, code=e.code)
             ctx.user_model_state.current_topic_segment_index = 0
@@ -158,3 +185,7 @@ async def run_orchestrator(ctx: TutorContext, last_event: InteractionEvent):
             response_type="error",
             message=f"Unknown action type: {action.get('type')}",
         ) 
+
+def get_orchestrator():
+    """Return a cached orchestrator agent instance (singleton per process)."""
+    return create_orchestrator_agent(client=get_openai()) 

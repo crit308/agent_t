@@ -17,6 +17,7 @@ from ai_tutor.api_models import (
 from ai_tutor.errors import ToolExecutionError
 import json
 from ai_tutor.telemetry import log_tool
+from pydantic import BaseModel
 
 _exports: List[str] = []
 def _export(obj):
@@ -31,15 +32,15 @@ def _export(obj):
 # --- Orchestrator Tool Implementations ---
 
 @_export
-@function_tool
 @log_tool
+@function_tool(strict_mode=True)
 def update_explanation_progress(ctx: RunContextWrapper[TutorContext], segment_index: int) -> str:
     """DEPRECATED: The Orchestrator manages micro-steps directly."""
     return "Error: This tool is deprecated. Orchestrator manages micro-steps."
 
 @_export
-@function_tool
 @log_tool
+@function_tool(strict_mode=True)
 async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_answer_index: int) -> Union[QuizFeedbackItem, str]:
     """Evaluates the user's answer to the current question using the Quiz Teacher logic (via helper function)."""
     print(f"[Tool call_quiz_teacher_evaluate] Evaluating user answer index '{user_answer_index}'.")
@@ -72,8 +73,8 @@ async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_
         raise ToolExecutionError(error_msg, code="exception")
 
 @_export
-@function_tool
 @log_tool
+@function_tool(strict_mode=True)
 async def update_user_model(
     ctx: RunContextWrapper[TutorContext],
     topic: str,
@@ -141,8 +142,8 @@ async def update_user_model(
     return f"User model updated for {topic}."
 
 @_export
-@function_tool
 @log_tool
+@function_tool(strict_mode=True)
 async def get_user_model_status(ctx: RunContextWrapper[TutorContext], topic: Optional[str] = None) -> Dict[str, Any]:
     """Retrieves detailed user model state, optionally for a specific topic."""
     print(f"[Tool] Retrieving user model status for topic '{topic}'")
@@ -169,8 +170,8 @@ async def get_user_model_status(ctx: RunContextWrapper[TutorContext], topic: Opt
     return state.model_dump(mode='json')
 
 @_export
-@function_tool(strict_mode=True)
 @log_tool
+@function_tool(strict_mode=True)
 async def reflect_on_interaction(
     ctx: RunContextWrapper[TutorContext],
     topic: str,
@@ -178,10 +179,12 @@ async def reflect_on_interaction(
     user_response: Optional[str] = None,
     feedback_provided: Optional[QuizFeedbackItem] = None
 ) -> Dict[str, Any]:
-    """
-    Analyzes the last interaction for a given topic, identifies potential reasons for user difficulty,
-    and suggests adaptive next steps for the Orchestrator.
-    """
+    class _Params(BaseModel):
+        topic: str
+        interaction_summary: str
+        user_response: Optional[str] = None
+        feedback_provided: Optional[QuizFeedbackItem] = None
+        model_config = {"extra": "forbid"}
     print(f"[Tool reflect_on_interaction] Called for topic '{topic}'. Summary: {interaction_summary}")
     suggestions = []
     analysis = f"Reflection on interaction regarding '{topic}': {interaction_summary}. "
@@ -202,8 +205,8 @@ async def reflect_on_interaction(
     return {"analysis": analysis, "suggested_next_steps": suggestions}
 
 @_export
-@function_tool
 @log_tool
+@function_tool(strict_mode=True)
 async def call_planner_agent(
     ctx: RunContextWrapper[TutorContext],
     user_state_summary: Optional[str] = None
@@ -216,16 +219,15 @@ async def call_planner_agent(
             raise ToolExecutionError("Vector store ID not found in context for Planner.", code="missing_vector_store")
         planner_agent = create_planner_agent(ctx.context.vector_store_id)
         run_config = RunConfig(workflow_name="Orchestrator_PlannerCall", group_id=ctx.context.session_id)
-        # Exclude mastered topics
-        mastered = [t for t, c in ctx.context.user_model_state.concepts.items()
-                    if c.mastery >= 0.8 and c.confidence >= 5]
-        payload = json.dumps({"exclude_topics": mastered})
+        mastered_topics = [t for t, c in ctx.context.user_model_state.concepts.items()
+                          if c.mastery >= 0.8 and c.confidence >= 5]
+        payload = json.dumps({"exclude_topics": mastered_topics, "goal": ctx.context.session_goal})
         planner_prompt = f"""
         Determine the next learning focus for the user.
         First, call `read_knowledge_base` to understand the material's structure and concepts.
         Analyze the knowledge base.
         {f'Consider the user state: {user_state_summary}' if user_state_summary else 'Assume the user is starting or has just completed the previous focus.'}
-        Exclude these topics from consideration: {mastered}
+        Exclude these topics from consideration: {mastered_topics}
         Identify the single most important topic or concept for the user to focus on next.
         Output your decision ONLY as a FocusObjective object.
         """
@@ -250,8 +252,8 @@ async def call_planner_agent(
         raise ToolExecutionError("PLANNER_EXECUTION_ERROR: An exception occurred while running the planner.", code="planner_exception")
 
 @_export
-@function_tool
 @log_tool
+@function_tool(strict_mode=True)
 async def call_teacher_agent(
     ctx: RunContextWrapper[TutorContext],
     topic: str,
@@ -304,8 +306,8 @@ async def call_teacher_agent(
         raise ToolExecutionError(error_msg, code="teacher_exception")
 
 @_export
-@function_tool
 @log_tool
+@function_tool(strict_mode=True)
 async def call_quiz_creator_agent(
     ctx: RunContextWrapper[TutorContext],
     topic: str,

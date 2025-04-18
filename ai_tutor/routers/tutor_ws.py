@@ -5,10 +5,11 @@ from functools import lru_cache
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from supabase import Client
+from postgrest.exceptions import APIError
 
 from ai_tutor.dependencies import get_supabase_client, get_openai
 from ai_tutor.session_manager import SessionManager
-from ai_tutor.agents.orchestrator_agent import create_orchestrator_agent
+from ai_tutor.agents.orchestrator_agent import create_orchestrator_agent, get_orchestrator
 from ai_tutor.context import TutorContext, UserModelState
 from ai_tutor.auth import verify_token  # Re‑use existing auth logic for header token verification
 from agents import Runner, RunConfig
@@ -51,10 +52,6 @@ async def _authenticate_ws(ws: WebSocket, supabase: Client) -> Any:
         await ws.close(code=1008, reason="Could not validate credentials")
         raise RuntimeError("Unauthorized") from exc
 
-@lru_cache(maxsize=1)
-def get_orchestrator_agent():
-    return create_orchestrator_agent(client=get_openai())
-
 @router.websocket("/ws/session/{session_id}")
 async def tutor_stream(
     ws: WebSocket,
@@ -73,38 +70,50 @@ async def tutor_stream(
     except RuntimeError:
         return  # Socket already closed in helper
 
-    # Load tutor context from DB; reject if not available / not owned by user
-    tutor_ctx: TutorContext | None = await session_manager.get_session_context(
-        supabase=supabase, session_id=session_id, user_id=user.id  # type: ignore[arg-type]
-    )
-    if tutor_ctx is None:
-        # Try to fetch folder_id from the session row to build a fresh context
-        session_row = supabase.table("sessions").select("folder_id").eq("id", str(session_id)).eq("user_id", user.id).maybe_single().execute()
-        folder_id = None
-        if session_row.data and session_row.data.get("folder_id"):
-            folder_id = session_row.data["folder_id"]
-        # Build a fresh TutorContext as today
-        tutor_ctx = TutorContext(
-            session_id=session_id,
-            user_id=user.id,
-            folder_id=folder_id,
-            user_model_state=UserModelState()
-        )
-        # Optionally, update the session row with the new context
-        supabase.table("sessions").update({"context_data": tutor_ctx.model_dump(mode='json')}).eq("id", str(session_id)).eq("user_id", user.id).execute()
+    # --- Hydrate context & last_event from DB (D-2) ---
+    try:
+        row = (
+            supabase.table("sessions")
+            .select("context_json", "last_event_json")
+            .eq("id", str(session_id))
+            .eq("user_id", str(user.id))
+            .maybe_single()
+            .execute()
+        ).data
+    except APIError as e:
+        if e.code == "204":   # no content – first connection for this session
+            row = None
+        else:
+            raise
+
+    if row and row["context_json"]:
+        ctx = TutorContext.model_validate_json(row["context_json"])
+        last_event = json.loads(row["last_event_json"])
+    else:
+        ctx = TutorContext(session_id=session_id, user_id=user.id)
+        last_event = None
 
     # Accept the connection
     await ws.accept()
+
+    # --- Resume pending question if needed (D-3) ---
+    if ctx.user_model_state.pending_interaction_type == "checking_question":
+        # Send the cached QuestionOutputItem over WS before continuing
+        if last_event and last_event.get("event_type") == "system_question":
+            await ws.send_json(last_event["data"])  # Assumes QuestionOutputItem is in last_event['data']
+
     # Heartbeat: send system_tick every 60 seconds to keep connection alive
     @repeat_every(seconds=60)
     async def heartbeat():
         await ws.send_json({"event_type": "system_tick"})
 
     # Snapshot mastery values to detect later updates
-    mastery_prev = {topic: state.mastery for topic, state in tutor_ctx.user_model_state.concepts.items()}
+    mastery_prev = {topic: state.mastery for topic, state in ctx.user_model_state.concepts.items()}
 
     # Create orchestrator agent once per process (cached).
-    agent = get_orchestrator_agent()
+    agent = get_orchestrator()
+
+    tutor_ctx = ctx  # Use hydrated context for rest of handler
 
     try:
         while True:

@@ -263,5 +263,22 @@ ALTER TABLE public.action_weights ENABLE ROW LEVEL SECURITY;
 GRANT SELECT, INSERT, UPDATE ON public.action_weights TO authenticated;
 
 -- ==========================================
+-- 7. EDGE LOGS TABLE (Fine-grained telemetry)
+-- ==========================================
+CREATE TABLE public.edge_logs (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id uuid NOT NULL REFERENCES public.sessions(id),
+    user_id uuid NOT NULL,
+    tool text NOT NULL,
+    latency_ms int,
+    prompt_tokens int,
+    completion_tokens int,
+    created_at timestamptz DEFAULT now()
+);
+COMMENT ON TABLE public.edge_logs IS 'Fine-grained telemetry for tool usage, latency, and token counts.';
+ALTER TABLE public.edge_logs ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT ON public.edge_logs TO authenticated;
+
+-- ==========================================
 -- END OF SCHEMA INITIALIZATION
 -- ========================================== 

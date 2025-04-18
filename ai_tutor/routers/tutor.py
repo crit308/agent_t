@@ -456,6 +456,9 @@ async def interact_with_tutor(
         raise HTTPException(status_code=500, detail=str(exc))
 
     # --- Save Context AFTER determining the final response ---
+    # Persist last_event and pending_interaction_type for session resume
+    tutor_context.last_event = last_event
+    tutor_context.pending_interaction_type = tutor_context.user_model_state.pending_interaction_type
     print(f"[Interact] Saving final context state to Supabase for session {session_id}")
     await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
     print(f"[Interact] Context saved AFTER run: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
