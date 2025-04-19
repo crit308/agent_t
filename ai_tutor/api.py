@@ -19,7 +19,7 @@ load_dotenv()
 
 from ai_tutor.context import TutorContext, UserModelState, UserConceptMastery  # Import context models
 from ai_tutor.routers import sessions, tutor, folders, tutor_ws # Import folders router
-from ai_tutor.dependencies import get_supabase_client # Import dependency from new location
+from ai_tutor.dependencies import get_supabase_client, openai_client # Import dependency from new location
 from agents import set_default_openai_key, set_default_openai_api, Agent # Import Agent
 from ai_tutor.auth import verify_token # Assume auth.py exists for JWT verification
 
@@ -29,6 +29,14 @@ from ai_tutor.agents.models import (
 )
 from ai_tutor.agents.analyzer_agent import AnalysisResult
 from ai_tutor.api_models import TutorInteractionResponse, InteractionResponseData # Add InteractionResponseData
+
+# Import shared openai_client then register as default now that `agents` is fully imported.
+from ai_tutor.dependencies import get_supabase_client, openai_client
+from agents import set_default_openai_client
+
+# Register the singleton client so all model providers reuse it (done here
+# to avoid circular import during module initialization).
+set_default_openai_client(openai_client)
 
 # --- SDK Configuration ---
 api_key = os.environ.get("OPENAI_API_KEY")
@@ -100,5 +108,19 @@ async def generic_exception_handler(request: Request, exc: Exception):
     # Return generic internal server error
     err = ErrorResponse(response_type="error", message="Internal server error")
     return JSONResponse(status_code=500, content=err.dict())
+
+@app.on_event("shutdown")
+async def _shutdown_async_clients():
+    """Ensure globally‑instantiated async clients are closed gracefully.
+    This prevents OpenAI's AsyncHttpxClientWrapper __del__ from running during
+    interpreter finalisation, which triggered `AttributeError: _state` in httpx.
+    """
+    try:
+        if openai_client and not openai_client.is_closed():
+            await openai_client.close()
+    except Exception as exc:  # noqa: BLE001
+        # Log and swallow – shutting down should continue even if close fails.
+        import logging
+        logging.getLogger("ai_tutor").warning("Failed to close openai client on shutdown: %s", exc)
 
 # To run the API: uvicorn ai_tutor.api:app --reload 
