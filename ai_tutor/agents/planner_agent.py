@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from supabase import Client
-from agents import Agent, FileSearchTool, ModelProvider, function_tool
+from agents import Agent, FileSearchTool, ModelProvider
 from agents.models.openai_provider import OpenAIProvider
 from agents.run_context import RunContextWrapper
 
@@ -16,7 +16,7 @@ from ai_tutor.dependencies import get_supabase_client
 
 from functools import lru_cache, wraps
 import asyncio
-from ai_tutor.telemetry import log_tool
+from ai_tutor.utils.decorators import function_tool_logged
 
 # Global cache for concept graph edges and last updated timestamp
 _dag_cache = {
@@ -43,8 +43,7 @@ async def _get_concept_graph_edges(supabase):
         return edges
 
 # --- Define read_knowledge_base tool locally ---
-@log_tool
-@function_tool
+@function_tool_logged()
 async def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
     """Reads the Knowledge Base content stored in the Supabase 'folders' table associated with the current session's folder_id."""
     folder_id = ctx.context.folder_id
@@ -76,14 +75,14 @@ async def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
                  ctx.context.analysis_result.analysis_text = kb_content
             return kb_content
         else:
-            return f"Error: Knowledge Base not found for folder {folder_id} or query failed: {response.error}"
+            # Knowledge Base missing or query failed
+            return f"Error: Knowledge Base not found for folder {folder_id}."
     except Exception as e:
         error_msg = f"Error reading Knowledge Base from Supabase for folder {folder_id}: {e}"
         print(f"Tool: {error_msg}")
         return error_msg
 
-@log_tool
-@function_tool
+@function_tool_logged()
 async def dag_query(ctx: RunContextWrapper[TutorContext], mastered: list[str]) -> list[str]:
     """Returns next learnable concepts based on the concept_graph table and user's mastered concepts."""
     supabase = await get_supabase_client()
@@ -109,8 +108,8 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
 
     print(f"Created FileSearchTool for vector store: {vector_store_id}")
 
-    # Include the read_knowledge_base tool
-    planner_tools = [file_search_tool, read_knowledge_base, dag_query]
+    # Only include tools the planner should use (avoid file_search by default)
+    planner_tools = [read_knowledge_base, dag_query]
 
     # Instantiate the base model provider and get the base model
     provider: OpenAIProvider = OpenAIProvider()

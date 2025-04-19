@@ -58,7 +58,22 @@ class FileUploadManager:
             raise Exception(f"Failed to upload {filename} to Supabase Storage: {e}")
 
         if queue_embedding:
-            # Mark the file as pending embedding in the DB (pseudo-code, adapt to your schema)
+            # Ensure a vector store exists for planning
+            if not self.vector_store_id:
+                # Create a new vector store synchronously
+                vs_response = self.client.vector_stores.create(
+                    name=f"AI Tutor Vector Store - {filename}"
+                )
+                self.vector_store_id = vs_response.id
+                print(f"Created new vector store for async embedding: {self.vector_store_id}")
+                # Update folder record with this vector store ID
+                try:
+                    self.supabase.table("folders").update(
+                        {"vector_store_id": self.vector_store_id}
+                    ).eq("id", str(folder_id)).eq("user_id", user_id).execute()
+                except Exception as e:
+                    print(f"Warning: Failed to update folder {folder_id} with new vector_store_id: {e}")
+            # Mark the file as pending embedding in the DB
             self.supabase.table("uploaded_files").insert({
                 "supabase_path": supabase_path,
                 "user_id": str(user_id),

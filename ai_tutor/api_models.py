@@ -57,6 +57,7 @@ class ExplanationResponse(BaseModel):
     segment_index: int # Make segment_index required
     is_last_segment: bool # Indicate if more segments follow
     references: Optional[List[str]] = None
+    model_config = {"extra": "forbid"}
 
 class QuestionResponse(BaseModel):
     """Response containing a quiz question."""
@@ -64,6 +65,7 @@ class QuestionResponse(BaseModel):
     question: QuizQuestion
     topic: str
     context: Optional[str] = None
+    model_config = {"extra": "forbid"}
 
 class FeedbackResponse(BaseModel):
     """Response containing feedback on a student's answer."""
@@ -72,12 +74,14 @@ class FeedbackResponse(BaseModel):
     topic: str
     correct_answer: Optional[str] = None
     explanation: Optional[str] = None
+    model_config = {"extra": "forbid"}
 
 class MessageResponse(BaseModel):
     """For general messages from the tutor."""
     response_type: Literal["message"]
     text: str
     message_type: Optional[str] = None  # e.g., "info", "success", "warning"
+    model_config = {"extra": "forbid"}
 
 class ErrorResponse(BaseModel):
     """For error messages and exceptional cases."""
@@ -85,6 +89,7 @@ class ErrorResponse(BaseModel):
     message: str
     error_code: Optional[str] = None
     details: Optional[dict] = None
+    model_config = {"extra": "forbid"}
 
 # --- Interaction Response Data Wrapper ---
 class InteractionResponseData(BaseModel):

@@ -426,7 +426,8 @@ async def interact_with_tutor(
     try:
         final_response_data = await run_orchestrator(tutor_context, last_event)
     except Exception as exc:
-        logger.exception("run_orchestrator failed")
+        # Log orchestrator errors using our output logger
+        logger.log_error("run_orchestrator", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
     # --- Save Context AFTER determining the final response ---

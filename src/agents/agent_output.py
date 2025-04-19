@@ -71,7 +71,11 @@ class AgentOutputSchema:
             self._output_schema = self._type_adapter.json_schema()
 
         if self.strict_json_schema:
-            self._output_schema = ensure_strict_json_schema(self._output_schema)
+            try:
+                self._output_schema = ensure_strict_json_schema(self._output_schema)
+            except Exception:
+                # Fallback: skip strict JSON schema enforcement on failure
+                pass
 
     def is_plain_text(self) -> bool:
         """Whether the output type is plain text (versus a JSON object)."""

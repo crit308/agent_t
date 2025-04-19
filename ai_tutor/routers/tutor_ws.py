@@ -17,6 +17,7 @@ from agents import Runner, RunConfig
 import json
 from fastapi_utils.tasks import repeat_every
 import structlog
+from dataclasses import asdict, is_dataclass, fields
 
 router = APIRouter()
 
@@ -175,17 +176,69 @@ async def tutor_stream(
                 await ws.send_json({"type": "error", "detail": "Malformed JSON message."})
                 continue
 
-            # Run the orchestrator in streaming mode
-            try:
-                stream = Runner.run_streamed(
-                    agent, input=incoming, context=tutor_ctx,
-                    run_config=RunConfig(workflow_name="TutorSession", group_id=str(session_id)),
-                )
-                async for evt in stream.stream_events():
-                    await ws.send_json(evt.model_dump())   # token‑level latency
-            except Exception as exc:  # noqa: BLE001
-                # Relay the exception back and continue (or you could terminate)
-                await ws.send_json({"type": "error", "detail": str(exc)})
+            # Convert incoming to a user message string for the agent workflow
+            user_input = json.dumps(incoming)
+
+            stream = Runner.run_streamed(
+                starting_agent=agent,
+                input=user_input,
+                context=tutor_ctx,
+                run_config=RunConfig(workflow_name="TutorSession", group_id=str(session_id)),
+            )
+
+            # Serialize streamed events robustly for the client
+            async for evt in stream.stream_events():
+                evt_type = getattr(evt, "type", None)
+
+                # Skip very low‑level raw token events to avoid noise / huge payloads
+                if evt_type == "raw_response_event":
+                    continue
+
+                if hasattr(evt, "model_dump"):
+                    # Most RunItemStreamEvent objects are Pydantic models; dump to JSON-safe Python types
+                    data = evt.model_dump(mode="json")
+                    await ws.send_json(data)
+                    continue
+
+                if evt_type == "agent_updated_stream_event":
+                    # Send only the new agent's name (avoid serializing the whole Agent object)
+                    await ws.send_json({"type": evt_type, "agent_name": getattr(evt.new_agent, "name", None)})
+                    continue
+
+                # Fallback for dataclasses: serialize fields safely
+                if is_dataclass(evt):
+                    serialized = {}
+                    for f in fields(evt):
+                        val = getattr(evt, f.name)
+                        # Pydantic models -> dict
+                        if hasattr(val, "model_dump"):
+                            try:
+                                serialized[f.name] = val.model_dump()
+                                continue
+                            except:
+                                pass
+                        # Nested dataclasses -> dict
+                        if is_dataclass(val):
+                            try:
+                                serialized[f.name] = asdict(val)
+                                continue
+                            except:
+                                pass
+                        # Primitives
+                        if isinstance(val, (str, int, float, bool, type(None))):
+                            serialized[f.name] = val
+                        else:
+                            # Try JSON serialization, otherwise fallback to string
+                            try:
+                                json.dumps(val)
+                                serialized[f.name] = val
+                            except:
+                                serialized[f.name] = str(val)
+                    await ws.send_json(serialized)
+                    continue
+
+                # Last‑resort: send a stringified representation
+                await ws.send_json({"type": evt_type or "event", "data": str(evt)})
     finally:
         # Graceful close if we exit the loop for any reason
         try:

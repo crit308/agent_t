@@ -3,19 +3,28 @@ from __future__ import annotations
 import json
 from uuid import UUID
 from typing import Optional, List, Any, Dict, Literal, TYPE_CHECKING, Union
+from dataclasses import is_dataclass, asdict
 
-# Store original default method from the JSONEncoder class
-_original_json_encoder_default = json.JSONEncoder.default
-
+# Simplified JSONEncoder default: always return serializable types
 def _custom_json_encoder_default(self, obj):
-    """Custom default method for JSONEncoder to handle UUIDs."""
+    """Custom default method for JSONEncoder to handle various non-serializable types."""
+    # Handle UUIDs
     if isinstance(obj, UUID):
-        # If the object is a UUID, convert it to its string representation
         return str(obj)
-    # For any other object type, fall back to the original default method
-    # This ensures that standard JSON types and any other custom handling
-    # registered elsewhere are still processed correctly.
-    return _original_json_encoder_default(self, obj)
+    # Handle Pydantic models
+    if hasattr(obj, "model_dump"):
+        try:
+            return obj.model_dump()
+        except Exception:
+            pass
+    # Handle dataclasses
+    if is_dataclass(obj):
+        try:
+            return asdict(obj)
+        except Exception:
+            pass
+    # Fallback: use string representation for anything else
+    return str(obj)
 
 # Monkey-patch the default method of json.JSONEncoder
 # Now, any part of the application using standard json.dumps
@@ -82,6 +91,7 @@ class TutorContext(BaseModel):
     session_id: UUID # Use UUID
     folder_id: Optional[UUID] = None # Link to the folder ID
     vector_store_id: Optional[str] = None
+    session_goal: Optional[str] = None  # Add session_goal to store high-level session objective
     uploaded_file_paths: List[str] = Field(default_factory=list)
     analysis_result: Optional['AnalysisResult'] = None # Use forward reference
     knowledge_base_path: Optional[str] = None # Add path to KB file

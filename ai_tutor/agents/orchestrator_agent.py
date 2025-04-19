@@ -66,7 +66,7 @@ def create_orchestrator_agent(api_key: str = None, client=None) -> Agent['TutorC
         call_quiz_teacher_evaluate,
         update_user_model,
         get_user_model_status,
-        reflect_on_interaction,
+        # reflect_on_interaction tool temporarily disabled due to schema validation issue
     ]
 
     orchestrator_agent = Agent['TutorContext'](
@@ -81,11 +81,18 @@ def create_orchestrator_agent(api_key: str = None, client=None) -> Agent['TutorC
 
 # --- Add persist_ctx helper ---
 def persist_ctx(ctx, last_event):
+    """Persist the current TutorContext back to the sessions table."""
     if SUPABASE_CLIENT:
-        SUPABASE_CLIENT.table("sessions").update({
-            "context_json": ctx.model_dump_json(),
-            "last_event_json": json.dumps(last_event)
-        }).eq("id", str(ctx.session_id)).execute()
+        # Build update query for context_data
+        query = SUPABASE_CLIENT.table("sessions").update(
+            {"context_data": ctx.model_dump(mode="json")}  # JSON-serializable dict
+        ).eq("id", str(ctx.session_id))
+        # Filter by user_id if present to enforce ownership
+        if hasattr(ctx, "user_id"):
+            query = query.eq("user_id", str(ctx.user_id))
+        # Execute the update
+        query.execute()
+    # Note: last_event persistence is handled in the /interact endpoint if needed
 
 async def run_orchestrator(ctx: TutorContext, last_event: InteractionEvent):
     """Run micro-steps of the orchestrator until awaiting learner input, then return that response."""
@@ -196,5 +203,6 @@ def get_orchestrator():
     return create_orchestrator_agent(client=get_openai()) 
 
 @lru_cache(maxsize=8)
-def get_orchestrator_cached(model_name: str = "o4-mini", temperature: float = 0.2):
-    return create_orchestrator_agent(model_name=model_name, temperature=temperature) 
+def get_orchestrator_cached():
+    """Return a cached orchestrator agent instance (singleton per process)."""
+    return create_orchestrator_agent() 

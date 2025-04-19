@@ -294,11 +294,15 @@ class Converter:
         if output_schema is None or output_schema.is_plain_text():
             return NOT_GIVEN
         else:
+            # Obtain the JSON schema and enforce no additional properties at top-level
+            schema = output_schema.json_schema()
+            if isinstance(schema, dict):
+                schema["additionalProperties"] = False
             return {
                 "format": {
                     "type": "json_schema",
                     "name": "final_output",
-                    "schema": output_schema.json_schema(),
+                    "schema": schema,
                     "strict": output_schema.strict_json_schema,
                 }
             }
