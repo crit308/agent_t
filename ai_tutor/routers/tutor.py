@@ -131,8 +131,7 @@ async def upload_session_documents(
                 existing_vector_store_id=vector_store_id, # Pass current VS ID
                 queue_embedding=True
             )
-            # Fetch the job_id (file id) from the uploaded_files table
-            # Use supabase_path to find the row
+            # Fetch the most recent embedded file upload job by timestamp descending
             resp = supabase.table("uploaded_files").select("id").eq("supabase_path", uploaded_file.supabase_path).order("created_at", desc=True).limit(1).execute()
             job_id = resp.data[0]["id"] if resp.data else None
             job_ids.append(job_id)
@@ -140,13 +139,13 @@ async def upload_session_documents(
                 vector_store_id = uploaded_file.vector_store_id
             message += f"Queued {uploaded_filenames[i]} for embedding (job_id: {job_id}). "
 
+        # Update session context with uploaded files and optional vector store ID
+        tutor_context.uploaded_file_paths.extend(uploaded_filenames)  # Append new files
         if vector_store_id:
             tutor_context.vector_store_id = vector_store_id
-            tutor_context.uploaded_file_paths.extend(uploaded_filenames) # Append new files
-            await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
             message += f"Vector Store ID: {vector_store_id}. "
-        else:
-            raise HTTPException(status_code=500, detail="Failed to create or retrieve vector store ID.")
+        # Save updated context regardless of vector_store_id presence
+        await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
 
     except Exception as e:
         logger.log_error("VectorStoreUpload", e)

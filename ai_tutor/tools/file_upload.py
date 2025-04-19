@@ -16,9 +16,9 @@ if TYPE_CHECKING:
 class UploadedFile(BaseModel):
     """Represents an uploaded file that has been processed."""
     supabase_path: str
-    file_id: str
+    file_id: Optional[str] = None  # Allow None when queuing embeddings
     filename: str
-    vector_store_id: str
+    vector_store_id: Optional[str] = None  # May be None until vector store is created
 
 
 class FileUploadManager:

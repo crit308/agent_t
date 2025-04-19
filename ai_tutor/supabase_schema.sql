@@ -204,7 +204,44 @@ USING (
 );
 
 -- ==========================================
--- 4. Concept Graph Table
+-- 4. Uploaded Files Table
+-- ==========================================
+CREATE TABLE public.uploaded_files (
+    id uuid NOT NULL DEFAULT gen_random_uuid(),
+    supabase_path text NOT NULL,
+    user_id uuid NOT NULL REFERENCES auth.users(id) ON UPDATE CASCADE ON DELETE CASCADE,
+    folder_id uuid NOT NULL REFERENCES public.folders(id) ON UPDATE CASCADE ON DELETE CASCADE,
+    embedding_status text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uploaded_files_pkey PRIMARY KEY (id)
+);
+
+-- Apply updated_at trigger
+CREATE TRIGGER on_uploaded_files_updated
+BEFORE UPDATE ON public.uploaded_files
+FOR EACH ROW
+EXECUTE PROCEDURE public.handle_updated_at();
+
+-- Enable Row Level Security
+ALTER TABLE public.uploaded_files ENABLE ROW LEVEL SECURITY;
+
+-- Grant basic permissions
+GRANT SELECT, INSERT ON public.uploaded_files TO authenticated;
+
+-- RLS Policies for uploaded_files
+CREATE POLICY "Allow individual user select access for uploaded_files"
+ON public.uploaded_files
+FOR SELECT
+USING (auth.uid() = user_id);
+
+CREATE POLICY "Allow individual user insert access for uploaded_files"
+ON public.uploaded_files
+FOR INSERT
+WITH CHECK (auth.uid() = user_id);
+
+-- ==========================================
+-- 5. Concept Graph Table
 -- ==========================================
 CREATE TABLE public.concept_graph (
     id SERIAL PRIMARY KEY,
@@ -223,7 +260,7 @@ ALTER TABLE public.concept_graph ENABLE ROW LEVEL SECURITY;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.concept_graph TO authenticated;
 
 -- ==========================================
--- 5. CONCEPT EVENTS & ACTIONS LOGGING TABLES
+-- 6. CONCEPT EVENTS & ACTIONS LOGGING TABLES
 -- ==========================================
 CREATE TABLE public.concept_events (
     id SERIAL PRIMARY KEY,
@@ -251,7 +288,7 @@ ALTER TABLE public.actions ENABLE ROW LEVEL SECURITY;
 GRANT SELECT, INSERT ON public.actions TO authenticated;
 
 -- ==========================================
--- 6. ACTION WEIGHTS TABLE
+-- 7. ACTION WEIGHTS TABLE
 -- ==========================================
 CREATE TABLE public.action_weights (
     action_type TEXT PRIMARY KEY,
@@ -263,7 +300,7 @@ ALTER TABLE public.action_weights ENABLE ROW LEVEL SECURITY;
 GRANT SELECT, INSERT, UPDATE ON public.action_weights TO authenticated;
 
 -- ==========================================
--- 7. EDGE LOGS TABLE (Fine-grained telemetry)
+-- 8. EDGE LOGS TABLE (Fine-grained telemetry)
 -- ==========================================
 CREATE TABLE public.edge_logs (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -281,7 +318,7 @@ ALTER TABLE public.edge_logs ENABLE ROW LEVEL SECURITY;
 GRANT SELECT, INSERT ON public.edge_logs TO authenticated;
 
 -- ==========================================
--- 8. EMBEDDINGS CACHE TABLE
+-- 9. EMBEDDINGS CACHE TABLE
 -- ==========================================
 BEGIN;
 CREATE TABLE IF NOT EXISTS public.embeddings_cache (
