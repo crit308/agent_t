@@ -27,7 +27,7 @@ from ai_tutor.utils.tool_helpers import invoke
 
 # Import models needed for type hints if tools return them
 # Also import models needed for the output Union type
-from ai_tutor.agents.models import QuizQuestion, QuizFeedbackItem, LessonContent, FocusObjective
+from ai_tutor.agents.models import QuizQuestion, QuizFeedbackItem, LessonContent, FocusObjective, PlannerOutput, ActionSpec
 from ai_tutor.api_models import (
     TutorInteractionResponse, ExplanationResponse, QuestionResponse,
     FeedbackResponse, MessageResponse, ErrorResponse
@@ -95,108 +95,53 @@ def persist_ctx(ctx, last_event):
     # Note: last_event persistence is handled in the /interact endpoint if needed
 
 async def run_orchestrator(ctx: TutorContext, last_event: InteractionEvent):
-    """Run micro-steps of the orchestrator until awaiting learner input, then return that response."""
-    # Import tools at runtime to allow monkeypatched stubs
-    from ai_tutor.policy import choose_action
-    from ai_tutor.tools import (
-        call_teacher_agent,
-        call_quiz_teacher_evaluate,
-        call_quiz_creator_agent,
-        update_user_model,
-    )
+    """Run the orchestrator: get the planner's output, then execute the next_action as a blocking call until completion/failure."""
+    from ai_tutor.tools import call_planner_agent, call_teacher_agent, call_quiz_creator_agent, call_quiz_teacher_evaluate, update_user_model
+    from ai_tutor.api_models import ErrorResponse
+    from ai_tutor.utils.tool_helpers import invoke
+
     ctx_wrapper = RunContextWrapper(ctx)
-    event = last_event
 
-    while True:
-        action: Action = choose_action(ctx, event)
+    # 1. Call the planner to get the next action spec
+    planner_output = await invoke(call_planner_agent, ctx)
+    if not isinstance(planner_output, PlannerOutput):
+        return ErrorResponse(tool="call_planner_agent", detail="Planner did not return PlannerOutput", code="planner_output_error")
 
-        if action["type"] == "explain":
-            segment_index = ctx.user_model_state.current_topic_segment_index or 0
-            try:
-                explanation_result = await invoke(
-                    call_teacher_agent,
-                    ctx,
-                    topic=action["topic"],
-                    explanation_details=f"Segment {segment_index}",
-                )
-                persist_ctx(ctx, event)
-            except ToolExecutionError as e:
-                return ErrorResponse(tool="call_teacher_agent", detail=e.detail, code=e.code)
-            ctx.user_model_state.current_topic_segment_index = segment_index + 1
-            event = {"event_type": "system_explanation", "data": explanation_result.model_dump()}
-            continue
+    action_spec: ActionSpec = planner_output.next_action
+    agent = action_spec.agent
+    params = action_spec.params or {}
+    success_criteria = action_spec.success_criteria
+    max_steps = action_spec.max_steps
 
-        if action["type"] == "evaluate":
-            try:
-                feedback = await invoke(
-                    call_quiz_teacher_evaluate,
-                    ctx,
-                    user_answer_index=action["user_answer_index"],
-                )
-                persist_ctx(ctx, event)
-            except ToolExecutionError as e:
-                return ErrorResponse(tool="call_quiz_teacher_evaluate", detail=e.detail, code=e.code)
-            event = {"event_type": "system_feedback", "data": feedback.model_dump()}
-            continue
+    # 2. Map agent name to function
+    agent_tool_map = {
+        "teacher": call_teacher_agent,
+        "quiz_creator": call_quiz_creator_agent,
+        # Add more agents as needed
+    }
+    agent_tool = agent_tool_map.get(agent)
+    if not agent_tool:
+        return ErrorResponse(tool="orchestrator", detail=f"Unknown agent: {agent}", code="unknown_agent")
 
-        if action["type"] == "ask_mcq":
-            instructions = f"Create a {action['difficulty']} difficulty question"
-            if action.get("misconception_focus"):
-                instructions += f" probing {action['misconception_focus']}"
-            try:
-                quiz_resp = await invoke(
-                    call_quiz_creator_agent,
-                    ctx,
-                    topic=action["topic"],
-                    instructions=instructions,
-                )
-                persist_ctx(ctx, event)
-            except ToolExecutionError as e:
-                return ErrorResponse(tool="call_quiz_creator_agent", detail=e.detail, code=e.code)
-            if isinstance(quiz_resp, QuestionResponse):
-                # Persist the question as current_question_json for resume
-                if SUPABASE_CLIENT:
-                    SUPABASE_CLIENT.table("sessions").update({
-                        "current_question_json": quiz_resp.model_dump_json()
-                    }).eq("id", str(ctx.session_id)).execute()
-                return quiz_resp
-            ctx.user_model_state.pending_interaction_type = "checking_question"
-            if hasattr(quiz_resp, "question") and quiz_resp.question:
-                try:
-                    qid = quiz_resp.question.id
-                except AttributeError:
-                    qid = None
-                ctx.user_model_state.pending_interaction_details = {"question_id": qid}
-            return QuestionResponse(
-                response_type="question",
-                question=quiz_resp.question,
-                topic=action["topic"],
-                context=None,
-            )
+    # 3. Loop until sub-agent returns completed/failed or max_steps is reached
+    result = None
+    for step in range(1, max_steps + 1):
+        try:
+            # Pass params as kwargs
+            result = await invoke(agent_tool, ctx, **params)
+        except ToolExecutionError as e:
+            return ErrorResponse(tool=agent_tool.__name__, detail=e.detail, code=e.code)
+        # Check for status field (must be 'completed' or 'failed')
+        status = getattr(result, 'status', None)
+        if status in ("completed", "failed", "delivered", "created"):  # Accept agent-specific terminal statuses
+            break
+    else:
+        # If we exit the loop without break, treat as failure
+        return ErrorResponse(tool=agent_tool.__name__, detail="max_steps exceeded without completion", code="max_steps_exceeded")
 
-        if action["type"] == "advance":
-            try:
-                await invoke(
-                    update_user_model,
-                    ctx,
-                    topic=action["mastered_topic"],
-                    outcome="mastered",
-                )
-                persist_ctx(ctx, event)
-            except ToolExecutionError as e:
-                return ErrorResponse(tool="update_user_model", detail=e.detail, code=e.code)
-            ctx.user_model_state.current_topic_segment_index = 0
-            return MessageResponse(
-                response_type="message",
-                text="Great! Let's tackle the next concept.",
-                message_type="info",
-            )
-
-        # Fallback for unknown actions
-        return ErrorResponse(
-            response_type="error",
-            message=f"Unknown action type: {action.get('type')}",
-        ) 
+    # 4. Emit the final event (here: just return it)
+    # In a websocket context, you would send this event to the client
+    return result
 
 def get_orchestrator():
     """Return a cached orchestrator agent instance (singleton per process)."""

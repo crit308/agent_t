@@ -20,7 +20,7 @@ from ai_tutor.agents.teacher_agent import create_interactive_teacher_agent
 from ai_tutor.agents.analyzer_agent import AnalysisResult
 from ai_tutor.agents.models import (
     FocusObjective,
-    LessonPlan, LessonContent, Quiz, QuizUserAnswers, QuizFeedback, SessionAnalysis
+    LessonPlan, LessonContent, Quiz, QuizUserAnswers, QuizFeedback, SessionAnalysis, PlannerOutput
 )
 from ai_tutor.api_models import (
     DocumentUploadResponse, AnalysisResponse, TutorInteractionResponse,
@@ -186,7 +186,7 @@ async def get_session_analysis_results(
 
 @router.post(
     "/sessions/{session_id}/plan",
-    response_model=FocusObjective,
+    response_model=PlannerOutput,
     summary="Generate Lesson Plan",
     dependencies=[Depends(verify_token)], # Add auth dependency
     tags=["Tutoring Workflow"]
@@ -245,24 +245,24 @@ async def generate_session_lesson_plan(
         print(f"[Debug /plan] Orchestrator run completed. Result final_output type: {type(result.final_output)}") # Add log
 
         # Check the context *after* the run to see if the focus objective was set
-        focus_objective = tutor_context.current_focus_objective
-        if not focus_objective:
+        planner_output = result.final_output if isinstance(result.final_output, PlannerOutput) else None
+        if not planner_output:
             # Orchestrator/Planner tool failed. Log the Orchestrator's actual output for debugging.
-            logger.log_error("GetInitialFocus", f"Orchestrator failed to set focus. Final output: {result.final_output}")
+            logger.log_error("GetInitialFocus", f"Orchestrator failed to set planner output. Final output: {result.final_output}")
             # It's possible the orchestrator returned an ErrorResponse, check that
             error_detail = f"Orchestrator output: {result.final_output}"
             raise HTTPException(status_code=500, detail=f"Failed to determine initial learning focus. {error_detail}")
 
-        # If focus_objective is set in context, log, save context, and return it
-        logger.log_planner_output(focus_objective) # Log the focus objective
+        # If planner_output is set, log, save context, and return it
+        logger.log_planner_output(planner_output.objective) # Log the focus objective
         supabase: Client = await get_supabase_client() # Get supabase client
         success = await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
         if not success:
             logger.log_error("SessionUpdate", f"Failed to update session {session_id} with focus objective.")
             # Don't fail the request just because saving failed, but log it.
 
-        print(f"[Debug /plan] FocusObjective stored in session.") # Add log
-        return focus_objective # Return the focus objective
+        print(f"[Debug /plan] PlannerOutput stored in session.") # Add log
+        return planner_output # Return the full PlannerOutput object
 
     except Exception as e:
         # --- Explicit Exception Catching and Logging ---

@@ -10,7 +10,7 @@ import traceback
 from ai_tutor.dependencies import SUPABASE_CLIENT
 from ai_tutor.utils.tool_helpers import invoke
 from ai_tutor.context import TutorContext, UserConceptMastery, UserModelState, is_mastered
-from ai_tutor.agents.models import FocusObjective, QuizQuestion, QuizFeedbackItem, ExplanationResult, QuizCreationResult
+from ai_tutor.agents.models import FocusObjective, QuizQuestion, QuizFeedbackItem, ExplanationResult, QuizCreationResult, PlannerOutput
 from ai_tutor.api_models import (
     ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse
 )
@@ -211,8 +211,8 @@ async def reflect_on_interaction(
 async def call_planner_agent(
     ctx: RunContextWrapper[TutorContext],
     user_state_summary: Optional[str] = None
-) -> Union[FocusObjective, str]:
-    """Calls the Planner Agent to determine the next learning focus objective. Returns FocusObjective on success, or an error string on failure."""
+) -> Union[PlannerOutput, str]:
+    """Calls the Planner Agent to determine the next learning focus objective. Returns PlannerOutput on success, or an error string on failure."""
     print("[Tool call_planner_agent] Calling Planner Agent...")
     try:
         from ai_tutor.agents.planner_agent import create_planner_agent
@@ -230,23 +230,51 @@ async def call_planner_agent(
         {f'Consider the user state: {user_state_summary}' if user_state_summary else 'Assume the user is starting or has just completed the previous focus.'}
         Exclude these topics from consideration: {mastered_topics}
         Identify the single most important topic or concept for the user to focus on next.
-        Output your decision ONLY as a FocusObjective object.
+        Output your decision ONLY as a PlannerOutput object.
         """
+        # Run the planner agent; output will be raw JSON string since no output_type is enforced
         result = await Runner.run(
             planner_agent,
             planner_prompt,
             context=ctx.context,
             run_config=run_config
         )
-        if isinstance(result.final_output, FocusObjective):
-            focus_objective = result.final_output
-            print(f"[Tool call_planner_agent] Planner returned focus: {focus_objective.topic}")
-            ctx.context.current_focus_objective = focus_objective
-            return focus_objective
+        raw_output = result.final_output
+        # Parse into PlannerOutput model, extracting JSON if embedded in prose or code fences
+        if isinstance(raw_output, PlannerOutput):
+            planner_output = raw_output
+        elif isinstance(raw_output, str):
+            raw_text = raw_output.strip()
+            # Try to extract full JSON block between code fences
+            import re
+            json_str = None
+            fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw_text, re.DOTALL)
+            if fence_match:
+                json_str = fence_match.group(1).strip()
+            else:
+                # Fallback: find first '{' and last '}'
+                start = raw_text.find('{')
+                end = raw_text.rfind('}')
+                if start != -1 and end != -1 and end > start:
+                    json_str = raw_text[start:end+1]
+            if not json_str:
+                error_msg = f"PLANNER_PARSING_ERROR: Could not locate JSON object in planner output. Raw output: {raw_text}"  
+                print(f"[Tool call_planner_agent] {error_msg}")
+                raise ToolExecutionError(error_msg, code="planner_output_parse_error")
+            try:
+                planner_output = PlannerOutput.parse_raw(json_str)
+            except Exception as e:
+                error_msg = f"PLANNER_PARSING_ERROR: Failed to parse PlannerOutput JSON: {e}. JSON snippet: {json_str}"  
+                print(f"[Tool call_planner_agent] {error_msg}")
+                raise ToolExecutionError(error_msg, code="planner_output_parse_error")
         else:
-            error_msg = f"Planner agent did not return a valid FocusObjective object. Got type: {type(result.final_output).__name__}. Raw output: {result.final_output}"
+            error_msg = f"Planner agent returned unexpected type: {type(raw_output).__name__}. Raw output: {raw_output}"
             print(f"[Tool call_planner_agent] {error_msg}")
-            raise ToolExecutionError("PLANNER_OUTPUT_ERROR: Planner failed to generate valid focus objective.", code="planner_output_error")
+            raise ToolExecutionError(error_msg, code="planner_output_error")
+        # Success: store and return
+        print(f"[Tool call_planner_agent] Planner returned objective: {planner_output.objective.topic}")
+        ctx.context.current_focus_objective = planner_output.objective
+        return planner_output
     except Exception as e:
         error_msg = f"EXCEPTION calling Planner Agent: {str(e)}\n{traceback.format_exc()}"
         print(f"[Tool] {error_msg}")
@@ -273,33 +301,9 @@ async def call_teacher_agent(
         Use the file_search tool if needed to find specific information or examples from the documents.
         Format your response ONLY as an ExplanationResult object containing the explanation text in the 'details' field.
         """
-        result = await Runner.run(
-            teacher_agent,
-            teacher_prompt,
-            context=ctx.context,
-            run_config=run_config
-        )
-        print(f"[Tool call_teacher_agent] Teacher Agent Raw Output Type: {type(result.final_output)}")
-        print(f"[Tool call_teacher_agent] Teacher Agent Raw Output Content: {result.final_output}")
-        if isinstance(result.final_output, ExplanationResult):
-            explanation_result = result.final_output
-            if explanation_result.status == "delivered":
-                print(f"[Tool call_teacher_agent] Teacher delivered structured explanation for '{topic}'.")
-                ctx.context.last_interaction_summary = f"Teacher explained {topic}."
-                return explanation_result
-            else:
-                error_msg = f"TEACHER_RESULT_ERROR: Teacher agent returned status '{explanation_result.status}'. Details: {explanation_result.details}"
-                print(f"[Tool call_teacher_agent] {error_msg}")
-                raise ToolExecutionError(error_msg, code="teacher_result_error")
-        elif isinstance(result.final_output, str):
-            print(f"[Tool call_teacher_agent] Teacher delivered explanation for '{topic}'.")
-            wrapped_result = ExplanationResult(status="delivered", details=result.final_output)
-            ctx.context.last_interaction_summary = f"Teacher explained {topic} (raw string)."
-            return wrapped_result
-        else:
-            error_msg = f"TEACHER_OUTPUT_ERROR: Teacher agent returned unexpected output type: {type(result.final_output).__name__}. Raw output: {result.final_output}"
-            print(f"[Tool call_teacher_agent] {error_msg}")
-            raise ToolExecutionError(error_msg, code="teacher_output_error")
+        from ai_tutor.agents.agent_runner import AgentRunner
+        runner = AgentRunner(teacher_agent, ctx.context, ctx.context.vector_store_id)
+        return await runner.run_teacher(teacher_prompt, section=explanation_details)
     except Exception as e:
         error_msg = f"Error calling Teacher Agent: {str(e)}\n{traceback.format_exc()}"
         print(f"[Tool] {error_msg}")
@@ -324,22 +328,11 @@ async def call_quiz_creator_agent(
         Instructions: {instructions}
         Format your response ONLY as a QuizCreationResult object. Include the created question(s) in the appropriate field ('question' or 'quiz').
         """
-        result = await Runner.run(
-            quiz_creator_agent,
-            quiz_creator_prompt,
-            context=ctx.context,
-            run_config=run_config
-        )
-        quiz_creation_result = result.final_output_as(QuizCreationResult)
-        if quiz_creation_result and quiz_creation_result.status == "created":
-            question_count = 1 if quiz_creation_result.question else len(quiz_creation_result.quiz.questions) if quiz_creation_result.quiz else 0
-            print(f"[Tool call_quiz_creator_agent] Quiz Creator created {question_count} question(s) for '{topic}'.")
-            if quiz_creation_result.question:
-                ctx.context.current_quiz_question = quiz_creation_result.question
+        from ai_tutor.agents.agent_runner import AgentRunner
+        runner = AgentRunner(quiz_creator_agent, ctx.context, ctx.context.vector_store_id)
+        mastered_sections = ctx.context.user_model_state.mastered_objectives_current_section or []
+        quiz_creation_result = await runner.run_quiz_creator(quiz_creator_prompt, mastered_sections)
             return quiz_creation_result
-        else:
-            details = getattr(quiz_creation_result, 'details', 'No details provided.')
-            raise ToolExecutionError(f"Quiz Creator agent failed for '{topic}'. Status: {getattr(quiz_creation_result, 'status', 'unknown')}. Details: {details}", code="quiz_creator_error")
     except Exception as e:
         error_msg = f"Error calling Quiz Creator Agent: {str(e)}\n{traceback.format_exc()}"
         print(f"[Tool] {error_msg}")

@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 from ai_tutor.agents.orchestrator_agent import run_orchestrator
 from ai_tutor.context import TutorContext, UserModelState
+from ai_tutor.agents.models import PlannerOutput, ActionSpec, FocusObjective
 
 @pytest.mark.asyncio
 async def test_explanation_to_quiz_flow():
@@ -11,15 +12,32 @@ async def test_explanation_to_quiz_flow():
                        vector_store_id="vs1",
                        user_model_state=UserModelState())
 
-    with patch("ai_tutor.tools.call_teacher_agent", new_callable=AsyncMock) as teacher,\
-         patch("ai_tutor.tools.call_quiz_creator_agent", new_callable=AsyncMock) as quiz_creator:
+    # Create a fake PlannerOutput for the test
+    focus_obj = FocusObjective(
+        topic="Test Topic",
+        learning_goal="Test Goal",
+        priority=5,
+        relevant_concepts=["A"],
+        suggested_approach=None,
+        target_mastery=0.8,
+        initial_difficulty="medium"
+    )
+    action_spec = ActionSpec(
+        agent="teacher",
+        params={"topic": "Test Topic", "explanation_details": "Segment 0"},
+        success_criteria="delivered",
+        max_steps=1
+    )
+    planner_output = PlannerOutput(objective=focus_obj, next_action=action_spec)
 
-        # pretend teacher finishes explaining
+    with (
+        patch("ai_tutor.tools.call_planner_agent", new_callable=AsyncMock) as planner,
+        patch("ai_tutor.tools.call_teacher_agent", new_callable=AsyncMock) as teacher
+    ):
+        planner.return_value = planner_output
         teacher.return_value = "EXPLAIN_OK"
-        quiz_creator.return_value = "QUIZ_OK"
 
         await run_orchestrator(ctx, last_event=None)
 
-        teacher.assert_called_once()
-        quiz_creator.assert_called_once()                # ← our guarantee
-        assert ctx.user_model_state.pending_interaction_type == "checking_question" 
+        planner.assert_called_once()
+        teacher.assert_called_once()  # ← our guarantee 

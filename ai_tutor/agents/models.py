@@ -272,6 +272,19 @@ class FocusObjective(BaseModel):
     target_mastery: float  # now required, remove default to avoid invalid JSON schema
     initial_difficulty: Optional[str] = None
 
+# --- NEW: ActionSpec and PlannerOutput for orchestrator contract ---
+class ActionSpec(BaseModel):
+    """Specifies the next action for the orchestrator to delegate to a sub-agent."""
+    agent: Literal["teacher", "quiz_creator", "explanation_checker"] = Field(description="The sub-agent to invoke next.")
+    params: dict = Field(description="Parameters for the sub-agent, e.g., difficulty, section_title.")
+    success_criteria: str = Field(description="How the sub-agent knows it's done.")
+    max_steps: int = Field(description="Guard-rail against runaway loops.")
+
+class PlannerOutput(BaseModel):
+    """The planner's output: a focus objective and the next action spec."""
+    objective: FocusObjective = Field(description="The learning focus objective.")
+    next_action: ActionSpec = Field(description="The next action to take.")
+
 # --- NEW: Potential Result Models for Agents as Tools ---
 class ExplanationResult(BaseModel):
     """Result returned by the Teacher agent tool."""

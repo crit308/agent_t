@@ -6,7 +6,7 @@ from agents import Agent, FileSearchTool, ModelProvider
 from agents.models.openai_provider import OpenAIProvider
 from agents.run_context import RunContextWrapper
 
-from ai_tutor.agents.models import FocusObjective
+from ai_tutor.agents.models import FocusObjective, PlannerOutput
 from ai_tutor.agents.utils import RoundingModelWrapper
 from ai_tutor.context import TutorContext
 import os
@@ -135,20 +135,35 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
         6.  **Use `file_search` Sparingly:** If needed to clarify the goal or identify crucial related concepts for the chosen focus topic, use `file_search`.
 
         OUTPUT:
-        - Your output **MUST** be a single, valid JSON object matching the `FocusObjective` schema. Do NOT add any other text before or after the JSON object.
-        - The `FocusObjective` object MUST contain:
-            * `topic`: The main topic to focus on.
-            * `learning_goal`: The specific objective for this topic.
-            * `priority`: An estimated priority (1-5).
-            * `relevant_concepts`: Key concepts from the KB related to this topic.
-            * `suggested_approach`: (Optional) A hint for the Orchestrator.
+        - Your output **MUST** be a single, valid JSON object matching the `PlannerOutput` schema. Do NOT add any other text before or after the JSON object.
+        - The `PlannerOutput` object MUST contain:
+            * `objective`: The FocusObjective (see schema).
+            * `next_action`: An ActionSpec object specifying the next agent, params, success_criteria, and max_steps.
+        
+        EXAMPLE OUTPUT (JSONC):
+        {
+          "objective": {
+            "topic": "Limits",
+            "learning_goal": "Understand the concept of limits in calculus.",
+            "priority": 5,
+            "relevant_concepts": ["limit definition", "epsilon-delta"],
+            "suggested_approach": "Needs examples",
+            "target_mastery": 0.8,
+            "initial_difficulty": "medium"
+          },
+          "next_action": {
+            "agent": "teacher",
+            "params": {"difficulty": "medium", "section_title": "Limits"},
+            "success_criteria": "The student can explain the definition of a limit and solve a basic limit problem.",
+            "max_steps": 3
+          }
+        }
 
         CRITICAL REMINDERS:
         - **You MUST call `read_knowledge_base` only ONCE at the very start.**
-        - Your only output MUST be a single `FocusObjective` object. Do NOT create a full `LessonPlan`.
+        - Your only output MUST be a single `PlannerOutput` object. Do NOT create a full `LessonPlan`.
         """,
         tools=planner_tools,
-        output_type=FocusObjective,
         model=base_model,
     )
     
