@@ -79,88 +79,88 @@ class MiniQuizLogData(BaseModel):
     tags=["Tutoring Workflow"]
 )
 async def upload_session_documents(
-    session_id: UUID, # Expect UUID
-    request: Request, # Get request object directly
+    session_id: UUID,
+    request: Request,
     files: List[UploadFile] = File(...),
     supabase: Client = Depends(get_supabase_client),
-    tutor_context: TutorContext = Depends(get_tutor_context) # Fetch current context
+    tutor_context: TutorContext = Depends(get_tutor_context)
 ):
     """
-    Uploads one or more documents to the specified session.
-    Stores files temporarily, uploads them to Supabase Storage & OpenAI, adds to vector store,
-    and defers embedding to a background worker.
+    Uploads documents, embeds them into a vector store, analyzes content,
+    and synchronously updates the session context for planning.
     """
-    user: User = request.state.user # Get user from request state populated by verify_token dependency
+    user: User = request.state.user
     logger = get_session_logger(session_id)
     folder_id = tutor_context.folder_id
     if not folder_id:
         logger.log_error("UploadError", "Session context is missing folder_id.")
-        raise HTTPException(status_code=400, detail="Session context is missing folder information.")
-    file_upload_manager = FileUploadManager(supabase) # Pass Supabase client
-    uploaded_filenames = []
-    temp_file_paths = []
-    vector_store_id = tutor_context.vector_store_id
-    existing_files = tutor_context.uploaded_file_paths
-    job_ids = []
+        raise HTTPException(status_code=400, detail="Missing folder information in session context.")
 
-    for file in files:
-        filename = file.filename
-        temp_file_path = os.path.join(TEMP_UPLOAD_DIR, f"{session_id}_{filename}")
+    # Initialize the file upload manager for embeddings
+    file_upload_manager = FileUploadManager(supabase)
+
+    # Save uploaded files temporarily
+    temp_paths: List[str] = []
+    filenames: List[str] = []
+    for upload in files:
+        temp_path = os.path.join(TEMP_UPLOAD_DIR, f"{session_id}_{upload.filename}")
         try:
-            with open(temp_file_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-            temp_file_paths.append(temp_file_path)
-            uploaded_filenames.append(filename)
+            with open(temp_path, "wb") as buf:
+                shutil.copyfileobj(upload.file, buf)
+            temp_paths.append(temp_path)
+            filenames.append(upload.filename)
         except Exception as e:
-            logger.log_error("FileUpload", e)
-            raise HTTPException(status_code=500, detail=f"Failed to save file {filename}: {e}")
+            logger.log_error("FileSaveError", e)
+            raise HTTPException(status_code=500, detail=f"Failed to save {upload.filename}: {e}")
         finally:
-            file.file.close()
+            upload.file.close()
+    if not temp_paths:
+        raise HTTPException(status_code=400, detail="No files provided for upload.")
 
-    if not temp_file_paths:
-        raise HTTPException(status_code=400, detail="No files were successfully saved.")
-
-    # Upload to Supabase Storage and queue embedding
-    message = ""
+    # Embed files into vector store synchronously
+    vector_store_id = tutor_context.vector_store_id
+    messages: List[str] = []
     try:
-        for i, temp_path in enumerate(temp_file_paths):
-            uploaded_file = await file_upload_manager.upload_and_process_file(
-                file_path=temp_path,
+        for path, name in zip(temp_paths, filenames):
+            result = await file_upload_manager.upload_and_process_file(
+                file_path=path,
                 user_id=user.id,
                 folder_id=folder_id,
-                existing_vector_store_id=vector_store_id, # Pass current VS ID
-                queue_embedding=True
+                existing_vector_store_id=vector_store_id
             )
-            # Fetch the most recent embedded file upload job by timestamp descending
-            resp = supabase.table("uploaded_files").select("id").eq("supabase_path", uploaded_file.supabase_path).order("created_at", desc=True).limit(1).execute()
-            job_id = resp.data[0]["id"] if resp.data else None
-            job_ids.append(job_id)
-            if not vector_store_id:
-                vector_store_id = uploaded_file.vector_store_id
-            message += f"Queued {uploaded_filenames[i]} for embedding (job_id: {job_id}). "
-
-        # Update session context with uploaded files and optional vector store ID
-        tutor_context.uploaded_file_paths.extend(uploaded_filenames)  # Append new files
-        if vector_store_id:
-            tutor_context.vector_store_id = vector_store_id
-            message += f"Vector Store ID: {vector_store_id}. "
-        # Save updated context regardless of vector_store_id presence
-        await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
-
+            if result.vector_store_id:
+                vector_store_id = result.vector_store_id
+            messages.append(f"{name} embedded into {vector_store_id}")
     except Exception as e:
-        logger.log_error("VectorStoreUpload", e)
-        for temp_path in temp_file_paths:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        raise HTTPException(status_code=500, detail=f"Failed to upload files to Supabase: {e}")
+        logger.log_error("EmbedError", e)
+        for p in temp_paths:
+            if os.path.exists(p):
+                os.remove(p)
+        raise HTTPException(status_code=500, detail=f"Embedding error: {e}")
 
-    # Return 202 Accepted with job_id(s) and pending status
+    # Update session context after embedding
+    tutor_context.uploaded_file_paths.extend(filenames)
+    tutor_context.vector_store_id = vector_store_id
+    await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
+
+    # Perform document analysis synchronously
+    try:
+        from ai_tutor.agents.analyzer_agent import analyze_documents
+        analysis = await analyze_documents(vector_store_id, context=tutor_context, supabase=supabase)
+        tutor_context.analysis_result = analysis
+        analysis_status = "completed"
+    except Exception as e:
+        logger.log_error("AnalysisError", e)
+        analysis_status = "pending"
+
+    # Persist context after analysis
+    await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
+
     return DocumentUploadResponse(
         vector_store_id=vector_store_id,
-        files_received=uploaded_filenames,
-        analysis_status="pending",
-        message=message,
-        job_id=job_ids[0] if len(job_ids) == 1 else str(job_ids) # If multiple, return as stringified list
+        files_received=filenames,
+        analysis_status=analysis_status,
+        message="; ".join(messages)
     )
 
 @router.get(
