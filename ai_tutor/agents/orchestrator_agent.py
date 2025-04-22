@@ -127,16 +127,32 @@ async def run_orchestrator(ctx: TutorContext, last_event: InteractionEvent):
     result = None
     for step in range(1, max_steps + 1):
         try:
-            # Pass params as kwargs
-            result = await invoke(agent_tool, ctx, **params)
+            # Map sub-agent invocation based on the agent string
+            if agent == "teacher":
+                result = await invoke(
+                    call_teacher_agent,
+                    ctx,
+                    topic=planner_output.objective.topic,
+                    explanation_details=success_criteria
+                )
+            elif agent == "quiz_creator":
+                result = await invoke(
+                    call_quiz_creator_agent,
+                    ctx,
+                    topic=planner_output.objective.topic,
+                    instructions=success_criteria
+                )
+            else:
+                # Default: pass through any params from the planner
+                result = await invoke(agent_tool, ctx, **params)
         except ToolExecutionError as e:
             return ErrorResponse(tool=agent_tool.__name__, detail=e.detail, code=e.code)
-        # Check for status field (must be 'completed' or 'failed')
+        # Check for terminal status
         status = getattr(result, 'status', None)
-        if status in ("completed", "failed", "delivered", "created"):  # Accept agent-specific terminal statuses
+        if status in ("completed", "failed", "delivered", "created"):
             break
     else:
-        # If we exit the loop without break, treat as failure
+        # Max steps reached without completion
         return ErrorResponse(tool=agent_tool.__name__, detail="max_steps exceeded without completion", code="max_steps_exceeded")
 
     # 4. Emit the final event (here: just return it)

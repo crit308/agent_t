@@ -34,6 +34,8 @@ from ai_tutor.manager import AITutorManager
 from pydantic import BaseModel
 from ai_tutor.dependencies import get_supabase_client # Get supabase client dependency
 from ai_tutor.auth import verify_token # Get auth dependency
+from ai_tutor.utils.tool_helpers import invoke
+from ai_tutor.tools import call_planner_agent
 
 router = APIRouter()
 session_manager = SessionManager()
@@ -217,52 +219,26 @@ async def generate_session_lesson_plan(
 
     # --- Wrap the main logic in a try...except block ---
     try:
-        # --- Orchestrator now calls Planner via a tool ---
-        # print(f"[Debug /plan] Creating planner agent for vs_id: {vector_store_id}") # Add log
-        # planner_agent: Agent[TutorContext] = create_planner_agent(vector_store_id)
+        # Invoke the Planner Agent tool to determine initial focus
+        from ai_tutor.utils.tool_helpers import invoke
+        from ai_tutor.tools import call_planner_agent
 
-        # Pass the full TutorContext to the Runner
-        run_config = RunConfig(
-            workflow_name="AI Tutor API - Get Initial Focus", # Name reflects new purpose
-            group_id=str(session_id)
-        )
+        planner_output = await invoke(call_planner_agent, tutor_context)
+        # Retry once if planner returned an error string
+        if isinstance(planner_output, str):
+            logger.log_error("PlannerAgentRetry", f"Planner tool error: {planner_output}. Retrying...")
+            planner_output = await invoke(call_planner_agent, tutor_context)
+            if isinstance(planner_output, str):
+                raise HTTPException(status_code=500, detail=f"Planner error: {planner_output}")
 
-        # We need the orchestrator to call the planner tool
-        orchestrator_agent = create_orchestrator_agent() # Assuming it doesn't need vs_id directly anymore
-
-        # Prompt for orchestrator to get initial focus
-        orchestrator_prompt = "The session is starting. Call the `call_planner_agent` tool to determine the initial learning focus objective."
-
-        print(f"[Debug /plan] Running Orchestrator to get initial focus...") # Add log
-        print(f"[Debug /plan] Orchestrator prompt:\n{orchestrator_prompt}") # Log start of prompt
-
-        result = await Runner.run(
-            orchestrator_agent,
-            orchestrator_prompt,
-            run_config=run_config,
-            context=tutor_context # Pass the parsed TutorContext object
-        )
-        print(f"[Debug /plan] Orchestrator run completed. Result final_output type: {type(result.final_output)}") # Add log
-
-        # Check the context *after* the run to see if the focus objective was set
-        planner_output = result.final_output if isinstance(result.final_output, PlannerOutput) else None
-        if not planner_output:
-            # Orchestrator/Planner tool failed. Log the Orchestrator's actual output for debugging.
-            logger.log_error("GetInitialFocus", f"Orchestrator failed to set planner output. Final output: {result.final_output}")
-            # It's possible the orchestrator returned an ErrorResponse, check that
-            error_detail = f"Orchestrator output: {result.final_output}"
-            raise HTTPException(status_code=500, detail=f"Failed to determine initial learning focus. {error_detail}")
-
-        # If planner_output is set, log, save context, and return it
-        logger.log_planner_output(planner_output.objective) # Log the focus objective
-        supabase: Client = await get_supabase_client() # Get supabase client
+        # Log and persist the focus objective
+        logger.log_planner_output(planner_output.objective)
+        supabase: Client = await get_supabase_client()
         success = await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
         if not success:
             logger.log_error("SessionUpdate", f"Failed to update session {session_id} with focus objective.")
-            # Don't fail the request just because saving failed, but log it.
 
-        print(f"[Debug /plan] PlannerOutput stored in session.") # Add log
-        return planner_output # Return the full PlannerOutput object
+        return planner_output
 
     except Exception as e:
         # --- Explicit Exception Catching and Logging ---

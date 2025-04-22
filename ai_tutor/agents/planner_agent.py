@@ -115,7 +115,7 @@ def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
     provider: OpenAIProvider = OpenAIProvider()
     base_model = provider.get_model("gpt-4o")
 
-    # Create the planner agent specifying context type generically and output_type via parameter
+    # Create the planner agent specifying context type generically
     planner_agent = Agent[TutorContext](
         name="Focus Planner",
         instructions="""You are an expert learning strategist. Your task is to determine the user's **next learning focus** based on the analyzed documents and their current progress (provided in the prompt context).

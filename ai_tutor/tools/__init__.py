@@ -232,45 +232,49 @@ async def call_planner_agent(
         Identify the single most important topic or concept for the user to focus on next.
         Output your decision ONLY as a PlannerOutput object.
         """
-        # Run the planner agent; output will be raw JSON string since no output_type is enforced
-        result = await Runner.run(
-            planner_agent,
-            planner_prompt,
-            context=ctx.context,
-            run_config=run_config
-        )
-        raw_output = result.final_output
-        # Parse into PlannerOutput model, extracting JSON if embedded in prose or code fences
-        if isinstance(raw_output, PlannerOutput):
-            planner_output = raw_output
-        elif isinstance(raw_output, str):
-            raw_text = raw_output.strip()
-            # Try to extract full JSON block between code fences
-            import re
-            json_str = None
-            fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw_text, re.DOTALL)
-            if fence_match:
-                json_str = fence_match.group(1).strip()
-            else:
-                # Fallback: find first '{' and last '}'
-                start = raw_text.find('{')
-                end = raw_text.rfind('}')
-                if start != -1 and end != -1 and end > start:
-                    json_str = raw_text[start:end+1]
-            if not json_str:
-                error_msg = f"PLANNER_PARSING_ERROR: Could not locate JSON object in planner output. Raw output: {raw_text}"  
-                print(f"[Tool call_planner_agent] {error_msg}")
-                raise ToolExecutionError(error_msg, code="planner_output_parse_error")
-            try:
-                planner_output = PlannerOutput.parse_raw(json_str)
-            except Exception as e:
-                error_msg = f"PLANNER_PARSING_ERROR: Failed to parse PlannerOutput JSON: {e}. JSON snippet: {json_str}"  
-                print(f"[Tool call_planner_agent] {error_msg}")
-                raise ToolExecutionError(error_msg, code="planner_output_parse_error")
-        else:
-            error_msg = f"Planner agent returned unexpected type: {type(raw_output).__name__}. Raw output: {raw_output}"
+        # Run the planner agent and attempt parsing the JSON output up to two times
+        planner_output = None
+        for attempt in range(2):
+            result = await Runner.run(
+                planner_agent,
+                planner_prompt,
+                context=ctx.context,
+                run_config=run_config
+            )
+            raw_output = result.final_output
+            # If agent directly returned PlannerOutput
+            if isinstance(raw_output, PlannerOutput):
+                planner_output = raw_output
+                break
+            # If agent returned a string, attempt to extract JSON
+            if isinstance(raw_output, str):
+                raw_text = raw_output.strip()
+                import re
+                # Try JSON fences
+                fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw_text, re.DOTALL)
+                if fence_match:
+                    json_str = fence_match.group(1).strip()
+                else:
+                    # Fallback to first brace
+                    start = raw_text.find('{')
+                    end = raw_text.rfind('}')
+                    json_str = raw_text[start:end+1] if start != -1 and end != -1 and end > start else None
+                # Parse JSON if found
+                if json_str:
+                    try:
+                        planner_output = PlannerOutput.parse_raw(json_str)
+                        break
+                    except Exception:
+                        # Parsing error, will retry if first attempt
+                        pass
+            # On first failed attempt, retry
+            if attempt == 0:
+                print("[Tool call_planner_agent] JSON parse failed, retrying planner run...")
+                continue
+            # After second failure, raise error
+            error_msg = f"PLANNER_PARSING_ERROR: Could not parse PlannerOutput after retry. Raw output: {raw_output}"
             print(f"[Tool call_planner_agent] {error_msg}")
-            raise ToolExecutionError(error_msg, code="planner_output_error")
+            raise ToolExecutionError(error_msg, code="planner_output_parse_error")
         # Success: store and return
         print(f"[Tool call_planner_agent] Planner returned objective: {planner_output.objective.topic}")
         ctx.context.current_focus_objective = planner_output.objective
@@ -332,7 +336,7 @@ async def call_quiz_creator_agent(
         runner = AgentRunner(quiz_creator_agent, ctx.context, ctx.context.vector_store_id)
         mastered_sections = ctx.context.user_model_state.mastered_objectives_current_section or []
         quiz_creation_result = await runner.run_quiz_creator(quiz_creator_prompt, mastered_sections)
-            return quiz_creation_result
+        return quiz_creation_result
     except Exception as e:
         error_msg = f"Error calling Quiz Creator Agent: {str(e)}\n{traceback.format_exc()}"
         print(f"[Tool] {error_msg}")
