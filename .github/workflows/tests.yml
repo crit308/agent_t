@@ -20,6 +20,8 @@ jobs:
           enable-cache: true
       - name: Install dependencies
         run: make sync
+        # Ensure pytest-asyncio is installed
+        pip install pytest-asyncio
       - name: Run lint
         run: make lint
 

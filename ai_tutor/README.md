@@ -1,4 +1,4 @@
-Below is a “white‑box walkthrough” of the **AI Tutor** as it exists after the latest refactor.  
+Below is a "white‑box walkthrough" of the **AI Tutor** as it exists after the latest refactor.  
 If you read this top‑to‑bottom you will know:
 
 * the full user → UI → backend → OpenAI → UI round‑trip,
@@ -8,7 +8,7 @@ If you read this top‑to‑bottom you will know:
 
 ---
 
-## 1  High‑level picture
+## 1 High‑level picture
 
 ```
 ┌───────────────┐   HTTP/WS    ┌─────────────────┐   tool calls   ┌──────────────┐
@@ -24,7 +24,7 @@ If you read this top‑to‑bottom you will know:
 
 ---
 
-## 2  Frontend flow (Next 13 app router)
+## 2 Frontend flow (Next 13 app router)
 
 1. **AuthProvider** (Context) boots, fetches Supabase session once; memoised to stop re‑render loops.  
 2. **Home page** lets the learner pick / create a *folder* (content bucket).  
@@ -37,15 +37,15 @@ If you read this top‑to‑bottom you will know:
    * **TutorChat** renders streaming Markdown, multiple‑choice UI, feedback bubbles.  
    * **MasteryBar** shows concept‑level progress (colour‑coded pill).  
    * **PaceSlider** writes `learning_pace_factor` via `{event_type:"pace_change", value}` WebSocket message.  
-   * “I'm stuck" button sends `{event_type:"help_request", mode:"stuck"}`.
+   * "I'm stuck" button sends `{event_type:"help_request", mode:"stuck"}`.
 
 No other components talk directly to the backend; all tutor traffic is WS.
 
 ---
 
-## 3  Backend layers
+## 3 Backend layers
 
-### 3.1 FastAPI routers (`ai_tutor/routers`)
+### 3.1 FastAPI routers (`ai_tutor/routers`)
 
 | Endpoint | Purpose | Important lines |
 |----------|---------|-----------------|
@@ -56,7 +56,7 @@ No other components talk directly to the backend; all tutor traffic is WS.
 |`POST /sessions/{id}/interact`| HTTP fallback for older clients (rare now) | just calls `run_orchestrator` once |
 |`WS /ws/session/{id}`| **Main transport** | creates / hydrates `TutorContext`, streams `Runner.run_streamed` events back |
 
-### 3.2 `TutorContext` (`ai_tutor/context.py`)
+### 3.2 `TutorContext` (`ai_tutor/context.py`)
 
 ```text
 session_id, user_id, vector_store_id
@@ -70,7 +70,7 @@ user_model_state:
 
 `context_json` is persisted in the `sessions` table after **every** successful tool call so a browser refresh can resume.
 
-### 3.3 Policy → Orchestrator loop
+### 3.3 Policy → Orchestrator loop
 
 * `policy.choose_action(ctx, last_event) → Action`  
   pure Python, no LLM.
@@ -88,7 +88,7 @@ while True:
 
 The loop streams partial outputs; learner sees explanation tokens, *then* a quiz without another HTTP hit.
 
-### 3.4 FunctionTool barrel (`ai_tutor/tools/__init__.py`)
+### 3.4 FunctionTool barrel (`ai_tutor/tools/__init__.py`)
 
 *All* exported tools live here, decorated:
 
@@ -102,7 +102,7 @@ No other modules import each other, so circular‑import risk is gone.
 
 ---
 
-## 4  Adaptive mechanics
+## 4 Adaptive mechanics
 
 | Signal | Where updated | How used |
 |--------|---------------|----------|
@@ -113,7 +113,7 @@ No other modules import each other, so circular‑import risk is gone.
 
 ---
 
-## 5  Performance & resilience
+## 5 Performance & resilience
 
 * **Agent factory** cached with `@lru_cache(1)` so model‑load happens once per worker.  
 * OpenAI client is reused singleton.  
@@ -126,7 +126,7 @@ No other modules import each other, so circular‑import risk is gone.
 
 ---
 
-## 6  Analytics
+## 6 Analytics
 
 *Supabase → Metabase* nightly dashboard:
 
@@ -143,7 +143,7 @@ Product team filters by `session_id` and sees per‑concept mastery curves.
 
 ---
 
-## 7  Testing scaffold
+## 7 Testing scaffold
 
 1. **Unit** – `tests/test_orchestrator_dispatch.py` mocks tools, asserts pending state & call counts.  
 2. **Schema** – `test_tools_validate.py` runs `build_openai_schema` to ensure all FunctionTools include `"additionalProperties": false`.  
@@ -151,7 +151,7 @@ Product team filters by `session_id` and sees per‑concept mastery curves.
 
 ---
 
-## 8  Extending the tutor
+## 8 Extending the tutor
 
 * Add a new pedagogy action (e.g. `reteach_with_visual`)  
   1. Decorate tool in `ai_tutor/tools/__init__.py` with @_export.  
@@ -177,7 +177,69 @@ With this mental model you can trace any bug or add any feature without opening 
 
 # AI Tutor
 
-A system for creating AI-powered tutors that can teach content from uploaded documents using the OpenAI Agents SDK.
+AI Tutor is a multi-agent intelligent tutoring system built on top of the OpenAI Agents SDK. It uses a PlannerAgent to decide *what* to teach next, an ExecutorAgent to determine *how* to teach each objective by invoking atomic skills, and a deterministic Finite-State Machine (TutorFSM) to orchestrate planning, execution, and user interactions.
+
+## Architecture Overview
+
+- **PlannerAgent**: Generates a sequence of learning objectives based on user context and knowledge base.
+- **ExecutorAgent**: Chooses teaching tactics (skills) to achieve a given objective (e.g., explain concept, create quiz, remediate errors).
+- **Skill Registry**: Self-registering, decorated Python functions (`@tool()`) for each atomic teaching tactic.
+- **TutorFSM**: Finite-State Machine that transitions between `planning`, `executing`, and `awaiting_user`, persisting state (`ctx.state` and `current_focus_objective`) across messages.
+
+![AI Tutor Architecture](docs/architecture.png)
+
+## Quick Start
+
+1.  Clone this repository and create a virtual environment:
+
+    ```bash
+    git clone <repo-url>
+    cd agent_t/agent_t
+    python -m venv env
+    # Linux/Mac
+    source env/bin/activate
+    # Windows
+    .\env\Scripts\activate
+    pip install -r requirements.txt
+    ```
+
+2.  Run the interactive CLI demo:
+
+    ```bash
+    python ai_tutor/cli.py
+    ```
+
+    Once launched, type your questions or messages at the prompt. Enter `exit` or `quit` to end the session.
+
+3.  Integrate into your FastAPI app:
+
+    - Use `TutorFSM` in your REST `/interact` endpoint or WebSocket handler (see `ai_tutor/routers` for examples).
+    - Persist `TutorContext` after each `on_user_message` call to maintain session state.
+
+## Running Tests & Linting
+
+Make sure you have your virtual environment activated, then:
+
+```bash
+make sync        # Installs all dependencies and dev tools
+make lint        # Runs ruff lint checks
+make mypy        # Runs static type checks
+make tests       # Runs pytest for all unit/integration tests
+make coverage    # Runs tests with coverage report
+```
+
+All new Phase 1 tests are located under `tests/test_phase1_high_priority.py` and cover:
+
+- PlannerOutput schema validation
+- ExecutorAgent CONTINUE vs COMPLETED workflows
+- FSM transitions into `awaiting_user` on intermediate steps
+
+## Next Steps
+
+- **Phase 2**: Migrate legacy tools off `ai_tutor/tools`, enforce skill budgets, improve objective completion heuristics.  
+- **Phase 3+**: Add advanced adaptive skills, data-driven policies, and telemetry.
+
+Happy tutoring!  
 
 ## Overview
 

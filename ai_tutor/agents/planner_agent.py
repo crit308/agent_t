@@ -2,12 +2,9 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from supabase import Client
-from agents import Agent, FileSearchTool, ModelProvider
-from agents.models.openai_provider import OpenAIProvider
 from agents.run_context import RunContextWrapper
+from ai_tutor.core.llm import LLMClient
 
-from ai_tutor.agents.models import FocusObjective, PlannerOutput
-from ai_tutor.agents.utils import RoundingModelWrapper
 from ai_tutor.context import TutorContext
 import os
 
@@ -17,6 +14,8 @@ from ai_tutor.dependencies import get_supabase_client
 from functools import lru_cache, wraps
 import asyncio
 from ai_tutor.utils.decorators import function_tool_logged
+
+from ai_tutor.core.schema import PlannerOutput
 
 # Global cache for concept graph edges and last updated timestamp
 _dag_cache = {
@@ -96,75 +95,34 @@ async def dag_query(ctx: RunContextWrapper[TutorContext], mastered: list[str]) -
     candidates = [c for c, prereqs in prereq_map.items() if c not in mastered and all(p in mastered for p in prereqs)]
     return candidates
 
-def create_planner_agent(vector_store_id: str) -> Agent[TutorContext]:
-    """Creates a planner agent that can search through files and create a lesson plan."""
-    
-    # Create a FileSearchTool that can search the vector store containing the uploaded documents
-    file_search_tool = FileSearchTool(
-        vector_store_ids=[vector_store_id],
-        max_num_results=5,
-        include_search_results=True,
-    )
-
-    print(f"Created FileSearchTool for vector store: {vector_store_id}")
-
-    # Only include tools the planner should use (avoid file_search by default)
-    planner_tools = [read_knowledge_base, dag_query]
-
-    # Instantiate the base model provider and get the base model
-    provider: OpenAIProvider = OpenAIProvider()
-    base_model = provider.get_model("gpt-4o")
-
-    # Create the planner agent specifying context type generically
-    planner_agent = Agent[TutorContext](
-        name="Focus Planner",
-        instructions="""You are an expert learning strategist. Your task is to determine the user's **next learning focus** based on the analyzed documents and their current progress (provided in the prompt context).
-
-        AVAILABLE INFORMATION:
-        - You have a `read_knowledge_base` tool to retrieve the document analysis summary stored in the database.
-        - You have a `file_search` tool to look up specific details within the source documents (vector store).
-        - You have a `dag_query` tool that accepts a list of mastered concepts and returns the next learnable concepts from the concept graph.
-        - The prompt may contain information about the user's current state (`UserModelState` summary), including a list of mastered concepts.
-
-        YOUR WORKFLOW **MUST** BE:
-        1.  **Read Knowledge Base ONCE:** Call the `read_knowledge_base` tool *exactly one time* at the beginning to obtain the document analysis summary (key concepts, terms, etc.).
-        2.  **Obtain Candidate Concepts:** Call the `dag_query` tool with the list of mastered concepts from the user model state to retrieve next learnable concepts based on prerequisites.
-        3.  **Analyze KB and Candidates:** Once you have the Knowledge Base summary and candidate concepts, **DO NOT** call `read_knowledge_base` again. Analyze the KB, candidate list, and any provided user state summary.
-        4.  **Identify Next Focus:** Determine the single most important topic or concept the user should learn next, selecting from candidate concepts and considering prerequisites and user progress.
-        5.  **Define Learning Goal:** Formulate a clear, specific learning goal for this focus topic.
-        6.  **Use `file_search` Sparingly:** If needed to clarify the goal or identify crucial related concepts for the chosen focus topic, use `file_search`.
-
-        OUTPUT:
-        - Your output **MUST** be a single, valid JSON object matching the `PlannerOutput` schema. Do NOT add any other text before or after the JSON object.
-        - The `PlannerOutput` object MUST contain:
-            * `objective`: The FocusObjective (see schema).
-            * `next_action`: An ActionSpec object specifying the next agent, params, success_criteria, and max_steps.
-        
-        EXAMPLE OUTPUT (JSONC):
-        {
-          "objective": {
-            "topic": "Limits",
-            "learning_goal": "Understand the concept of limits in calculus.",
-            "priority": 5,
-            "relevant_concepts": ["limit definition", "epsilon-delta"],
-            "suggested_approach": "Needs examples",
-            "target_mastery": 0.8,
-            "initial_difficulty": "medium"
-          },
-          "next_action": {
-            "agent": "teacher",
-            "params": {"difficulty": "medium", "section_title": "Limits"},
-            "success_criteria": "The student can explain the definition of a limit and solve a basic limit problem.",
-            "max_steps": 3
-          }
-        }
-
-        CRITICAL REMINDERS:
-        - **You MUST call `read_knowledge_base` only ONCE at the very start.**
-        - Your only output MUST be a single `PlannerOutput` object. Do NOT create a full `LessonPlan`.
-        """,
-        tools=planner_tools,
-        model=base_model,
-    )
-    
-    return planner_agent 
+async def run_planner(ctx: TutorContext) -> PlannerOutput:
+    """Direct planner that invokes meta-skills and uses LLMClient to decide the next focus objective."""
+    # Wrap context for tool invocation
+    wrapper = RunContextWrapper(ctx)
+    # 1. Retrieve knowledge base
+    kb_text = await read_knowledge_base(wrapper)
+    # 2. Determine mastered concepts
+    mastered = [t for t, s in ctx.user_model_state.concepts.items() if s.mastery > 0.8 and s.confidence >= 5]
+    # 3. Query DAG for next learnable concepts
+    next_concepts = await dag_query(wrapper, mastered)
+    # 4. Call LLM
+    llm = LLMClient()
+    system_msg = {
+        "role": "system",
+        "content": (
+            "You are the Focus Planner. You have two tools: read_knowledge_base and dag_query. "
+            "Use the knowledge base content and concept relationships to pick the single most important next learning objective. "
+            "Respond ONLY with a JSON object matching the PlannerOutput schema (objectives: list of {topic, learning_goal, target_mastery, priority})."
+        )
+    }
+    messages = [
+        system_msg,
+        {"role": "user", "content": f"Knowledge base:\n{kb_text}"},
+        {"role": "user", "content": f"Mastered concepts: {mastered}"},
+        {"role": "user", "content": f"Next learnable concepts: {next_concepts}"}
+    ]
+    response_text = await llm.chat(messages)
+    output = PlannerOutput.parse_raw(response_text)
+    # Store chosen objective in context
+    ctx.current_focus_objective = output.objectives[0]
+    return output 

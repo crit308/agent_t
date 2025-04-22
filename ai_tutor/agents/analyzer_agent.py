@@ -23,7 +23,6 @@ from agents import Runner, RunConfig, Agent, ModelProvider, FileSearchTool #, tr
 # from ai_tutor.core.tools import FileSearchTool
 
 from agents.models.openai_provider import OpenAIProvider
-from ai_tutor.agents.utils import RoundingModelWrapper
 
 log = structlog.get_logger(__name__)
 
@@ -158,8 +157,7 @@ def create_analyzer_agent(vector_store_id: str, api_key: str = None):
         - Do not return incomplete analysis
         """,
         tools=[file_search_tool],
-        # No specific output type - will return plain text
-        model=RoundingModelWrapper(base_model),
+        model=base_model,
     )
     
     return analyzer_agent

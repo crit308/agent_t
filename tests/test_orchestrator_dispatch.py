@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, patch
 
-from ai_tutor.agents.orchestrator_agent import run_orchestrator
+from ai_tutor.fsm import TutorFSM
 from ai_tutor.context import TutorContext, UserModelState
 from ai_tutor.agents.models import PlannerOutput, ActionSpec, FocusObjective
 
@@ -37,7 +37,9 @@ async def test_explanation_to_quiz_flow():
         planner.return_value = planner_output
         teacher.return_value = "EXPLAIN_OK"
 
-        await run_orchestrator(ctx, last_event=None)
+        # Use the FSM instead of the deprecated orchestrator
+        fsm = TutorFSM(ctx)
+        await fsm.on_user_message(None)
 
         planner.assert_called_once()
-        teacher.assert_called_once()  # ← our guarantee 
+        teacher.assert_called_once()  # executor should call teacher on explain 

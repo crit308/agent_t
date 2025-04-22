@@ -80,6 +80,8 @@ class UserModelState(BaseModel):
 
 class TutorContext(BaseModel):
     """Context object for an AI Tutor session."""
+    # FSM state persistence for orchestrator
+    state: Optional[str] = None
     # Add model_config to specify custom JSON encoders
     model_config = ConfigDict(
         json_encoders={
@@ -104,6 +106,9 @@ class TutorContext(BaseModel):
     # Add for session resume:
     last_event: Optional[dict] = None # Store the last event for session resume
     pending_interaction_type: Optional[str] = None # Store pending interaction type for resume
+    # Track resource-intensive skill usage budget
+    high_cost_calls: int = Field(0, description="Number of high-cost (e.g. GPT-4) skill calls in this session")
+    max_high_cost_calls: int = Field(3, description="Max allowed high-cost skill calls per session")
     # Add other relevant session state as needed
     # e.g., current_lesson_progress: Optional[str] = None 
 

@@ -1,16 +1,16 @@
 """Tools for the AI Tutor system.""" 
 
 from __future__ import annotations
-from agents import function_tool, Runner, RunConfig
+from agents import function_tool
 from agents.run_context import RunContextWrapper
 from typing import Any, Optional, Literal, Union, cast, Dict, List
 import os
 from datetime import datetime
 import traceback
 from ai_tutor.dependencies import SUPABASE_CLIENT
-from ai_tutor.utils.tool_helpers import invoke
 from ai_tutor.context import TutorContext, UserConceptMastery, UserModelState, is_mastered
-from ai_tutor.agents.models import FocusObjective, QuizQuestion, QuizFeedbackItem, ExplanationResult, QuizCreationResult, PlannerOutput
+from ai_tutor.agents.models import QuizQuestion, QuizFeedbackItem, ExplanationResult, QuizCreationResult
+from ai_tutor.core.schema import PlannerOutput
 from ai_tutor.api_models import (
     ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse
 )
@@ -19,6 +19,7 @@ import json
 from ai_tutor.telemetry import log_tool
 from pydantic import BaseModel
 from ai_tutor.utils.decorators import function_tool_logged
+from ai_tutor.core.llm import LLMClient
 
 _exports: List[str] = []
 def _export(obj):
@@ -46,36 +47,27 @@ def update_explanation_progress(ctx: RunContextWrapper[TutorContext], segment_in
 
 @_export
 @function_tool_logged()
-async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_answer_index: int) -> Union[QuizFeedbackItem, str]:
-    """Evaluates the user's answer to the current question using the Quiz Teacher logic (via helper function)."""
-    print(f"[Tool call_quiz_teacher_evaluate] Evaluating user answer index '{user_answer_index}'.")
-    try:
-        from ai_tutor.agents.quiz_teacher_agent import evaluate_single_answer
-        question_to_evaluate = ctx.context.current_quiz_question
-        if not question_to_evaluate:
-            raise ToolExecutionError("No current question found in context to evaluate.", code="missing_question")
-        if not isinstance(question_to_evaluate, QuizQuestion):
-            raise ToolExecutionError(f"Expected QuizQuestion in context, found {type(question_to_evaluate).__name__}.", code="invalid_question_type")
-        print(f"[Tool call_quiz_teacher_evaluate] Evaluating answer for question: {question_to_evaluate.question[:50]}...")
-        feedback_item = await evaluate_single_answer(
-            question=question_to_evaluate,
-            user_answer_index=user_answer_index,
-            context=ctx.context
-        )
-        if feedback_item:
-            print(f"[Tool call_quiz_teacher_evaluate] Evaluation complete. Feedback: Correct={feedback_item.is_correct}, Explanation: {feedback_item.explanation[:50]}...")
-            ctx.context.user_model_state.pending_interaction_type = None
-            ctx.context.user_model_state.pending_interaction_details = None
-            ctx.context.current_quiz_question = None
-            return feedback_item
-        else:
-            error_msg = f"Evaluation failed for question on topic '{getattr(question_to_evaluate, 'related_section', 'N/A')}'."
-            print(f"[Tool] {error_msg}")
-            raise ToolExecutionError(error_msg, code="evaluation_failed")
-    except Exception as e:
-        error_msg = f"Exception in call_quiz_teacher_evaluate: {str(e)}"
-        print(f"[Tool] {error_msg}")
-        raise ToolExecutionError(error_msg, code="exception")
+async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_answer_index: int) -> QuizFeedbackItem:
+    """Evaluate the user's answer against the current QuizQuestion in context."""
+    question = ctx.context.current_quiz_question
+    if not question or not isinstance(question, QuizQuestion):
+        raise ToolExecutionError("No valid QuizQuestion in context to evaluate.", code="missing_question")
+    is_correct = (user_answer_index == question.correct_answer_index)
+    selected = question.options[user_answer_index] if 0 <= user_answer_index < len(question.options) else ""
+    correct = question.options[question.correct_answer_index]
+    feedback = QuizFeedbackItem(
+        question_index=user_answer_index,
+        question_text=question.question,
+        user_selected_option=selected,
+        is_correct=is_correct,
+        correct_option=correct,
+        explanation=question.explanation,
+        improvement_suggestion="Review the concept again." if not is_correct else ""
+    )
+    # Clear pending question state
+    ctx.context.user_model_state.pending_interaction_type = None
+    ctx.context.current_quiz_question = None
+    return feedback
 
 @_export
 @function_tool_logged()
@@ -211,78 +203,10 @@ async def reflect_on_interaction(
 async def call_planner_agent(
     ctx: RunContextWrapper[TutorContext],
     user_state_summary: Optional[str] = None
-) -> Union[PlannerOutput, str]:
-    """Calls the Planner Agent to determine the next learning focus objective. Returns PlannerOutput on success, or an error string on failure."""
-    print("[Tool call_planner_agent] Calling Planner Agent...")
-    try:
-        from ai_tutor.agents.planner_agent import create_planner_agent
-        if not ctx.context.vector_store_id:
-            raise ToolExecutionError("Vector store ID not found in context for Planner.", code="missing_vector_store")
-        planner_agent = create_planner_agent(ctx.context.vector_store_id)
-        run_config = RunConfig(workflow_name="Orchestrator_PlannerCall", group_id=ctx.context.session_id)
-        mastered_topics = [t for t, c in ctx.context.user_model_state.concepts.items()
-                          if c.mastery >= 0.8 and c.confidence >= 5]
-        payload = json.dumps({"exclude_topics": mastered_topics, "goal": ctx.context.session_goal})
-        planner_prompt = f"""
-        Determine the next learning focus for the user.
-        First, call `read_knowledge_base` to understand the material's structure and concepts.
-        Analyze the knowledge base.
-        {f'Consider the user state: {user_state_summary}' if user_state_summary else 'Assume the user is starting or has just completed the previous focus.'}
-        Exclude these topics from consideration: {mastered_topics}
-        Identify the single most important topic or concept for the user to focus on next.
-        Output your decision ONLY as a PlannerOutput object.
-        """
-        # Run the planner agent and attempt parsing the JSON output up to two times
-        planner_output = None
-        for attempt in range(2):
-            result = await Runner.run(
-                planner_agent,
-                planner_prompt,
-                context=ctx.context,
-                run_config=run_config
-            )
-            raw_output = result.final_output
-            # If agent directly returned PlannerOutput
-            if isinstance(raw_output, PlannerOutput):
-                planner_output = raw_output
-                break
-            # If agent returned a string, attempt to extract JSON
-            if isinstance(raw_output, str):
-                raw_text = raw_output.strip()
-                import re
-                # Try JSON fences
-                fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw_text, re.DOTALL)
-                if fence_match:
-                    json_str = fence_match.group(1).strip()
-                else:
-                    # Fallback to first brace
-                    start = raw_text.find('{')
-                    end = raw_text.rfind('}')
-                    json_str = raw_text[start:end+1] if start != -1 and end != -1 and end > start else None
-                # Parse JSON if found
-                if json_str:
-                    try:
-                        planner_output = PlannerOutput.parse_raw(json_str)
-                        break
-                    except Exception:
-                        # Parsing error, will retry if first attempt
-                        pass
-            # On first failed attempt, retry
-            if attempt == 0:
-                print("[Tool call_planner_agent] JSON parse failed, retrying planner run...")
-                continue
-            # After second failure, raise error
-            error_msg = f"PLANNER_PARSING_ERROR: Could not parse PlannerOutput after retry. Raw output: {raw_output}"
-            print(f"[Tool call_planner_agent] {error_msg}")
-            raise ToolExecutionError(error_msg, code="planner_output_parse_error")
-        # Success: store and return
-        print(f"[Tool call_planner_agent] Planner returned objective: {planner_output.objective.topic}")
-        ctx.context.current_focus_objective = planner_output.objective
-        return planner_output
-    except Exception as e:
-        error_msg = f"EXCEPTION calling Planner Agent: {str(e)}\n{traceback.format_exc()}"
-        print(f"[Tool] {error_msg}")
-        raise ToolExecutionError("PLANNER_EXECUTION_ERROR: An exception occurred while running the planner.", code="planner_exception")
+) -> PlannerOutput:
+    """Delegate to the direct run_planner function."""
+    from ai_tutor.agents.planner_agent import run_planner
+    return await run_planner(ctx.context)
 
 @_export
 @function_tool_logged()
@@ -290,56 +214,33 @@ async def call_teacher_agent(
     ctx: RunContextWrapper[TutorContext],
     topic: str,
     explanation_details: str
-) -> Union[ExplanationResult, str]:
-    """Calls the Teacher Agent to provide an explanation for a specific topic/detail."""
-    print(f"[Tool call_teacher_agent] Requesting explanation for '{topic}': {explanation_details}")
-    try:
-        from ai_tutor.agents.teacher_agent import create_interactive_teacher_agent
-        if not ctx.context.vector_store_id:
-            raise ToolExecutionError("Vector store ID not found in context for Teacher.", code="missing_vector_store")
-        teacher_agent = create_interactive_teacher_agent(ctx.context.vector_store_id)
-        run_config = RunConfig(workflow_name="Orchestrator_TeacherCall", group_id=ctx.context.session_id)
-        teacher_prompt = f"""
-        Explain the topic: '{topic}'.
-        Specific instructions for this explanation: {explanation_details}.
-        Use the file_search tool if needed to find specific information or examples from the documents.
-        Format your response ONLY as an ExplanationResult object containing the explanation text in the 'details' field.
-        """
-        from ai_tutor.agents.agent_runner import AgentRunner
-        runner = AgentRunner(teacher_agent, ctx.context, ctx.context.vector_store_id)
-        return await runner.run_teacher(teacher_prompt, section=explanation_details)
-    except Exception as e:
-        error_msg = f"Error calling Teacher Agent: {str(e)}\n{traceback.format_exc()}"
-        print(f"[Tool] {error_msg}")
-        raise ToolExecutionError(error_msg, code="teacher_exception")
+) -> ExplanationResult:
+    """Provide a concept explanation using LLMClient and wrap in ExplanationResult."""
+    llm = LLMClient()
+    system_msg = {"role": "system", "content": "You are an AI tutor. Provide a clear, concise explanation."}
+    user_msg = {"role": "user", "content": f"Topic: {topic}. Details: {explanation_details}"}
+    response = await llm.chat([system_msg, user_msg])
+    # Wrap in ExplanationResult
+    return ExplanationResult(status="delivered", details=response)
 
 @_export
 @function_tool_logged()
-async def call_quiz_creator_agent(
-    ctx: RunContextWrapper[TutorContext],
-    topic: str,
-    instructions: str
-) -> Union[QuizCreationResult, str]:
-    """Calls the Quiz Creator Agent to generate one or more quiz questions."""
-    print(f"[Tool call_quiz_creator_agent] Requesting quiz creation for '{topic}': {instructions}")
+async def call_quiz_creator_agent(ctx: RunContextWrapper[TutorContext], topic: str, instructions: str) -> QuizCreationResult:
+    """Generate quiz questions using LLM and return a QuizCreationResult."""
+    llm = LLMClient()
+    prompt = (
+        f"Generate a JSON object matching the QuizCreationResult schema with a quiz of 3 multiple choice questions. "
+        f"Topic: {topic}. Instructions: {instructions}"
+    )
+    response = await llm.chat([
+        {"role": "system", "content": "You are a quiz creator that outputs valid JSON for QuizCreationResult."},
+        {"role": "user", "content": prompt}
+    ])
     try:
-        from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent
-        quiz_creator_agent = create_quiz_creator_agent()
-        run_config = RunConfig(workflow_name="Orchestrator_QuizCreatorCall", group_id=ctx.context.session_id)
-        quiz_creator_prompt = f"""
-        Create quiz questions based on the following instructions:
-        Topic: '{topic}'
-        Instructions: {instructions}
-        Format your response ONLY as a QuizCreationResult object. Include the created question(s) in the appropriate field ('question' or 'quiz').
-        """
-        from ai_tutor.agents.agent_runner import AgentRunner
-        runner = AgentRunner(quiz_creator_agent, ctx.context, ctx.context.vector_store_id)
-        mastered_sections = ctx.context.user_model_state.mastered_objectives_current_section or []
-        quiz_creation_result = await runner.run_quiz_creator(quiz_creator_prompt, mastered_sections)
-        return quiz_creation_result
-    except Exception as e:
-        error_msg = f"Error calling Quiz Creator Agent: {str(e)}\n{traceback.format_exc()}"
-        print(f"[Tool] {error_msg}")
-        raise ToolExecutionError(error_msg, code="quiz_creator_exception")
+        result = QuizCreationResult.parse_raw(response)
+    except Exception:
+        # Fallback on failure
+        result = QuizCreationResult(status="failed", quiz=None, question=None, details=response)
+    return result
 
 __all__ = _exports 

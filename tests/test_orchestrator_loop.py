@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from ai_tutor.context import TutorContext
-from ai_tutor.agents.orchestrator_agent import run_orchestrator
+from ai_tutor.fsm import TutorFSM
 from ai_tutor.agents.models import PlannerOutput, ActionSpec, FocusObjective
 
 @pytest.mark.asyncio
@@ -34,7 +34,8 @@ async def test_orchestrator_calls_subagent():
         planner.return_value = planner_output
         teacher.return_value = "EXPLAIN_OK"
 
-        result = await run_orchestrator(ctx, last_event={"event_type": "system_tick", "data": {}})
+        fsm = TutorFSM(ctx)
+        result = await fsm.on_user_message({"event_type": "system_tick", "data": {}})
 
         planner.assert_called_once()
         teacher.assert_called_once()

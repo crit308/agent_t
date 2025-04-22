@@ -10,10 +10,9 @@ from postgrest.exceptions import APIError
 
 from ai_tutor.dependencies import get_supabase_client, get_openai
 from ai_tutor.session_manager import SessionManager
-from ai_tutor.agents.orchestrator_agent import create_orchestrator_agent, get_orchestrator_cached
+from ai_tutor.fsm import TutorFSM
 from ai_tutor.context import TutorContext, UserModelState
 from ai_tutor.auth import verify_token  # Re‑use existing auth logic for header token verification
-from agents import Runner, RunConfig
 import json
 from fastapi_utils.tasks import repeat_every
 import structlog
@@ -68,8 +67,8 @@ async def tutor_stream(
     """Stream tutor interaction events for a session via WebSocket.
 
     The client must provide a valid Supabase JWT in the `Authorization` header (Bearer token).
-    Each inbound JSON message is forwarded to the Orchestrator agent. All streaming events
-    emitted by the agent are relayed back to the client in real‑time.
+    Each inbound JSON message is forwarded to the TutorFSM orchestrator. All streaming events
+    emitted by the FSM are relayed back to the client in real‑time.
     """
     # Authenticate (before accept if you prefer strict policy). We accept only after successful auth.
     try:
@@ -105,6 +104,20 @@ async def tutor_stream(
     # Accept the connection
     await ws.accept()
 
+    # Resume mid-objective if reconnecting and we were awaiting user input
+    if ctx.state == 'awaiting_user' and last_event:
+        fsm_resume = TutorFSM(ctx)
+        resume_result = await fsm_resume.on_user_message(last_event)
+        # Send resumed result to client
+        if hasattr(resume_result, 'model_dump'):
+            await ws.send_json(resume_result.model_dump(mode='json'))
+        elif isinstance(resume_result, dict):
+            await ws.send_json(resume_result)
+        else:
+            await ws.send_json({'response': resume_result})
+        # Persist resumed context
+        await session_manager.update_session_context(supabase, session_id, user.id, ctx)
+
     # --- Send current_question_json if present (for race-free resume) ---
     if current_question_json:
         await ws.send_json({"type": "run_item_stream_event", "item": current_question_json})
@@ -122,9 +135,6 @@ async def tutor_stream(
 
     # Snapshot mastery values to detect later updates
     mastery_prev = {topic: state.mastery for topic, state in ctx.user_model_state.concepts.items()}
-
-    # Create orchestrator agent once per process (cached).
-    agent = get_orchestrator_cached()
 
     tutor_ctx = ctx  # Use hydrated context for rest of handler
 
@@ -176,69 +186,18 @@ async def tutor_stream(
                 await ws.send_json({"type": "error", "detail": "Malformed JSON message."})
                 continue
 
-            # Convert incoming to a user message string for the agent workflow
-            user_input = json.dumps(incoming)
-
-            stream = Runner.run_streamed(
-                starting_agent=agent,
-                input=user_input,
-                context=tutor_ctx,
-                run_config=RunConfig(workflow_name="TutorSession", group_id=str(session_id)),
-            )
-
-            # Serialize streamed events robustly for the client
-            async for evt in stream.stream_events():
-                evt_type = getattr(evt, "type", None)
-
-                # Skip very low‑level raw token events to avoid noise / huge payloads
-                if evt_type == "raw_response_event":
-                    continue
-
-                if hasattr(evt, "model_dump"):
-                    # Most RunItemStreamEvent objects are Pydantic models; dump to JSON-safe Python types
-                    data = evt.model_dump(mode="json")
-                    await ws.send_json(data)
-                    continue
-
-                if evt_type == "agent_updated_stream_event":
-                    # Send only the new agent's name (avoid serializing the whole Agent object)
-                    await ws.send_json({"type": evt_type, "agent_name": getattr(evt.new_agent, "name", None)})
-                    continue
-
-                # Fallback for dataclasses: serialize fields safely
-                if is_dataclass(evt):
-                    serialized = {}
-                    for f in fields(evt):
-                        val = getattr(evt, f.name)
-                        # Pydantic models -> dict
-                        if hasattr(val, "model_dump"):
-                            try:
-                                serialized[f.name] = val.model_dump()
-                                continue
-                            except:
-                                pass
-                        # Nested dataclasses -> dict
-                        if is_dataclass(val):
-                            try:
-                                serialized[f.name] = asdict(val)
-                                continue
-                            except:
-                                pass
-                        # Primitives
-                        if isinstance(val, (str, int, float, bool, type(None))):
-                            serialized[f.name] = val
-                        else:
-                            # Try JSON serialization, otherwise fallback to string
-                            try:
-                                json.dumps(val)
-                                serialized[f.name] = val
-                            except:
-                                serialized[f.name] = str(val)
-                    await ws.send_json(serialized)
-                    continue
-
-                # Last‑resort: send a stringified representation
-                await ws.send_json({"type": evt_type or "event", "data": str(evt)})
+            # Use our new FSM to handle the incoming event
+            fsm = TutorFSM(tutor_ctx)
+            result = await fsm.on_user_message(incoming)
+            # Send back the final response from the FSM
+            if hasattr(result, 'model_dump'):
+                await ws.send_json(result.model_dump(mode='json'))
+            elif isinstance(result, dict):
+                await ws.send_json(result)
+            else:
+                await ws.send_json({'response': result})
+            # Persist context after FSM transition
+            await session_manager.update_session_context(supabase, session_id, user.id, tutor_ctx)
     finally:
         # Graceful close if we exit the loop for any reason
         try:

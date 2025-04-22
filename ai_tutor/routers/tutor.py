@@ -14,13 +14,10 @@ from uuid import UUID
 from ai_tutor.session_manager import SessionManager
 from ai_tutor.tools.file_upload import FileUploadManager
 from ai_tutor.agents.analyzer_agent import analyze_documents
-from ai_tutor.agents.session_analyzer_agent import analyze_teaching_session
-from ai_tutor.agents.orchestrator_agent import create_orchestrator_agent, run_orchestrator
-from ai_tutor.agents.teacher_agent import create_interactive_teacher_agent
-from ai_tutor.agents.analyzer_agent import AnalysisResult
+from ai_tutor.fsm import TutorFSM
 from ai_tutor.agents.models import (
     FocusObjective,
-    LessonPlan, LessonContent, Quiz, QuizUserAnswers, QuizFeedback, SessionAnalysis, PlannerOutput
+    LessonPlan, LessonContent, Quiz, QuizUserAnswers, QuizFeedback, SessionAnalysis
 )
 from ai_tutor.api_models import (
     DocumentUploadResponse, AnalysisResponse, TutorInteractionResponse,
@@ -29,13 +26,11 @@ from ai_tutor.api_models import (
 )
 from ai_tutor.context import TutorContext
 from ai_tutor.output_logger import get_logger, TutorOutputLogger
-from agents import Runner, RunConfig, Agent
 from ai_tutor.manager import AITutorManager
 from pydantic import BaseModel
 from ai_tutor.dependencies import get_supabase_client # Get supabase client dependency
 from ai_tutor.auth import verify_token # Get auth dependency
-from ai_tutor.utils.tool_helpers import invoke
-from ai_tutor.tools import call_planner_agent
+from ai_tutor.core.schema import PlannerOutput
 
 router = APIRouter()
 session_manager = SessionManager()
@@ -147,7 +142,6 @@ async def upload_session_documents(
 
     # Perform document analysis synchronously
     try:
-        from ai_tutor.agents.analyzer_agent import analyze_documents
         analysis = await analyze_documents(vector_store_id, context=tutor_context, supabase=supabase)
         tutor_context.analysis_result = analysis
         analysis_status = "completed"
@@ -189,8 +183,9 @@ async def get_session_analysis_results(
 @router.post(
     "/sessions/{session_id}/plan",
     response_model=PlannerOutput,
-    summary="Generate Lesson Plan",
-    dependencies=[Depends(verify_token)], # Add auth dependency
+    summary="DEPRECATED: Generate Lesson Plan (use /interact endpoint instead)",
+    deprecated=True,
+    dependencies=[Depends(verify_token)],
     tags=["Tutoring Workflow"]
 )
 async def generate_session_lesson_plan(
@@ -199,7 +194,7 @@ async def generate_session_lesson_plan(
     tutor_context: TutorContext = Depends(get_tutor_context) # Use parsed context
 ):
     """
-    DEPRECATED: Use /interact instead.
+    DEPRECATED: Use /interact endpoint instead.
     This endpoint triggers the Orchestrator to get the initial focus objective from the Planner.
     The focus objective is stored in the session context and returned.
     """
@@ -219,17 +214,9 @@ async def generate_session_lesson_plan(
 
     # --- Wrap the main logic in a try...except block ---
     try:
-        # Invoke the Planner Agent tool to determine initial focus
-        from ai_tutor.utils.tool_helpers import invoke
-        from ai_tutor.tools import call_planner_agent
-
-        planner_output = await invoke(call_planner_agent, tutor_context)
-        # Retry once if planner returned an error string
-        if isinstance(planner_output, str):
-            logger.log_error("PlannerAgentRetry", f"Planner tool error: {planner_output}. Retrying...")
-            planner_output = await invoke(call_planner_agent, tutor_context)
-            if isinstance(planner_output, str):
-                raise HTTPException(status_code=500, detail=f"Planner error: {planner_output}")
+        # Use direct planner for next focus objective
+        from ai_tutor.agents.planner_agent import run_planner
+        planner_output = await run_planner(tutor_context)
 
         # Log and persist the focus objective
         logger.log_planner_output(planner_output.objective)
@@ -396,14 +383,14 @@ async def interact_with_tutor(
     print(f"[Interact] Context BEFORE Orchestrator: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
 
     user: User = request.state.user
-    # Run the orchestrator loop in Python for deterministic control
-    from ai_tutor.agents.orchestrator_agent import run_orchestrator
+    # Invoke the new FSM wrapper
     last_event = {"event_type": interaction_input.type, "data": interaction_input.data or {}}
+    fsm = TutorFSM(tutor_context)
     try:
-        final_response_data = await run_orchestrator(tutor_context, last_event)
+        final_response_data = await fsm.on_user_message(last_event)
     except Exception as exc:
-        # Log orchestrator errors using our output logger
-        logger.log_error("run_orchestrator", exc)
+        # Log TutorFSM errors using our output logger
+        logger.log_error("TutorFSM", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
     # --- Save Context AFTER determining the final response ---
