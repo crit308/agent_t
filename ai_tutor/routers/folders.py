@@ -14,7 +14,7 @@ router = APIRouter(
     dependencies=[Depends(verify_token)] # Secure all folder endpoints
 )
 
-@router.post("/", response_model=FolderResponse, status_code=201)
+@router.post("/", response_model=None, status_code=201)
 async def create_folder(
     folder_data: FolderCreateRequest,
     request: Request,
@@ -32,8 +32,11 @@ async def create_folder(
         if response.data and isinstance(response.data, list) and len(response.data) > 0:
             inserted_folder = response.data[0] # Get the first (and only) inserted item
             # Ensure created_at is stringified for the Pydantic model
-            inserted_folder['created_at'] = str(inserted_folder.get('created_at')) # Use .get() for safety
-            return FolderResponse(**inserted_folder)
+            return {
+                "id": str(inserted_folder["id"]),
+                "name": inserted_folder["name"],
+                "created_at": str(inserted_folder.get("created_at"))
+            }
         else:
             # Log potential error if available, or just the response
             error_details = getattr(response, 'error', 'No specific error details')
@@ -43,7 +46,7 @@ async def create_folder(
         print(f"Exception creating folder: {e}")
         raise HTTPException(status_code=500, detail=f"Database error during folder creation: {str(e)}")
 
-@router.get("/", response_model=FolderListResponse)
+@router.get("/", response_model=None)
 async def list_folders(
     request: Request,
     supabase: Client = Depends(get_supabase_client)
@@ -56,13 +59,16 @@ async def list_folders(
         if response.data:
             # Convert created_at to string for each folder
             folders = [
-                FolderResponse(id=item['id'], name=item['name'], created_at=str(item['created_at']))
+                {
+                    "id": str(item["id"]),
+                    "name": item["name"],
+                    "created_at": str(item["created_at"]),
+                }
                 for item in response.data
             ]
-            return FolderListResponse(folders=folders)
+            return {"folders": folders}
         elif isinstance(response.data, list) and not response.data:
-            # Successfully executed but no folders found, return empty list
-            return FolderListResponse(folders=[])
+            return {"folders": []}
         else:
             # Handle unexpected response structure or potential error not caught by exception
             print(f"Unexpected response structure or error listing folders: {response}") # Log the whole response

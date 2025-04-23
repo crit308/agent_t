@@ -2,6 +2,7 @@
 LLM abstraction for AI Tutor – simple wrapper around OpenAI chat.
 """
 import os
+import asyncio
 from typing import Any, Dict, List
 import openai
 
@@ -12,8 +13,13 @@ class LLMClient:
         openai.api_key = api_key or os.getenv("OPENAI_API_KEY")
 
     async def chat(self, messages: List[Dict[str, Any]]) -> str:
-        response = await openai.ChatCompletion.acreate(
+        # Call the synchronous OpenAI API method in a thread to avoid blocking the event loop
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: openai.chat.completions.create(
             model=self.model_name,
             messages=messages
+            )
         )
         return response.choices[0].message.content 

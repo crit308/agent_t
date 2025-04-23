@@ -14,7 +14,6 @@ from uuid import UUID
 from ai_tutor.session_manager import SessionManager
 from ai_tutor.tools.file_upload import FileUploadManager
 from ai_tutor.agents.analyzer_agent import analyze_documents
-from ai_tutor.fsm import TutorFSM
 from ai_tutor.agents.models import (
     FocusObjective,
     LessonPlan, LessonContent, Quiz, QuizUserAnswers, QuizFeedback, SessionAnalysis
@@ -26,7 +25,6 @@ from ai_tutor.api_models import (
 )
 from ai_tutor.context import TutorContext
 from ai_tutor.output_logger import get_logger, TutorOutputLogger
-from ai_tutor.manager import AITutorManager
 from pydantic import BaseModel
 from ai_tutor.dependencies import get_supabase_client # Get supabase client dependency
 from ai_tutor.auth import verify_token # Get auth dependency
@@ -71,7 +69,7 @@ class MiniQuizLogData(BaseModel):
 
 @router.post(
     "/sessions/{session_id}/documents",
-    response_model=DocumentUploadResponse,
+    response_model=None,
     summary="Upload Documents and Trigger Analysis",
     tags=["Tutoring Workflow"]
 )
@@ -182,7 +180,7 @@ async def get_session_analysis_results(
 
 @router.post(
     "/sessions/{session_id}/plan",
-    response_model=PlannerOutput,
+    response_model=None,
     summary="DEPRECATED: Generate Lesson Plan (use /interact endpoint instead)",
     deprecated=True,
     dependencies=[Depends(verify_token)],
@@ -218,8 +216,8 @@ async def generate_session_lesson_plan(
         from ai_tutor.agents.planner_agent import run_planner
         planner_output = await run_planner(tutor_context)
 
-        # Log and persist the focus objective
-        logger.log_planner_output(planner_output.objective)
+        # Log the planner output (list of objectives)
+        logger.log_planner_output(planner_output)
         supabase: Client = await get_supabase_client()
         success = await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
         if not success:
@@ -365,7 +363,7 @@ async def log_user_summary_event(
 # --- New Interaction Endpoint ---
 @router.post(
     "/sessions/{session_id}/interact",
-    response_model=InteractionResponseData,  # Change response model
+    response_model=None,  # Disable automatic response model to avoid invalid field type
     dependencies=[Depends(verify_token)], # Add auth dependency
     summary="Interact with the AI Tutor",
     tags=["Tutoring Workflow"]
@@ -383,39 +381,67 @@ async def interact_with_tutor(
     print(f"[Interact] Context BEFORE Orchestrator: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
 
     user: User = request.state.user
+    # Import TutorFSM here to avoid circular import at module load
+    from ai_tutor.fsm import TutorFSM
     # Invoke the new FSM wrapper
-    last_event = {"event_type": interaction_input.type, "data": interaction_input.data or {}}
+    last_event = {"type": interaction_input.type, "data": interaction_input.data or {}}
     fsm = TutorFSM(tutor_context)
     try:
         final_response_data = await fsm.on_user_message(last_event)
     except Exception as exc:
         # Log TutorFSM errors using our output logger
         logger.log_error("TutorFSM", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
+        # Return a serializable error response using ErrorResponse structure
+        error_data = ErrorResponse(response_type="error", message=f"Internal FSM error: {str(exc)}")
+        # Need to wrap this in InteractionResponseData
+        return InteractionResponseData(content_type="error", data=error_data, user_model_state=tutor_context.user_model_state)
 
     # --- Save Context AFTER determining the final response ---
     # Persist last_event and pending_interaction_type for session resume
-    tutor_context.last_event = last_event
-    tutor_context.pending_interaction_type = tutor_context.user_model_state.pending_interaction_type
+    # TODO: Review if last_event and pending_interaction_type are still the right things to save from TutorContext
+    # self.ctx seems to hold the definitive state now.
+    # tutor_context.last_event = last_event # Already set in on_user_message
+    # tutor_context.pending_interaction_type = tutor_context.user_model_state.pending_interaction_type # State is now in ctx.state
     print(f"[Interact] Saving final context state to Supabase for session {session_id}")
     await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
-    print(f"[Interact] Context saved AFTER run: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
+    print(f"[Interact] Context saved AFTER run: state={tutor_context.state}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
 
-    # Build response, prioritizing API models with response_type
-    try:
+    # Build response based on what FSM returned
+    if hasattr(final_response_data, 'response_type'):
+        # Case 1: FSM returned a Pydantic model (e.g., ExplanationResponse, QuestionResponse from ExecutorAgent.run -> CONTINUE)
         content_type = final_response_data.response_type
         data = final_response_data
-    except Exception:
-        # Fallback for raw dict events
-        if isinstance(final_response_data, dict):
-            content_type = final_response_data.get("event_type", "message")
-            data = final_response_data.get("data")
-        else:
-            content_type = "message"
-            data = final_response_data
+    elif isinstance(final_response_data, dict) and 'response_type' in final_response_data:
+        # Case 2: FSM returned a dictionary with 'response_type' (e.g., error or message dicts from FSM itself)
+        content_type = final_response_data['response_type'] # Get the type ('error', 'message')
+        # Try to parse the dict into a known Pydantic model for consistency
+        try:
+            if content_type == "error":
+                 # Use the ErrorResponse model for structure
+                 data = ErrorResponse(**final_response_data)
+            elif content_type == "message":
+                 # Use the MessageResponse model for structure
+                 data = MessageResponse(**final_response_data)
+            else:
+                 # Unknown response_type from FSM dict, pass raw dict (shouldn't happen ideally)
+                 print(f"[Interact Warning] Unknown response_type '{content_type}' in dict from FSM. Passing raw dict.")
+                 data = final_response_data
+        except Exception as parse_exc:
+            # Handle cases where the dict doesn't match the Pydantic model structure
+            print(f"[Interact Error] Failed to parse FSM dict into {content_type} model: {parse_exc}. Dict: {final_response_data}")
+            content_type = "error"
+            data = ErrorResponse(response_type="error", message="Internal error processing tutor response.")
+    else:
+        # Case 3: Fallback for unexpected return type from FSM (e.g., None, str, different dict)
+        print(f"[Interact Warning] Unexpected return type from FSM: {type(final_response_data)}. Value: {final_response_data}. Defaulting to message.")
+        content_type = "message" # Default to message
+        # Use MessageResponse model
+        data = MessageResponse(response_type="message", text=f"Unexpected response from tutor: {str(final_response_data)}")
+
+    # Construct the final API response
     return InteractionResponseData(
-        content_type=content_type,
-        data=data,
+        content_type=content_type, # Use the determined content_type
+        data=data, # Use the (potentially parsed) data
         user_model_state=tutor_context.user_model_state
     )
 

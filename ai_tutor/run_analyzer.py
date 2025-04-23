@@ -10,8 +10,9 @@ import asyncio
 import json
 from typing import Optional, Any
 
-from ai_tutor.agents import analyze_documents
+from ai_tutor.agents.analyzer_agent import analyze_documents
 from ai_tutor.tools.file_upload import FileUploadManager
+from ai_tutor.dependencies import SUPABASE_CLIENT
 
 
 def save_analysis_to_file(analysis: Any, output_file: str) -> None:
@@ -71,7 +72,7 @@ class VectorStoreWatcher:
         
         # Run the analyzer on the detected vector store
         print(f"Running document analysis on vector store: {target_vector_store_id}")
-        analysis = await analyze_documents(target_vector_store_id)
+        analysis = await analyze_documents(target_vector_store_id, supabase=SUPABASE_CLIENT)
         
         if analysis:
             # Generate output filename with vector store ID

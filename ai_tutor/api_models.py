@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Union, Literal, Dict, Any
 from uuid import UUID # For folder ID typing
 
@@ -94,8 +94,13 @@ class ErrorResponse(BaseModel):
 # --- Interaction Response Data Wrapper ---
 class InteractionResponseData(BaseModel):
     """Wrapper for data sent FROM the /interact endpoint."""
+    model_config = ConfigDict(
+        json_encoders={
+            UUID: str
+        }
+    )
     content_type: str # Matches InteractionContentType in frontend (e.g., 'explanation', 'question')
-    data: Any # The actual content (ExplanationResponse, QuestionResponse, etc.)
+    data: Union[ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse, Dict[str, Any]] # Explicitly allow Dict for fallbacks
     user_model_state: UserModelState # Include the updated user model state
 
 TutorInteractionResponse = Union[

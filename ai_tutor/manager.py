@@ -11,14 +11,15 @@ import re # Added import
 from agents import Runner, trace, gen_trace_id, set_tracing_export_api_key, RunConfig
 
 from ai_tutor.tools.file_upload import FileUploadManager, upload_document
-from ai_tutor.agents.planner_agent import create_planner_agent
-from ai_tutor.agents.analyzer_agent import analyze_documents
-from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent, generate_quiz
-from ai_tutor.agents.quiz_teacher_agent import create_quiz_teacher_agent, generate_quiz_feedback
+from ai_tutor.agents.planner_agent import run_planner
+from ai_tutor.agents.analyzer_agent import analyze_documents, AnalysisResult
+# from ai_tutor.agents.quiz_creator_agent import create_quiz_creator_agent, generate_quiz # Removed this line
 from ai_tutor.agents.session_analyzer_agent import create_session_analyzer_agent, analyze_teaching_session
 # Ensure simplified LessonContent is imported along with other necessary models
 from ai_tutor.agents.models import LessonContent, Quiz, LessonPlan, LessonSection, LearningObjective, QuizUserAnswers, QuizFeedback, QuizUserAnswer, SessionAnalysis, QuizQuestion
-from ai_tutor.context import TutorContext  # Import the new context model
+from ai_tutor.context import TutorContext, UserModelState
+# Remove the import for the non-existent teacher_agent module
+# from ai_tutor.agents.teacher_agent import TeacherAgent
 
 
 class AITutorManager:
@@ -195,7 +196,7 @@ class AITutorManager:
         print(f"Generating lesson plan...")
 
         # Create the planner agent
-        planner_agent = create_planner_agent(self.context.vector_store_id) # No api_key
+        planner_agent = run_planner(self.context.vector_store_id) # No api_key
 
         # Create a prompt that focuses on document analysis and EXPLICITLY instructs to hand off
         prompt = """
@@ -354,36 +355,36 @@ class AITutorManager:
         # Always return self.lesson_plan, which is now guaranteed to be a valid LessonPlan object
         return self.lesson_plan
     
-    async def generate_quiz(self) -> Optional[Quiz]:
-        """Generate a quiz based on the lesson plan in the context.
-        
-        Note: In the new interactive model, quizzes are typically generated through
-        the Orchestrator agent via /interact. This method remains as a utility for
-        direct quiz generation when needed.
-        """
-        if not self.context.lesson_plan:
-            print("Cannot generate quiz: Lesson plan not found in context.")
-            return None
-        if not self.context.vector_store_id:
-            print("Cannot generate quiz: Vector store ID not found in context.")
-            return None
-
-        try:
-            # Assuming generate_quiz helper exists and is updated
-            self.quiz = await generate_quiz(
-                lesson_plan=self.context.lesson_plan,
-                vector_store_id=self.context.vector_store_id,
-                context=self.context
-            )
-            # Store quiz in context if successful
-            if self.quiz:
-                # Update session state if needed
-                if hasattr(self, 'output_logger') and self.output_logger:
-                    self.output_logger.log_quiz_generation(self.quiz)
-            return self.quiz
-        except Exception as e:
-            print(f"Error in manager.generate_quiz: {e}")
-            return None
+    # async def generate_quiz(self) -> Optional[Quiz]:
+    #     """Generate a quiz based on the lesson plan in the context.
+    #     
+    #     Note: In the new interactive model, quizzes are typically generated through
+    #     the Orchestrator agent via /interact. This method remains as a utility for
+    #     direct quiz generation when needed.
+    #     """
+    #     if not self.context.lesson_plan:
+    #         print("Cannot generate quiz: Lesson plan not found in context.")
+    #         return None
+    #     if not self.context.vector_store_id:
+    #         print("Cannot generate quiz: Vector store ID not found in context.")
+    #         return None
+    # 
+    #     try:
+    #         # Assuming generate_quiz helper exists and is updated
+    #         self.quiz = await generate_quiz(
+    #             lesson_plan=self.context.lesson_plan,
+    #             vector_store_id=self.context.vector_store_id,
+    #             context=self.context
+    #         )
+    #         # Store quiz in context if successful
+    #         if self.quiz:
+    #             # Update session state if needed
+    #             if hasattr(self, 'output_logger') and self.output_logger:
+    #                 self.output_logger.log_quiz_generation(self.quiz)
+    #         return self.quiz
+    #     except Exception as e:
+    #         print(f"Error in manager.generate_quiz: {e}")
+    #         return None
     
     async def run_full_workflow_with_quiz_teacher(self, file_paths: List[str]) -> dict:
         """Run the full workflow from document upload to quiz creation and feedback.
@@ -457,15 +458,16 @@ class AITutorManager:
         if not full_handoff_completed:
             # 3. Generate the quiz (without teacher handoff to prevent duplicate workflow)
             if not self.quiz or not hasattr(self.quiz, 'questions') or len(self.quiz.questions) == 0:
-                try:
-                    print("\n3. Creating quiz...")
-                    self.quiz = await self.generate_quiz()
-                    if not self.quiz or not hasattr(self.quiz, 'questions'):
-                        raise ValueError("Failed to generate valid quiz with questions")
-                except Exception as e:
-                    print(f"Error generating quiz: {e}")
+                # try:
+                #     print("\n3. Creating quiz...")
+                #     self.quiz = await self.generate_quiz() # Commented out call
+                #     if not self.quiz or not hasattr(self.quiz, 'questions'):
+                #         raise ValueError("Failed to generate valid quiz with questions")
+                # except Exception as e:
+                #     print(f"Error generating quiz: {e}")
                     # Create a minimal quiz with at least one question
                     from ai_tutor.agents.models import Quiz, QuizQuestion
+                    print("\n3. Creating fallback minimal quiz as generate_quiz is removed...") # Added print statement
                     self.quiz = Quiz(
                         title=f"Quiz on Test Topic",
                         description="This is a test quiz.",
@@ -596,21 +598,17 @@ class AITutorManager:
         """Submit user answers to the quiz and get feedback."""
         if not self.quiz:
             raise ValueError("No quiz has been generated yet")
-        
         # Log the raw user answers if we have a logger
         if hasattr(self, 'output_logger') and self.output_logger:
             self.output_logger.log_raw_user_answers(user_answers)
-        
         # No need for outer trace() if Runner.run uses RunConfig
         # with trace("Quiz feedback generation"):
         print(f"Processing quiz answers...")
         print("Using quiz teacher agent directly (without handoff chain) to avoid duplicate workflows")
-        
         # The generate_quiz_feedback function will use a fresh agent without handoffs
         try:
-            # RunConfig will be passed inside generate_quiz_feedback
-            self.quiz_feedback = await generate_quiz_feedback(self.quiz, user_answers, context=self.context) # Pass context
-            return self.quiz_feedback
+            # Quiz teacher agent is removed; cannot generate feedback
+            raise NotImplementedError("Quiz teacher agent functionality has been removed.")
         except Exception as e:
             print(f"ERROR: Quiz teacher agent failed: {e}")
             if hasattr(self, 'output_logger') and self.output_logger:

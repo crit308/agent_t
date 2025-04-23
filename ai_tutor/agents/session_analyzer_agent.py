@@ -17,7 +17,6 @@ from ai_tutor.agents.models import (
     TeachingInsight,
     SessionAnalysis
 )
-from ai_tutor.agents.utils import RoundingModelWrapper
 
 
 def create_session_analyzer_agent(api_key: str = None):
@@ -87,7 +86,7 @@ def create_session_analyzer_agent(api_key: str = None):
         YOUR OUTPUT MUST BE ONLY A VALID SESSIONANALYSIS OBJECT.
         """),
         output_type=SessionAnalysis,
-        model=RoundingModelWrapper(base_model),
+        model=base_model,
     )
     
     return session_analyzer_agent

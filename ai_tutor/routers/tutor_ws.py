@@ -10,7 +10,6 @@ from postgrest.exceptions import APIError
 
 from ai_tutor.dependencies import get_supabase_client, get_openai
 from ai_tutor.session_manager import SessionManager
-from ai_tutor.fsm import TutorFSM
 from ai_tutor.context import TutorContext, UserModelState
 from ai_tutor.auth import verify_token  # Re‑use existing auth logic for header token verification
 import json
@@ -92,6 +91,9 @@ async def tutor_stream(
         else:
             raise
 
+    # Import TutorFSM here, inside the function, before it's used
+    from ai_tutor.fsm import TutorFSM
+
     if row and row["context_json"]:
         ctx = TutorContext.model_validate_json(row["context_json"])
         last_event = json.loads(row["last_event_json"])
@@ -141,14 +143,35 @@ async def tutor_stream(
     try:
         while True:
             try:
-                # Read raw payload text and normalize fields
-                payload = json.loads(await ws.receive_text())
-                if 'event_type' not in payload and 'type' in payload:
-                    payload = {'event_type': payload['type'], **payload.get('data', {})}
-                incoming: Dict[str, Any] = payload
-                # Handle pace slider change: update learning_pace_factor
-                if incoming.get("type") == "pace_change":
-                    value = incoming.get("value")
+                # Read raw payload text
+                payload_text = await ws.receive_text()
+                payload = json.loads(payload_text)
+                event_data = payload.get('data', {}) # Extract data first
+
+                # Determine the event type, prioritizing 'type' over 'event_type'
+                if 'type' in payload:
+                    event_type = payload['type']
+                elif 'event_type' in payload:
+                    event_type = payload['event_type'] # Use event_type if type is missing
+                    print(f"[WebSocket Warning] Received message using deprecated 'event_type': {payload_text}")
+                else:
+                    # Handle messages without type/event_type
+                    print(f"[WebSocket Warning] Received message without 'type' or 'event_type': {payload_text}")
+                    await ws.send_json({"type": "error", "detail": "Message missing 'type' field."})
+                    continue # Skip processing this message
+
+                # Construct the 'incoming' dict for the FSM with the correct 'type' key
+                incoming: Dict[str, Any] = {'type': event_type, 'data': event_data}
+
+                # --- Check for internal/system message types BEFORE handling specific handlers or passing to FSM ---
+                if incoming['type'] in ['ping', 'system_tick']:
+                    log.debug("Received system message, ignoring.", message_type=incoming['type'])
+                    continue # Ignore pings and system ticks, don't pass to FSM
+
+                # --- Handle specific types like 'pace_change', 'help_request' --- 
+                # Check incoming['type'] now
+                if incoming['type'] == "pace_change":
+                    value = incoming['data'].get("value") # Get value from data field
                     try:
                         factor = float(value)
                         tutor_ctx.user_model_state.learning_pace_factor = factor
@@ -157,10 +180,10 @@ async def tutor_stream(
                         await ws.send_json({"type": "pace_change", "value": factor})
                     except Exception as e:
                         await ws.send_json({"type": "error", "detail": f"Invalid pace_change value: {e}"})
-                    continue
-                # Handle "I'm stuck" help request: set pending summary prompt
-                if incoming.get("type") == "help_request":
-                    mode = incoming.get("mode")
+                    continue # Go to next WebSocket message
+                
+                if incoming['type'] == "help_request":
+                    mode = incoming['data'].get("mode") # Get mode from data field
                     if mode == "stuck":
                         tutor_ctx.user_model_state.pending_interaction_type = "summary_prompt"
                         tutor_ctx.user_model_state.pending_interaction_details = {"reason": "stuck"}
@@ -179,25 +202,43 @@ async def tutor_stream(
                         await ws.send_json({"type": "help_request_ack"})
                     else:
                         await ws.send_json({"type": "error", "detail": "Invalid help_request mode"})
-                    continue
+                    continue # Go to next WebSocket message
+                # --- End specific type handling ---
+
             except WebSocketDisconnect:  # client closed connection
+                log.info("WebSocket disconnected by client", session_id=str(session_id))
                 break
-            except Exception:  # Malformed JSON, etc.
+            except json.JSONDecodeError:
+                log.warning("WebSocket received invalid JSON", session_id=str(session_id))
                 await ws.send_json({"type": "error", "detail": "Malformed JSON message."})
+                continue
+            except Exception as e:
+                log.error("WebSocket receive error", session_id=str(session_id), error=str(e), exc_info=True)
+                await ws.send_json({"type": "error", "detail": f"Error processing message: {str(e)}"})
                 continue
 
             # Use our new FSM to handle the incoming event
-            fsm = TutorFSM(tutor_ctx)
-            result = await fsm.on_user_message(incoming)
-            # Send back the final response from the FSM
-            if hasattr(result, 'model_dump'):
-                await ws.send_json(result.model_dump(mode='json'))
-            elif isinstance(result, dict):
-                await ws.send_json(result)
-            else:
-                await ws.send_json({'response': result})
-            # Persist context after FSM transition
-            await session_manager.update_session_context(supabase, session_id, user.id, tutor_ctx)
+            try:
+                fsm = TutorFSM(tutor_ctx)
+                result = await fsm.on_user_message(incoming) # Pass the correctly structured dict
+                # Send back the final response from the FSM
+                if hasattr(result, 'model_dump'):
+                    await ws.send_json(result.model_dump(mode='json'))
+                elif isinstance(result, dict):
+                    await ws.send_json(result)
+                else:
+                    # Handle unexpected FSM return types
+                    log.warning("Unexpected FSM result type", result_type=type(result), result=result, session_id=str(session_id))
+                    await ws.send_json({'type': 'message', 'text': f'Tutor response: {str(result)}'})
+                # Persist context after FSM transition
+                await session_manager.update_session_context(supabase, session_id, user.id, tutor_ctx)
+            except Exception as e:
+                # Log the error and inform the client
+                log.error("FSMError", error=str(e), session_id=str(session_id), exc_info=True)
+                await ws.send_json({"type": "error", "detail": f"Internal tutor error. Please try again."})
+                # Consider if context should be persisted here or if the error state needs handling
+                # For now, just report and continue the loop
+
     finally:
         # Graceful close if we exit the loop for any reason
         try:

@@ -30,7 +30,15 @@ def list_tools():
 Automatically import all skill modules in this package so they register with the tool registry.
 """
 import importlib, pkgutil
-__path__ = __import__(__name__).__path__  # ensure proper package path
-for finder, module_name, ispkg in pkgutil.iter_modules(__path__):
-    importlib.import_module(f"{__name__}.{module_name}")
+# __path__ = __import__(__name__).__path__  # REMOVE THIS LINE. __path__ is implicitly available.
+for finder, module_name, ispkg in pkgutil.iter_modules(__path__): # Use the existing __path__
+    # Add a check to prevent importing __init__ or the package itself recursively
+    if module_name != '__init__' and not ispkg: # Only import .py files, not subdirectories
+        try:
+            # Use relative import within the package
+            importlib.import_module(f".{module_name}", package=__name__)
+        except Exception as e:
+            # Add some logging/printing to see if specific skills fail to import
+            print(f"Error importing skill module '{module_name}': {e}")
+
 # All modules under ai_tutor/skills are now imported and registered 

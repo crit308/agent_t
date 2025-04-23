@@ -25,21 +25,9 @@ _dag_cache = {
 _dag_cache_lock = asyncio.Lock()
 
 async def _get_concept_graph_edges(supabase):
-    """Fetch edges and updated_at from Supabase, with cache."""
-    async with _dag_cache_lock:
-        # Check updated_at timestamp
-        updated_resp = supabase.table("concept_graph").select("updated_at").order("updated_at", desc=True).limit(1).execute()
-        updated_at = None
-        if updated_resp.data:
-            updated_at = updated_resp.data[0].get("updated_at")
-        if _dag_cache["edges"] is not None and _dag_cache["updated_at"] == updated_at:
-            return _dag_cache["edges"]
-        # Fetch all edges
-        response = supabase.table("concept_graph").select("prereq, concept, updated_at").execute()
-        edges = response.data or []
-        _dag_cache["edges"] = edges
-        _dag_cache["updated_at"] = updated_at
-        return edges
+    """Fetch concept prerequisite edges from Supabase without relying on updated_at column."""
+    response = supabase.table("concept_graph").select("prereq, concept").execute()
+    return response.data or []
 
 # --- Define read_knowledge_base tool locally ---
 @function_tool_logged()
@@ -122,7 +110,72 @@ async def run_planner(ctx: TutorContext) -> PlannerOutput:
         {"role": "user", "content": f"Next learnable concepts: {next_concepts}"}
     ]
     response_text = await llm.chat(messages)
-    output = PlannerOutput.parse_raw(response_text)
+    # Clean up model response: strip markdown fences and extract JSON
+    import re
+    cleaned = response_text.strip()
+    # Remove leading/trailing ``` markers if present
+    if cleaned.startswith("```"):
+        # drop first fence line
+        cleaned = re.sub(r"^```[^\n]*\n", "", cleaned)
+    if cleaned.endswith("```"):
+        cleaned = re.sub(r"\n```$", "", cleaned)
+    # Extract JSON object between first { and last }
+    start = cleaned.find('{')
+    end = cleaned.rfind('}')
+    if start != -1 and end != -1:
+        cleaned = cleaned[start:end+1]
+    # Load cleaned JSON into dict and coerce types for validation
+    import json
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        # If the LLM returned invalid JSON, create a fallback objective
+        data = {}
+
+    # Ensure objectives key exists and is a non‑empty list
+    if not data.get("objectives"):
+        # Build a simple fallback using the first available concept or a generic topic
+        fallback_topic = next_concepts[0] if next_concepts else "General Review"
+        data["objectives"] = [
+            {
+                "topic": fallback_topic,
+                "learning_goal": f"Understand the concept of {fallback_topic}",
+                "target_mastery": 0.8,
+                "priority": 3,
+            }
+        ]
+
+    # Convert target_mastery and priority fields to numeric types
+    for obj in data.get("objectives", []):
+        # target_mastery should be a float
+        tm = obj.get("target_mastery")
+        if isinstance(tm, str):
+            try:
+                obj["target_mastery"] = float(tm)
+            except ValueError:
+                # map common descriptors to numeric values
+                level_map = {
+                    "familiarity": 0.5,
+                    "basic understanding": 0.5,
+                    "intermediate": 0.75,
+                    "proficiency": 1.0,
+                    "mastery": 1.0
+                }
+                obj["target_mastery"] = level_map.get(tm.lower(), 0.0)
+        # priority should be an int
+        pr = obj.get("priority")
+        if isinstance(pr, str):
+            try:
+                obj["priority"] = int(pr)
+            except ValueError:
+                pr_map = {
+                    "high": 1,
+                    "medium": 3,
+                    "low": 5
+                }
+                obj["priority"] = pr_map.get(pr.lower(), 5)
+    # Validate and create PlannerOutput model
+    output = PlannerOutput.model_validate(data)
     # Store chosen objective in context
     ctx.current_focus_objective = output.objectives[0]
     return output 
