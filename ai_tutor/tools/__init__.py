@@ -18,7 +18,7 @@ from ai_tutor.errors import ToolExecutionError
 import json
 from ai_tutor.telemetry import log_tool
 from pydantic import BaseModel
-from ai_tutor.utils.decorators import function_tool_logged
+from ai_tutor.skills import skill
 from ai_tutor.core.llm import LLMClient
 
 _exports: List[str] = []
@@ -34,19 +34,19 @@ def _export(obj):
 # --- Orchestrator Tool Implementations ---
 
 @_export
-@function_tool_logged()
+@skill(cost="low")
 async def healthz(ctx) -> str:
     """Ping‑pong tool so orchestrator traces always include a baseline call."""
     return "ok"
 
 @_export
-@function_tool_logged()
+@skill(cost="low")
 def update_explanation_progress(ctx: RunContextWrapper[TutorContext], segment_index: int) -> str:
     """DEPRECATED: The Orchestrator manages micro-steps directly."""
     return "Error: This tool is deprecated. Orchestrator manages micro-steps."
 
 @_export
-@function_tool_logged()
+@skill(cost="medium")
 async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_answer_index: int) -> QuizFeedbackItem:
     """Evaluate the user's answer against the current QuizQuestion in context."""
     question = ctx.context.current_quiz_question
@@ -70,7 +70,7 @@ async def call_quiz_teacher_evaluate(ctx: RunContextWrapper[TutorContext], user_
     return feedback
 
 @_export
-@function_tool_logged()
+@skill(cost="low")
 async def update_user_model(
     ctx: RunContextWrapper[TutorContext],
     topic: str,
@@ -138,7 +138,7 @@ async def update_user_model(
     return f"User model updated for {topic}."
 
 @_export
-@function_tool_logged()
+@skill(cost="low")
 async def get_user_model_status(ctx: RunContextWrapper[TutorContext], topic: Optional[str] = None) -> Dict[str, Any]:
     """Retrieves detailed user model state, optionally for a specific topic."""
     print(f"[Tool] Retrieving user model status for topic '{topic}'")
@@ -165,7 +165,7 @@ async def get_user_model_status(ctx: RunContextWrapper[TutorContext], topic: Opt
     return state.model_dump(mode='json')
 
 @_export
-@function_tool_logged()
+@skill(cost="medium")
 async def reflect_on_interaction(
     ctx: RunContextWrapper[TutorContext],
     topic: str,
@@ -199,7 +199,7 @@ async def reflect_on_interaction(
     return {"analysis": analysis, "suggested_next_steps": suggestions}
 
 @_export
-@function_tool_logged()
+@skill(cost="low")
 async def call_planner_agent(
     ctx: RunContextWrapper[TutorContext],
     user_state_summary: Optional[str] = None
@@ -209,7 +209,7 @@ async def call_planner_agent(
     return await run_planner(ctx.context)
 
 @_export
-@function_tool_logged()
+@skill(cost="medium")
 async def call_teacher_agent(
     ctx: RunContextWrapper[TutorContext],
     topic: str,
@@ -224,7 +224,7 @@ async def call_teacher_agent(
     return ExplanationResult(status="delivered", details=response)
 
 @_export
-@function_tool_logged()
+@skill(cost="medium")
 async def call_quiz_creator_agent(ctx: RunContextWrapper[TutorContext], topic: str, instructions: str) -> QuizCreationResult:
     """Generate quiz questions using LLM and return a QuizCreationResult."""
     llm = LLMClient()

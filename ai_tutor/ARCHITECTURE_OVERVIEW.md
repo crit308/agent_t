@@ -1,6 +1,6 @@
 # AI Tutor — Refactored Architecture Guide
 
-_Last updated: {{DATE}}_
+_Last updated: 2025‑04‑24_
 
 This document explains **how the AI Tutor works _after_ the Planner + Executor refactor**.  Read this if you need to debug the runtime flow, add new skills, or integrate the tutor into additional front‑ends.
 
@@ -146,3 +146,5 @@ A – See `tests/` folder: `test_fsm_transitions.py`, `test_planner_output.py`, 
 ---
 
 ✦ Happy hacking! ✦ 
+
+![AI Tutor data‑flow](docs/assets/architecture_v2.svg) 

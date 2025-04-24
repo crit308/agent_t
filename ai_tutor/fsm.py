@@ -109,28 +109,7 @@ class TutorFSM:
         print(f"[FSM] Executor Result: Status={status}, Result Type={type(result)}") # Add logging
 
         # --- State transition based on executor status ---
-        if status == ExecutorStatus.COMPLETED:
-            print("[FSM] Objective COMPLETED.") # Add logging
-            self.state = 'planning' # Ready to plan the *next* objective on the *next* call
-            self.ctx.state = self.state
-            # Clear the completed objective
-            completed_objective_topic = self.ctx.current_focus_objective.topic
-            self.ctx.current_focus_objective = None
-            # Return a message indicating completion, frontend might trigger next step or user action will trigger _plan
-            # Use a standard response model structure if available (like MessageResponse)
-            return {"response_type": "message", "text": f"Finished objective: {completed_objective_topic}. Ready for the next topic."}
-
-        elif status == ExecutorStatus.STUCK:
-            print("[FSM] Objective STUCK.") # Add logging
-            self.state = 'planning' # Ready to plan the *next* objective on the *next* call
-            self.ctx.state = self.state
-            # Clear the stuck objective
-            stuck_objective_topic = self.ctx.current_focus_objective.topic
-            self.ctx.current_focus_objective = None
-            # Return a message indicating stuck
-            return {"response_type": "message", "text": f"Got stuck on objective: {stuck_objective_topic}. Let's try planning again."}
-
-        elif status == ExecutorStatus.CONTINUE:
+        if status == ExecutorStatus.CONTINUE:
             print("[FSM] Objective CONTINUE. Awaiting user.") # Add logging
             self.state = 'awaiting_user' # Wait for next user message to trigger execution again
             self.ctx.state = self.state
@@ -139,6 +118,21 @@ class TutorFSM:
             # If result is already a Pydantic model like ExplanationResponse, QuestionResponse, etc., it's fine.
             # If it's a plain dict, ensure it matches one of those structures or is handled correctly.
             return result
+
+        elif status in (ExecutorStatus.COMPLETED, ExecutorStatus.STUCK):
+            print(f"[FSM] Objective {status.name}.") # Add logging
+            self.state = 'planning' # Ready to plan the *next* objective on the *next* call
+            self.ctx.state = self.state
+            # Clear the completed or stuck objective
+            topic = self.ctx.current_focus_objective.topic
+            self.ctx.current_focus_objective = None
+            # Return a message indicating completion or stuck
+            msg = (
+                f"Finished objective: {topic}. Ready for the next topic."
+                if status == ExecutorStatus.COMPLETED else
+                f"Got stuck on objective: {topic}. Let's try planning again."
+            )
+            return {"response_type": "message", "text": msg}
 
         else:
             print(f"[FSM] Unexpected Executor Status: {status}. Defaulting to re-plan.") # Add logging

@@ -13,7 +13,7 @@ from ai_tutor.dependencies import get_supabase_client
 
 from functools import lru_cache, wraps
 import asyncio
-from ai_tutor.utils.decorators import function_tool_logged
+from ai_tutor.skills import skill
 
 from ai_tutor.core.schema import PlannerOutput
 
@@ -30,7 +30,7 @@ async def _get_concept_graph_edges(supabase):
     return response.data or []
 
 # --- Define read_knowledge_base tool locally ---
-@function_tool_logged()
+@skill(cost="low")
 async def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
     """Reads the Knowledge Base content stored in the Supabase 'folders' table associated with the current session's folder_id."""
     folder_id = ctx.context.folder_id
@@ -69,7 +69,7 @@ async def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
         print(f"Tool: {error_msg}")
         return error_msg
 
-@function_tool_logged()
+@skill(cost="low")
 async def dag_query(ctx: RunContextWrapper[TutorContext], mastered: list[str]) -> list[str]:
     """Returns next learnable concepts based on the concept_graph table and user's mastered concepts."""
     supabase = await get_supabase_client()

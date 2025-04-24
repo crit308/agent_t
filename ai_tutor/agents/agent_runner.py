@@ -4,18 +4,20 @@ from agents import Runner
 from agents.run_context import RunContextWrapper
 from agents.tool import FileSearchTool
 from ai_tutor.agents.models import ExplanationResult, QuizCreationResult
-import difflib
+from ai_tutor.utils.embedding_utils import cosine_similarity
+from ai_tutor.dependencies import get_openai_client  # shared singleton
 
 # Utility: Token count (simple whitespace split, replace with tiktoken if needed)
 def count_tokens(text: str) -> int:
     return len(text.split())
 
-def jaccard_similarity(a: str, b: str) -> float:
-    set_a = set(a.lower().split())
-    set_b = set(b.lower().split())
-    if not set_a or not set_b:
-        return 0.0
-    return len(set_a & set_b) / len(set_a | set_b)
+async def semantic_similarity(a: str, b: str) -> float:
+    """Cosine over OpenAI embeddings (cached). Uses the shared AsyncOpenAI client from dependencies to avoid per‑call instantiation overhead."""
+    client = get_openai_client()  # singleton – created once per worker
+    async def embed(text: str):
+        resp = await client.embeddings.create(model="text-embedding-3-small", input=text)
+        return resp.data[0].embedding
+    return await cosine_similarity(a, b, embed)
 
 class AgentRunner:
     def __init__(self, agent, context, vector_store_id: str, file_search_threshold: int = 50):
@@ -72,7 +74,7 @@ class AgentRunner:
                 return ExplanationResult(status="failed", details=f"Unexpected output from agent: {result.final_output}")
             if explanation.status == "delivered":
                 # Check if explanation is grounded in file_search
-                sim = jaccard_similarity(explanation.details, all_chunks)
+                sim = await semantic_similarity(explanation.details, all_chunks)
                 if sim < 0.3:
                     explanation.status = "need_more_context"
                     explanation.details = "Explanation not sufficiently grounded in file_search results."
@@ -106,8 +108,8 @@ class AgentRunner:
         # 1. Pre-flight file_search for the same section
         search_result = await self.preflight_file_search(section)
         all_chunks = " ".join(search_result.get("chunks", []))
-        # 2. Jaccard similarity
-        sim = jaccard_similarity(agent_answer, all_chunks)
+        # 2. Cosine similarity
+        sim = await semantic_similarity(agent_answer, all_chunks)
         if sim < 0.3:
             return {"status": "failed", "reason": "low_similarity", "similarity": sim}
         return {"status": "completed", "similarity": sim} 

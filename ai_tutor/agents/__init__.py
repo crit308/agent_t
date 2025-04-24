@@ -20,5 +20,5 @@ __all__ = [
     "LessonContent", "Quiz", "QuizUserAnswer", "QuizUserAnswers",
     "QuizFeedback", "QuizFeedbackItem", "LearningInsight",
     "TeachingInsight", "SessionAnalysis",
-    # DO NOT add agent creation functions here anymore
+    # legacy_orchestrator intentionally omitted
 ] 

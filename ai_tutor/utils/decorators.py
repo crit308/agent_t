@@ -1,5 +1,9 @@
 from ai_tutor.telemetry import log_tool
 
+raise ImportError(
+    "function_tool_logged has moved to ai_tutor.skills; import from there"
+)
+
 def function_tool_logged(*ft_args, **ft_kwargs):
     """Compose log_tool → function_tool(strict_mode=True), but return the original function so it's callable."""
     def decorator(fn):

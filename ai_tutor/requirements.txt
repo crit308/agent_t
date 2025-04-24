@@ -6,4 +6,5 @@ rich>=10.0.0
 fastapi>=0.100.0
 uvicorn[standard]>=0.20.0
 python-multipart>=0.0.6 # For file uploads
-httpx>=0.28.1,<0.29 
+httpx>=0.28.1,<0.29
+prometheus_client 

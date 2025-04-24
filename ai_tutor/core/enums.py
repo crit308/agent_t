@@ -5,6 +5,6 @@ from enum import Enum
 
 class ExecutorStatus(Enum):
     """Status codes returned by ExecutorAgent.run"""
-    COMPLETED = "COMPLETED"
-    STUCK = "STUCK"
-    CONTINUE = "CONTINUE" 
+    COMPLETED = "completed"
+    CONTINUE  = "continue"  # new non‑terminal step
+    STUCK     = "stuck" 

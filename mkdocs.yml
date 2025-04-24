@@ -1,0 +1,9 @@
+site_name: AI Tutor
+nav:
+  - Home: index.md
+  - Backend Architecture: ai_tutor/ARCHITECTURE_OVERVIEW.md
+  - Agents SDK Guide: docs/agents.md
+theme:
+  name: material
+plugins:
+  - search 

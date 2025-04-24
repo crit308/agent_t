@@ -6,8 +6,7 @@ from pydantic import BaseModel
 from supabase import Client
 from uuid import UUID
 
-from agents import function_tool
-from ai_tutor.utils.decorators import function_tool_logged
+from ai_tutor.skills import skill
 
 if TYPE_CHECKING:
     from ai_tutor.api import get_supabase_client
@@ -157,7 +156,7 @@ class FileUploadManager:
         return self.uploaded_files
 
 
-@function_tool_logged()
+@skill(cost="low")
 async def upload_document(file_path: str, user_id: str) -> str:
     """
     DEPRECATED: Uploads happen via API. Uploads document to Supabase and OpenAI.

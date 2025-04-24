@@ -18,6 +18,9 @@ from ai_tutor.context import UserModelState
 from ai_tutor.agents.models import LessonPlan, LessonContent, Quiz, QuizFeedback, SessionAnalysis
 from ai_tutor.agents.analyzer_agent import AnalysisResult # Import AnalysisResult from its correct location
 
+# use TutorFSM directly
+from ai_tutor.fsm import TutorFSM
+
 if TYPE_CHECKING:
     from supabase import Client
 

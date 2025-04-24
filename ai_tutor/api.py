@@ -22,6 +22,7 @@ from ai_tutor.routers import sessions, tutor, folders, tutor_ws # Import folders
 from ai_tutor.dependencies import get_supabase_client, openai_client # Import dependency from new location
 from agents import set_default_openai_key, set_default_openai_api, Agent # Import Agent
 from ai_tutor.auth import verify_token # Assume auth.py exists for JWT verification
+from ai_tutor.metrics import metrics_endpoint # Prometheus endpoint
 
 # Import models needed for resolving forward references in TutorContext and other API models
 from ai_tutor.agents.models import (
@@ -87,6 +88,9 @@ app.include_router(sessions.router, prefix="/api/v1", dependencies=[Depends(veri
 app.include_router(tutor.router, prefix="/api/v1", dependencies=[Depends(verify_token)])
 app.include_router(folders.router, prefix="/api/v1", dependencies=[Depends(verify_token)]) # Include folder routes
 app.include_router(tutor_ws.router, prefix="/api/v1")  # Mount WebSocket router for streaming tutor sessions
+
+# Prometheus scrape endpoint
+app.add_route("/metrics", metrics_endpoint, methods=["GET"])
 
 @app.get("/", tags=["Root"])
 async def read_root():

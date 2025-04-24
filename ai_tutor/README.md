@@ -1,3 +1,5 @@
+[![Docs](https://img.shields.io/badge/docs-online-blue)](https://ai‑tutor.readthedocs.io)
+
 Below is a "white‑box walkthrough" of the **AI Tutor** as it exists after the latest refactor.  
 If you read this top‑to‑bottom you will know:
 

@@ -213,7 +213,8 @@ async def generate_session_lesson_plan(
     # --- Wrap the main logic in a try...except block ---
     try:
         # Use direct planner for next focus objective
-        from ai_tutor.agents.planner_agent import run_planner
+        # Deprecated import removed – logic lives in TutorFSM
+        # from ai_tutor.agents.planner_agent import run_planner
         planner_output = await run_planner(tutor_context)
 
         # Log the planner output (list of objectives)

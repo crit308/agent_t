@@ -1,28 +1,32 @@
-# Skill registry implementation
-_REGISTRY = {}
+from __future__ import annotations
 
-def tool(name: str | None = None, cost: str | None = None):
-    """Decorator to register a function as a skill tool, with optional cost flag."""
+from agents import function_tool
+from ai_tutor.telemetry import log_tool
+
+# Registry map: name 2 callable
+SKILL_REGISTRY: dict[str, callable] = {}
+
+def skill(cost: str = "low", *ft_args, **ft_kwargs):
+    """Decorator: (1) logs, (2) registers FunctionTool, (3) tracks cost."""
+
     def decorator(fn):
-        key = name or fn.__name__
-        # Attach cost metadata to the function
-        setattr(fn, '_skill_cost', cost)
-        _REGISTRY[key] = fn
-        return fn
+        wrapped = log_tool(fn)
+
+        # Attach metadata
+        wrapped._skill_cost = cost  # noqa: SLF001 (used by ExecutorAgent)
+
+        # Register with Agents SDK
+        function_tool(strict_mode=True, *ft_args, **ft_kwargs)(wrapped)
+
+        # Add to python-side registry
+        SKILL_REGISTRY[wrapped.__name__] = wrapped
+        return wrapped
+
     return decorator
 
-
+# re-export helper for ExecutorAgent
 def get_tool(name: str):
-    """Retrieve a registered skill by name."""
-    try:
-        return _REGISTRY[name]
-    except KeyError:
-        raise KeyError(f"Skill '{name}' not found in registry.")
-
-
-def list_tools():
-    """List all registered skill names."""
-    return list(_REGISTRY)
+    return SKILL_REGISTRY[name]
 
 # --- Import all skill modules *after* defining the registry helpers ---
 

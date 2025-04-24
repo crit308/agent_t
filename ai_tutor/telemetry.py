@@ -4,6 +4,7 @@ from ai_tutor.dependencies import SUPABASE_CLIENT
 from openai.types import CompletionUsage
 from ai_tutor.context import TutorContext
 from functools import wraps
+from ai_tutor.metrics import TOKENS_TOTAL, TOOL_LATENCY
 
 # --- Background queue for Supabase writes ---
 def enqueue(table: str, data: dict):
@@ -24,6 +25,14 @@ def log_tool(fn):
         res   = await fn(*args, **kwargs)
         ms    = int((time.perf_counter()-start)*1000)
         ctx   = args[0]               # every tool receives ctx first
+        duration = time.perf_counter() - start
+        # --- Prometheus metrics ---
+        tool_name = fn.__name__
+        TOOL_LATENCY.labels(tool_name=tool_name).observe(duration)
+        # Assume ctx holds last token info from Agents‑SDK callbacks
+        TOKENS_TOTAL.labels(model=getattr(ctx, "last_model", "n/a"), phase="tool").inc(
+            getattr(ctx, "last_token_count", 0)
+        )
         if SUPABASE_CLIENT:
             usage = getattr(res, "usage", None)
             # Determine session and user IDs from context

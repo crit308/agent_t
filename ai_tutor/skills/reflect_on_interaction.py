@@ -2,10 +2,10 @@ from typing import Any, Optional, Dict
 from ai_tutor.context import TutorContext
 from ai_tutor.agents.models import QuizFeedbackItem
 from agents.run_context import RunContextWrapper
-from ai_tutor.skills import tool
+from ai_tutor.skills import skill
 from pydantic import BaseModel
 
-@tool()
+@skill(cost="medium")
 async def reflect_on_interaction(ctx: RunContextWrapper[TutorContext],
                                 topic: str,
                                 interaction_summary: str,
