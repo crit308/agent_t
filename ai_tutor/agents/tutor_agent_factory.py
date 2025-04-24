@@ -36,6 +36,5 @@ def build_tutor_agent():
         name="Tutor",
         instructions=instructions,
         tools=list_tools(),     # every FunctionTool
-        memory=True,            # keeps full conversation context
         model="gpt-4o-mini",
     ) 

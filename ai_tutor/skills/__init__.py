@@ -1,13 +1,37 @@
 from __future__ import annotations
+import inspect
+import importlib
+import pkgutil
+from typing import Dict, List, Any
 
 from agents import function_tool
 from ai_tutor.telemetry import log_tool
 from agents.tool import FunctionTool as _FT
-from .registration import add_tool_to_registry, list_tools
 
-# Registry map: name  2 callable
-# SKILL_REGISTRY: dict[str, callable] = {} # Replaced by _REGISTRY for tools
+# --- Define Registry and Helpers Directly Here ---
+_REGISTRY: Dict[str, _FT] = {}
 
+def add_tool_to_registry(tool: _FT):
+    """Adds a FunctionTool instance to the registry."""
+    if isinstance(tool, _FT):
+        tool_name = getattr(tool, 'name', None) # Get the tool name reliably
+        if not tool_name:
+             print(f"Warning: Trying to register a tool without a name: {tool}")
+             return
+        if tool_name in _REGISTRY:
+            print(f"Warning: Tool '{tool_name}' already exists in registry. Overwriting.")
+        _REGISTRY[tool_name] = tool
+        print(f"    - Registered tool: {tool_name}") # Log registration
+    else:
+        print(f"Warning: Attempted to register non-FunctionTool object: {type(tool)}")
+
+def list_tools() -> List[_FT]:
+    """Return every FunctionTool the Tutor Agent can call."""
+    if not _REGISTRY:
+        print("Warning: list_tools called but registry is empty. Ensure skills were imported and decorated correctly.")
+    return list(_REGISTRY.values())
+
+# --- Skill Decorator (unchanged) ---
 def skill(cost: str = "low", *ft_args, **ft_kwargs):
     """Decorator: (1) logs, (2) registers FunctionTool, (3) tracks cost."""
     def decorator(fn):
@@ -16,38 +40,25 @@ def skill(cost: str = "low", *ft_args, **ft_kwargs):
         return wrapped
     return decorator
 
-# # re-export helper for ExecutorAgent (legacy)
-# def get_tool(name: str):
-#     return SKILL_REGISTRY[name]
-
-# --- Import all skill modules *after* defining the registry helpers ---
-
-"""
-Automatically import all skill modules in this package so they register with the tool registry.
-"""
-import importlib
-import pkgutil
-import inspect
-
+# --- Dynamic Import Loop (calls local add_tool_to_registry) ---
 print("--- Importing Skill Modules ---")
 for finder, module_name, ispkg in pkgutil.iter_modules(__path__):
-    if module_name != '__init__' and module_name != 'registration' and not ispkg:
+    if module_name != '__init__' and not ispkg:
         try:
             module = importlib.import_module(f".{module_name}", package=__name__)
             print(f"  - Imported: {module_name}")
-            # Auto-register FunctionTool instances
             for name, obj in inspect.getmembers(module):
                 if isinstance(obj, _FT):
-                    print(f"    - Registering tool: {obj.name} from {module_name}")
+                    print(f"    - Found SDK FunctionTool: {obj.name}")
                     add_tool_to_registry(obj)
+                elif inspect.isfunction(obj) and hasattr(obj, "__ai_function_spec__"):
+                    print(f"    - Manually creating FunctionTool for: {name}")
+                    tool_instance = _FT(python_fn=obj, name=name)
+                    add_tool_to_registry(tool_instance)
         except Exception as e:
             print(f"Error importing/registering skills from module '{module_name}': {e}")
+            import traceback
+            traceback.print_exc()
 print("--- Finished Importing Skill Modules ---")
 
-__all__ = ['list_tools']
-
-def list_tools():
-    """Return every FunctionTool the Tutor Agent can call."""
-    # Make sure all modules are imported before listing
-    # (The loop above should handle this on initial load)
-    return list(_REGISTRY.values()) 
+__all__ = ['list_tools'] 

@@ -23,6 +23,14 @@ from ai_tutor.agents.models import QuizQuestion # Ensure QuizQuestion is importe
 from starlette.websockets import WebSocketDisconnect, WebSocketState # Import WebSocketState
 from ai_tutor.agents.tutor_agent_factory import build_tutor_agent
 from agents import Runner  # Import Runner separately
+from agents.stream_events import StreamEvent, RunItemStreamEvent, RawResponsesStreamEvent
+from agents.items import MessageOutputItem, ToolCallOutputItem, HandoffOutputItem
+from openai.types.responses import ResponseTextDeltaEvent, ResponseOutputText
+from ai_tutor.api_models import (
+    InteractionResponseData, ExplanationResponse, QuestionResponse,
+    FeedbackResponse, MessageResponse, ErrorResponse
+)
+from ai_tutor.agents.models import QuizQuestion, QuizFeedbackItem
 
 router = APIRouter()
 
@@ -186,56 +194,160 @@ async def tutor_stream(
 
             incoming: Dict[str, Any] = {'type': event_type, 'data': event_data}
 
-            if incoming['type'] in ['ping', 'system_tick']:
-                log.debug(f"WebSocket: Received system message, ignoring for {session_id}.", message_type=incoming['type'])
-                continue
+            # Allow 'start' to initiate the agent run, similar to 'user_message'
+            if incoming['type'] == 'ping' or incoming['type'] == 'system_tick':
+                 log.debug(f"WebSocket: Received system message, ignoring for {session_id}.", message_type=incoming['type'])
+                 continue # Skip processing ping/tick
 
-            log.info(f"WebSocket: Processing event for session {session_id}. Event type: {incoming['type']}")
+            # Check if context is valid before proceeding
             if not ctx:
                  log.error(f"WebSocket: Context became None before processing for session {session_id}")
                  await ws.send_json({"type": "error", "detail": "Internal server error: Session context lost."})
                  break
 
-            # --- Agent Logic ---
-            if incoming['type'] != 'user_message' or 'text' not in incoming.get('data', {}):
-                log.warning(f"WebSocket received non-text message type '{incoming['type']}', skipping agent run.")
-                # Send an ack or appropriate response if needed?
-                await ws.send_json({"type": "ack", "detail": f"Agent received: {incoming['type']}"})
-                continue # Skip agent run for non-text messages
+            # Prepare the input for the agent
+            # For 'start', provide a generic initial prompt or handle it specifically in the agent
+            # For 'user_message', use the text provided
+            agent_input = ""
+            if incoming['type'] == 'start':
+                agent_input = "Start the lesson." # Or handle empty string if agent expects that
+                log.info(f"WebSocket: Initiating agent run for session {session_id} due to 'start' event.")
+            elif incoming['type'] == 'user_message' and 'text' in incoming.get('data', {}):
+                agent_input = incoming["data"]["text"]
+                log.info(f"WebSocket: Invoking Agent for session {session_id} with user message.")
+            else:
+                 log.warning(f"WebSocket received unhandled message type '{incoming['type']}' or invalid 'user_message' data, skipping agent run.")
+                 await ws.send_json({"type": "ack", "detail": f"Agent received unhandled type: {incoming['type']}"})
+                 continue
 
+            # --- Agent Logic ---
             try:
                 log.info(f"WebSocket: Invoking Agent for session {session_id}")
                 tutor_agent = build_tutor_agent()
-                user_message = incoming["data"]["text"]
+                # Ensure agent_input is defined based on 'start' or 'user_message'
+                agent_input = ""
+                if incoming['type'] == 'start':
+                    agent_input = "Start the lesson."
+                elif incoming['type'] == 'user_message' and 'text' in incoming.get('data', {}):
+                    agent_input = incoming["data"]["text"]
+                else: # Should have been caught earlier, but safeguard
+                    log.error(f"Invalid agent trigger: {incoming['type']}")
+                    raise ValueError("Invalid trigger for agent run")
 
-                async for delta in Runner.run_streamed(
+                run_result_stream = Runner.run_streamed(
                     tutor_agent,
-                    input=user_message, # Pass the user's text message
-                    context=ctx,        # Pass the loaded TutorContext
-                ):
-                    if isinstance(delta, dict):
-                        await ws.send_json(delta)
-                    else:
-                        log.warning(f"Agent stream yielded non-dict delta: {type(delta)}. Converting to string.")
-                        await ws.send_json({"type": "message", "text": str(delta)})
+                    input=agent_input,
+                    context=ctx,
+                )
 
-                log.info(f"WebSocket: Agent stream finished for session {session_id}")
+                final_response_sent = False # Flag to ensure we only send one final payload
+                async for stream_event in run_result_stream.stream_events():
+                    log.debug(f"Processing stream event type: {getattr(stream_event, 'type', 'Unknown')}")
+
+                    response_payload = None
+                    content_type = None
+
+                    # --- Handle Raw Text Deltas ---
+                    if isinstance(stream_event, RawResponsesStreamEvent):
+                         raw_data = stream_event.data
+                         if hasattr(raw_data, 'type') and raw_data.type == 'response.output_text.delta':
+                              delta_text = getattr(raw_data, 'delta', '')
+                              if delta_text:
+                                   # Send raw delta for immediate display
+                                   raw_delta_payload = {
+                                       "type": "raw_delta", # Custom type for frontend hook
+                                       "delta": delta_text
+                                   }
+                                   await ws.send_json(raw_delta_payload)
+                                   continue # Don't process further if it's just a delta
+
+                    # --- Handle Final Item Completions ---
+                    elif isinstance(stream_event, RunItemStreamEvent) and stream_event.item:
+                        item = stream_event.item
+                        if stream_event.name == 'message_output_created' and isinstance(item, MessageOutputItem):
+                            # --- FIX: Correctly access text content ---
+                            final_text = ""
+                            # The raw_item usually holds the OpenAI response structure
+                            if item.raw_item and hasattr(item.raw_item, 'content') and item.raw_item.content:
+                                # Content is often a list, iterate through parts
+                                for part in item.raw_item.content:
+                                     # Check if the part is a text part
+                                     if isinstance(part, ResponseOutputText) and hasattr(part, 'text'):
+                                          final_text += part.text
+                            # --- End FIX ---
+
+                            if final_text:
+                                content_type = "message"
+                                response_payload = MessageResponse(
+                                     response_type="message",
+                                     text=final_text.strip() # Strip potential whitespace
+                                 )
+                                log.info(f"Detected completed MessageOutputItem: {final_text[:50]}...")
+                            else:
+                                log.warning("MessageOutputItem created but no text content found.")
+
+                        elif stream_event.name == 'tool_call_output_created' and isinstance(item, ToolCallOutputItem):
+                            tool_name = item.tool_name
+                            tool_output = item.output
+                            log.info(f"Detected completed ToolCallOutputItem for tool: {tool_name}")
+
+                            if tool_name == 'create_quiz' and isinstance(tool_output, QuizQuestion):
+                                 content_type = "question"
+                                 response_payload = QuestionResponse(
+                                     response_type="question", question=tool_output,
+                                     topic=ctx.current_teaching_topic or "Unknown"
+                                 )
+                                 ctx.current_quiz_question = tool_output
+                                 ctx.user_model_state.pending_interaction_type = 'checking_question'
+
+                            elif tool_name == 'evaluate_quiz' and isinstance(tool_output, QuizFeedbackItem):
+                                 content_type = "feedback"
+                                 response_payload = FeedbackResponse(
+                                     response_type="feedback", feedback=tool_output,
+                                     topic=ctx.current_teaching_topic or "Unknown"
+                                 )
+                                 ctx.current_quiz_question = None
+                                 ctx.user_model_state.pending_interaction_type = None
+
+                            else:
+                                 log.warning(f"Unhandled completed tool output for {tool_name}")
+
+                    # --- Send Final Structured Payload ---
+                    if response_payload and content_type and not final_response_sent:
+                        api_response = InteractionResponseData(
+                            content_type=content_type,
+                            data=response_payload,
+                            user_model_state=ctx.user_model_state
+                        )
+                        await ws.send_json(api_response.model_dump(mode='json'))
+                        log.info(f"Sent final formatted {content_type} response to client.")
+                        final_response_sent = True
+                        # break # Uncomment if you want to stop after first final payload
+
+                # --- Handle case where stream finishes without sending a final payload ---
+                if not final_response_sent:
+                    log.warning(f"Agent stream for session {session_id} finished without sending a structured response.")
+                    fallback_payload = MessageResponse(response_type="message", text="Finished processing.")
+                    fallback_response = InteractionResponseData(content_type="message", data=fallback_payload, user_model_state=ctx.user_model_state)
+                    await ws.send_json(fallback_response.model_dump(mode='json'))
+
+                log.info(f"WebSocket: Agent stream processing finished for session {session_id}")
 
                 # --- Persist context AFTER the agent turn completes ---
-                if ctx: # Check context exists
+                if ctx:
                     try:
                         log.info(f"WebSocket: Updating context in DB after agent run for {session_id}")
                         await session_manager.update_session_context(supabase, session_id, user.id, ctx)
                         log.info(f"WebSocket: Context updated successfully in DB for {session_id}")
                     except Exception as save_err:
                         log.error(f"WebSocket: Failed to save context after agent run for session {session_id}: {save_err}\n{traceback.format_exc()}", exc_info=True)
-                # --- End Persistence ---
+                else:
+                    log.warning(f"WebSocket: Context object was None after agent run, cannot save state for session {session_id}")
 
             except Exception as agent_err:
-                log.error(f"WebSocket: Agent error processing event for session {session_id}: {agent_err}\n{traceback.format_exc()}", exc_info=True)
-                await ws.send_json({"type": "error", "detail": f"Internal tutor error. Please try again."})
-                # Decide if we should break or continue listening
-                # continue # Let's continue for now
+                 log.error(f"WebSocket: Agent error processing event for session {session_id}: {agent_err}\n{traceback.format_exc()}", exc_info=True)
+                 error_data = ErrorResponse(response_type="error", message="Internal tutor error. Please try again.")
+                 await ws.send_json(error_data.model_dump(mode='json'))
 
     except WebSocketDisconnect:
          log.info(f"WebSocket disconnected by client (main loop or setup) for session_id={str(session_id)}")
