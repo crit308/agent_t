@@ -76,10 +76,10 @@ app = FastAPI(
 # Adjust origins based on your frontend URL
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Restrict to frontend origin in dev
+    allow_origins=["http://localhost:3000"],  # Your frontend origin
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"], # Allow all methods (GET, POST, OPTIONS, etc.)
+    allow_headers=["*"], # Allow all headers (including Authorization, Content-Type)
 )
 
 # --- Mount Routers ---
@@ -109,6 +109,11 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
+    # Log the exception with traceback
+    print(f"!!! UNHANDLED EXCEPTION: {exc} !!!")
+    import traceback
+    traceback.print_exc() # Print traceback to console/logs
+
     # Return generic internal server error
     err = ErrorResponse(response_type="error", message="Internal server error")
     return JSONResponse(status_code=500, content=err.dict())

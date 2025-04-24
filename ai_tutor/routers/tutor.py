@@ -32,6 +32,7 @@ from ai_tutor.core.schema import PlannerOutput
 
 router = APIRouter()
 session_manager = SessionManager()
+logger = logging.getLogger(__name__) # Use standard logging
 
 # Directory for temporary file uploads
 TEMP_UPLOAD_DIR = "temp_uploads"
@@ -85,10 +86,10 @@ async def upload_session_documents(
     and synchronously updates the session context for planning.
     """
     user: User = request.state.user
-    logger = get_session_logger(session_id)
+    logger.info(f"Starting embedding files for session {session_id}")
     folder_id = tutor_context.folder_id
     if not folder_id:
-        logger.log_error("UploadError", "Session context is missing folder_id.")
+        logger.error("UploadError", "Session context is missing folder_id.")
         raise HTTPException(status_code=400, detail="Missing folder information in session context.")
 
     # Initialize the file upload manager for embeddings
@@ -105,7 +106,7 @@ async def upload_session_documents(
             temp_paths.append(temp_path)
             filenames.append(upload.filename)
         except Exception as e:
-            logger.log_error("FileSaveError", e)
+            logger.error("FileSaveError", e)
             raise HTTPException(status_code=500, detail=f"Failed to save {upload.filename}: {e}")
         finally:
             upload.file.close()
@@ -113,21 +114,25 @@ async def upload_session_documents(
         raise HTTPException(status_code=400, detail="No files provided for upload.")
 
     # Embed files into vector store synchronously
+    logger.info(f"Starting embedding files for session {session_id}")
     vector_store_id = tutor_context.vector_store_id
     messages: List[str] = []
     try:
         for path, name in zip(temp_paths, filenames):
+            logger.info(f"Calling upload_and_process_file for {name}")
             result = await file_upload_manager.upload_and_process_file(
                 file_path=path,
                 user_id=user.id,
                 folder_id=folder_id,
                 existing_vector_store_id=vector_store_id
             )
+            logger.info(f"upload_and_process_file returned for {name}: {result}")
             if result.vector_store_id:
                 vector_store_id = result.vector_store_id
             messages.append(f"{name} embedded into {vector_store_id}")
     except Exception as e:
-        logger.log_error("EmbedError", e)
+        logger.error("EmbedError", e)
+        logger.info(f"Exception during embedding: {e}")
         for p in temp_paths:
             if os.path.exists(p):
                 os.remove(p)
@@ -139,17 +144,21 @@ async def upload_session_documents(
     await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
 
     # Perform document analysis synchronously
+    logger.info(f"Calling analyze_documents for vector_store_id {vector_store_id}")
     try:
         analysis = await analyze_documents(vector_store_id, context=tutor_context, supabase=supabase)
+        logger.info(f"analyze_documents returned: {analysis}")
         tutor_context.analysis_result = analysis
         analysis_status = "completed"
     except Exception as e:
-        logger.log_error("AnalysisError", e)
+        logger.error("AnalysisError", e)
+        logger.info(f"Exception during analysis: {e}")
         analysis_status = "pending"
 
     # Persist context after analysis
     await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
 
+    logger.info(f"Returning DocumentUploadResponse for session {session_id}")
     return DocumentUploadResponse(
         vector_store_id=vector_store_id,
         files_received=filenames,
@@ -189,59 +198,72 @@ async def get_session_analysis_results(
 async def generate_session_lesson_plan(
     session_id: UUID, # Expect UUID
     request: Request, # Add request parameter
-    tutor_context: TutorContext = Depends(get_tutor_context) # Use parsed context
+    tutor_context: TutorContext = Depends(get_tutor_context), # Use parsed context
+    supabase: Client = Depends(get_supabase_client) # Add supabase dependency
 ):
-    """
-    DEPRECATED: Use /interact endpoint instead.
-    This endpoint triggers the Orchestrator to get the initial focus objective from the Planner.
-    The focus objective is stored in the session context and returned.
-    """
-    logger = get_session_logger(session_id)
-    # Get user from request state
     user: User = request.state.user
+    print(f"\n=== ENTERING /plan Endpoint for session {session_id} ===") # Log entry
+    logger.info(f"Attempting to generate plan for session {session_id}, user {user.id}")
 
-    # Get vector store ID and analysis result from context
-    vector_store_id = tutor_context.vector_store_id
-    # analysis_result = tutor_context.analysis_result # No longer directly needed by this endpoint
-    # folder_id = tutor_context.folder_id # No longer directly needed by this endpoint
-
-    # Initial checks are good to keep, ensure data looks okay before agent creation
-    if not vector_store_id:
-        raise HTTPException(status_code=400, detail="Documents must be uploaded first.")
-    # Remove KB check, planner tool handles reading it
-
-    # --- Wrap the main logic in a try...except block ---
     try:
-        # Use direct planner for next focus objective
-        # Deprecated import removed – logic lives in TutorFSM
-        # from ai_tutor.agents.planner_agent import run_planner
-        planner_output = await run_planner(tutor_context)
+        # --- Original logic of the function ---
+        vector_store_id = tutor_context.vector_store_id
+        if not vector_store_id:
+            logger.error(f"/plan error: No vector store ID found for session {session_id}")
+            raise HTTPException(status_code=400, detail="Documents must be uploaded first.")
 
-        # Log the planner output (list of objectives)
-        logger.log_planner_output(planner_output)
-        supabase: Client = await get_supabase_client()
+        # Import run_planner locally if not already imported at top
+        from ai_tutor.agents.planner_agent import run_planner
+
+        print(f"Calling run_planner for session {session_id}")
+        logger.info(f"Calling run_planner for session {session_id}")
+        planner_output = await run_planner(tutor_context)
+        print(f"run_planner completed for session {session_id}")
+        logger.info(f"run_planner completed for session {session_id}")
+
+        # Log the planner output (careful with large objects)
+        # session_logger.log_planner_output(planner_output) # Use standard logger
+        logger.info(f"Planner output generated for {session_id}") # Log success
+
+        # Persist context (ensure supabase client is available)
+        print(f"Attempting to update context after planning for {session_id}")
+        logger.info(f"Attempting to update context after planning for {session_id}")
         success = await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
         if not success:
-            logger.log_error("SessionUpdate", f"Failed to update session {session_id} with focus objective.")
+            logger.error(f"Failed to update session {session_id} context after planning.")
+            # Decide if this should be a 500 error
+            # raise HTTPException(status_code=500, detail="Failed to save session state after planning.")
+        else:
+             logger.info(f"Context updated successfully after planning for {session_id}")
 
-        return planner_output
 
+        print(f"=== EXITING /plan Endpoint SUCCESSFULLY for session {session_id} ===")
+        logger.info(f"Successfully exiting /plan endpoint for session {session_id}")
+        return planner_output # Return the result
+
+    except HTTPException as http_exc:
+        # Re-raise HTTPExceptions directly
+        logger.error(f"HTTPException in /plan for {session_id}: Status={http_exc.status_code}, Detail={http_exc.detail}")
+        raise http_exc
     except Exception as e:
-        # --- Explicit Exception Catching and Logging ---
-        logger.log_error("PlannerAgentRun", e)
+        # --- Catch ANY other exception ---
         error_type = type(e).__name__
         error_details = str(e)
         error_traceback = traceback.format_exc()
 
-        print("\n!!! EXCEPTION IN /plan Endpoint !!!") # Make log stand out
+        print("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print(f"!!! UNHANDLED EXCEPTION in /plan Endpoint for Session {session_id} !!!")
         print(f"Error Type: {error_type}")
         print(f"Error Details: {error_details}")
         print("Full Traceback:")
         print(error_traceback)
-        # -------------------------------------------------
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n")
 
-        # Raise a generic 500, but the logs now contain the details. The detail message could be improved.
-        raise HTTPException(status_code=500, detail=f"Failed to get initial focus due to internal error: {error_type}")
+        # Also log using standard logger
+        logger.critical(f"Unhandled exception in /plan for session {session_id}: {error_type}: {error_details}\n{error_traceback}", exc_info=True)
+
+        # Return a generic 500 error to the client
+        raise HTTPException(status_code=500, detail=f"Internal server error during planning: {error_type}")
 
 @router.get(
     "/sessions/{session_id}/lesson",
@@ -252,12 +274,11 @@ async def generate_session_lesson_plan(
 )
 async def get_session_lesson_content(session_id: UUID, tutor_context: TutorContext = Depends(get_tutor_context)):
     """Retrieves the generated lesson content for the session."""
-    logger = get_session_logger(session_id)
-    # Fetch lesson content directly from the parsed context
+    logger.info(f"Retrieving lesson content for session {session_id}")
     content_data = tutor_context.lesson_content # Example assuming it's stored directly
 
     if not content_data:
-        logger.log_error("GetLessonContent", f"Lesson content not found in session state for {session_id}")
+        logger.error("GetLessonContent", f"Lesson content not found in session state for {session_id}")
         # Return None or 404 - let's return None first to see how frontend handles it
         # raise HTTPException(status_code=404, detail="Lesson content not yet generated or available.")
         return None # Or return an empty LessonContent structure if preferred
@@ -267,7 +288,7 @@ async def get_session_lesson_content(session_id: UUID, tutor_context: TutorConte
         lesson_content = content_data # If it's already parsed by TutorContext
         return lesson_content
     except Exception as e:
-         logger.log_error("GetLessonContentParse", f"Failed to parse stored lesson content: {e}")
+         logger.error("GetLessonContentParse", f"Failed to parse stored lesson content: {e}")
          raise HTTPException(status_code=500, detail="Failed to retrieve/parse lesson content.")
 
 @router.get(
@@ -279,11 +300,11 @@ async def get_session_lesson_content(session_id: UUID, tutor_context: TutorConte
 )
 async def get_session_quiz(session_id: UUID, tutor_context: TutorContext = Depends(get_tutor_context)):
     """Retrieves the generated quiz for the session."""
-    logger = get_session_logger(session_id)
+    logger.info(f"Retrieving quiz for session {session_id}")
     quiz_data = tutor_context.quiz # Get 'quiz' from context object if stored there
 
     if not quiz_data:
-        logger.log_error("GetQuiz", f"Quiz not found in session state for {session_id}")
+        logger.error("GetQuiz", f"Quiz not found in session state for {session_id}")
         # Return None - frontend useEffect should handle retries/errors
         return None
 
@@ -292,7 +313,7 @@ async def get_session_quiz(session_id: UUID, tutor_context: TutorContext = Depen
         quiz = quiz_data # If already parsed by TutorContext
         return quiz
     except Exception as e:
-         logger.log_error("GetQuizParse", f"Failed to parse stored quiz: {e}")
+         logger.error("GetQuizParse", f"Failed to parse stored quiz: {e}")
          raise HTTPException(status_code=500, detail="Failed to retrieve/parse quiz.")
 
 @router.post(
@@ -308,7 +329,7 @@ async def log_mini_quiz_event(
     tutor_context: TutorContext = Depends(get_tutor_context) # Use context to ensure session exists for user
 ):
     """Logs a user's attempt on an in-lesson mini-quiz question."""
-    logger = get_session_logger(session_id)
+    logger.info(f"Logging mini-quiz attempt for session {session_id}")
 
     # You can expand this: store in session state, DB, etc.
     # For now, just log it using the TutorOutputLogger
@@ -325,7 +346,7 @@ async def log_mini_quiz_event(
         # session_manager.update_session(session_id, {"mini_quiz_attempts": mini_quiz_attempts})
         return # FastAPI handles 204 No Content
     except Exception as e:
-        logger.log_error("LogMiniQuiz", f"Failed to log mini-quiz attempt: {e}")
+        logger.error("LogMiniQuiz", f"Failed to log mini-quiz attempt: {e}")
         # Don't fail the request for logging, but maybe log internally
         # Consider returning 500 if logging is critical
         return
@@ -349,7 +370,7 @@ async def log_user_summary_event(
     tutor_context: TutorContext = Depends(get_tutor_context) # Use context to ensure session exists
 ):
     """Logs a user's summary attempt during the lesson."""
-    logger = get_session_logger(session_id)
+    logger.info(f"Logging user summary for session {session_id}")
     try:
         logger.log_user_summary(
             section_title=summary_data.section,
@@ -358,7 +379,7 @@ async def log_user_summary_event(
         )
         return
     except Exception as e:
-        logger.log_error("LogUserSummary", f"Failed to log user summary: {e}")
+        logger.error("LogUserSummary", f"Failed to log user summary: {e}")
         return
 
 # --- New Interaction Endpoint ---
@@ -376,10 +397,9 @@ async def interact_with_tutor(
     supabase: Client = Depends(get_supabase_client), # To save context
     tutor_context: TutorContext = Depends(get_tutor_context)
 ):
-    logger = get_session_logger(session_id)
-    print(f"\n=== Starting /interact for session {session_id} ===")
-    print(f"[Interact] Input Type: {interaction_input.type}, Data: {interaction_input.data}")
-    print(f"[Interact] Context BEFORE Orchestrator: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
+    logger.info(f"\n=== Starting /interact for session {session_id} ===")
+    logger.info(f"[Interact] Input Type: {interaction_input.type}, Data: {interaction_input.data}")
+    logger.info(f"[Interact] Context BEFORE Orchestrator: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
 
     user: User = request.state.user
     # Import TutorFSM here to avoid circular import at module load
@@ -391,7 +411,7 @@ async def interact_with_tutor(
         final_response_data = await fsm.on_user_message(last_event)
     except Exception as exc:
         # Log TutorFSM errors using our output logger
-        logger.log_error("TutorFSM", exc)
+        logger.error("TutorFSM", exc)
         # Return a serializable error response using ErrorResponse structure
         error_data = ErrorResponse(response_type="error", message=f"Internal FSM error: {str(exc)}")
         # Need to wrap this in InteractionResponseData
@@ -403,9 +423,9 @@ async def interact_with_tutor(
     # self.ctx seems to hold the definitive state now.
     # tutor_context.last_event = last_event # Already set in on_user_message
     # tutor_context.pending_interaction_type = tutor_context.user_model_state.pending_interaction_type # State is now in ctx.state
-    print(f"[Interact] Saving final context state to Supabase for session {session_id}")
+    logger.info(f"[Interact] Saving final context state to Supabase for session {session_id}")
     await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
-    print(f"[Interact] Context saved AFTER run: state={tutor_context.state}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
+    logger.info(f"[Interact] Context saved AFTER run: state={tutor_context.state}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
 
     # Build response based on what FSM returned
     if hasattr(final_response_data, 'response_type'):
@@ -425,16 +445,16 @@ async def interact_with_tutor(
                  data = MessageResponse(**final_response_data)
             else:
                  # Unknown response_type from FSM dict, pass raw dict (shouldn't happen ideally)
-                 print(f"[Interact Warning] Unknown response_type '{content_type}' in dict from FSM. Passing raw dict.")
+                 logger.warning(f"[Interact Warning] Unknown response_type '{content_type}' in dict from FSM. Passing raw dict.")
                  data = final_response_data
         except Exception as parse_exc:
             # Handle cases where the dict doesn't match the Pydantic model structure
-            print(f"[Interact Error] Failed to parse FSM dict into {content_type} model: {parse_exc}. Dict: {final_response_data}")
+            logger.error(f"[Interact Error] Failed to parse FSM dict into {content_type} model: {parse_exc}. Dict: {final_response_data}")
             content_type = "error"
             data = ErrorResponse(response_type="error", message="Internal error processing tutor response.")
     else:
         # Case 3: Fallback for unexpected return type from FSM (e.g., None, str, different dict)
-        print(f"[Interact Warning] Unexpected return type from FSM: {type(final_response_data)}. Value: {final_response_data}. Defaulting to message.")
+        logger.warning(f"[Interact Warning] Unexpected return type from FSM: {type(final_response_data)}. Value: {final_response_data}. Defaulting to message.")
         content_type = "message" # Default to message
         # Use MessageResponse model
         data = MessageResponse(response_type="message", text=f"Unexpected response from tutor: {str(final_response_data)}")

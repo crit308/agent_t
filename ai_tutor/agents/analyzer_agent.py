@@ -175,29 +175,25 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
     Returns:
         An AnalysisResult object containing the text and extracted metadata, or None on failure.
     """
+    print(f"[LOG] analyze_documents START for vector_store_id={vector_store_id}", flush=True)
+    log.info("analyze_documents_start", vector_store_id=vector_store_id)
     # Create the analyzer agent
+    print(f"[LOG] Creating analyzer agent", flush=True)
+    log.info("before_create_analyzer_agent", vector_store_id=vector_store_id)
     agent = create_analyzer_agent(vector_store_id, api_key)
-    
+    print(f"[LOG] Analyzer agent created: {agent}", flush=True)
+    log.info("after_create_analyzer_agent", agent=str(agent))
     # Setup RunConfig for tracing (Using RunConfig from 'agents' module)
     run_config = None
     if context and hasattr(context, 'session_id'):
         run_config = RunConfig(
             workflow_name="AI Tutor - Document Analysis",
             group_id=str(context.session_id), # Convert UUID to string
-            # Assuming callbacks is a valid parameter for the original RunConfig
-            # callbacks=[context.run_manager.get_child()] if context.run_manager else None
         )
     elif api_key:
-        # If no context provided but we have API key, create a basic RunConfig
         run_config = RunConfig(
             workflow_name="AI Tutor - Document Analysis",
-            # callbacks=[context.run_manager.get_child()] if context.run_manager else None
         )
-
-    # TODO: Verify if the original RunConfig supports a 'callbacks' parameter.
-    #       The Langchain RunnableConfig did, but the original might not.
-    #       Commented out the callback lines above for now.
-
     # Create a prompt that instructs the agent to perform comprehensive analysis
     prompt = """
     Analyze all documents in the vector store thoroughly.
@@ -213,46 +209,42 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
     
     The vector store ID you are analyzing is: {0}
     """.format(vector_store_id)
-    
-    # Run the analyzer agent using Runner from the 'agents' module
-    # TODO: Verify the exact parameters expected by Runner.run()
-    #       The original code might have passed agent, prompt, run_config, context.
-    #       Adjust the call below based on the actual Runner signature.
+    print(f"[LOG] Calling Runner.run", flush=True)
+    log.info("before_runner_run", agent=str(agent), prompt=prompt)
     result = await Runner.run(
         agent, # Assuming runner takes agent
         prompt, # Assuming runner takes prompt
         run_config=run_config, # Assuming runner takes run_config
-        # tools=[FileSearchTool(vector_store_ids=[vector_store_id])], # Tools might be passed differently or implicitly
-        # verbose=True # Verbosity might be configured differently
-        # context=context # Pass context if needed by Runner
     )
-
+    print(f"[LOG] Runner.run returned: type={type(result)}, content={result}", flush=True)
+    log.info("after_runner_run", result_type=str(type(result)), result_content=str(result))
     # Get the text output directly
-    # TODO: Verify how Runner returns results. The structure might differ from AgentExecutor.
-    # Assuming result has a 'final_output' attribute or similar based on previous code.
     analysis_text = result.final_output if hasattr(result, 'final_output') and isinstance(result.final_output, str) else str(result)
     if not analysis_text:
          log.error("empty_analysis_output", msg="Document analysis agent returned empty output.")
+         print(f"[LOG] Empty analysis output", flush=True)
          return None
-
     log.info("analysis_complete", msg="Successfully completed document analysis")
-    
+    print(f"[LOG] Analysis complete, saving to Supabase if possible", flush=True)
     # --- Save analysis text (Knowledge Base) to Supabase folders table ---
     if supabase and context and context.folder_id:
         folder_id_to_update = str(context.folder_id) # Ensure UUID is string
         try:
+            print(f"[LOG] Saving analysis to Supabase for folder {folder_id_to_update}", flush=True)
+            log.info("before_supabase_save", folder_id=folder_id_to_update)
             update_response = supabase.table("folders").update(
                 {"knowledge_base": analysis_text}
             ).eq("id", folder_id_to_update).execute()
-
             if update_response.data:
                 log.info("knowledge_base_saved", folder_id=str(context.folder_id))
+                print(f"[LOG] Knowledge base saved to Supabase", flush=True)
             elif update_response.error: # Check for explicit error
                 log.error("knowledge_base_save_error", folder_id=str(context.folder_id), error=str(update_response.error))
+                print(f"[LOG] Error saving knowledge base: {update_response.error}", flush=True)
         except Exception as e:
             log.exception("knowledge_base_save_exception", folder_id=str(context.folder_id), error=str(e))
+            print(f"[LOG] Exception saving knowledge base: {e}", flush=True)
     # --- End Supabase KB saving ---
-    
     # Extract key concepts for use in other parts of the application
     key_concepts = []
     key_terms = {}
@@ -262,7 +254,6 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
         if "KEY CONCEPTS:" in analysis_text:
             concepts_section = analysis_text.split("KEY CONCEPTS:")[1].split("CONCEPT DETAILS:")[0]
             key_concepts = [c.strip() for c in concepts_section.strip().split("\n") if c.strip()]
-
         # Extract key terms if available
         if "KEY TERMS GLOSSARY:" in analysis_text:
             terms_section = analysis_text.split("KEY TERMS GLOSSARY:")[1]
@@ -272,7 +263,6 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
                 if section in terms_section:
                     terms_section = terms_section.split(section)[0]
                     break
-            
             # Process the terms section to extract terms and definitions
             terms_lines = [line.strip() for line in terms_section.strip().split("\n") if line.strip()]
             for line in terms_lines:
@@ -285,15 +275,15 @@ async def analyze_documents(vector_store_id: str, api_key: str = None, context=N
                     if len(parts) == 2:
                         term, definition = parts
                         key_terms[term.strip()] = definition.strip()
-        
         # Extract file names if possible
         if "FILES:" in analysis_text:
             files_section = analysis_text.split("FILES:")[1].split("FILE METADATA:")[0]
             file_names = [f.strip() for f in files_section.strip().split("\n") if f.strip()]
-        
     except Exception as e:
         log.warning("parse_key_concepts_failed", error=str(e))
-    
+        print(f"[LOG] Exception parsing key concepts: {e}", flush=True)
+    print(f"[LOG] Returning AnalysisResult", flush=True)
+    log.info("returning_analysis_result", vector_store_id=vector_store_id)
     # Return the structured result
     return AnalysisResult(
         analysis_text=analysis_text,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 from uuid import UUID
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from functools import lru_cache
 import os
 
@@ -16,6 +16,11 @@ import json
 from fastapi_utils.tasks import repeat_every
 import structlog
 from dataclasses import asdict, is_dataclass, fields
+import logging
+import traceback
+from pydantic import ValidationError  # Import ValidationError
+from ai_tutor.agents.models import QuizQuestion # Ensure QuizQuestion is imported
+from starlette.websockets import WebSocketDisconnect, WebSocketState # Import WebSocketState
 
 router = APIRouter()
 
@@ -25,7 +30,7 @@ session_manager = SessionManager()
 # Helper to authenticate a websocket connection and return the Supabase user
 ALLOW_URL_TOKEN = os.getenv("ENV", "prod") != "prod"
 
-log = structlog.get_logger(__name__)
+log = logging.getLogger(__name__)
 
 async def _authenticate_ws(ws: WebSocket, supabase: Client) -> Any:
     """Validate the `Authorization` header for a WebSocket connection.
@@ -69,193 +74,190 @@ async def tutor_stream(
     Each inbound JSON message is forwarded to the TutorFSM orchestrator. All streaming events
     emitted by the FSM are relayed back to the client in real‑time.
     """
-    # Authenticate (before accept if you prefer strict policy). We accept only after successful auth.
+    log.info(f"WebSocket attempting connection for session {session_id}")
+    user = None
+    ctx: Optional[TutorContext] = None  # Initialize ctx before try
     try:
+        log.info(f"WebSocket: Authenticating for session {session_id}")
         user = await _authenticate_ws(ws, supabase)
-    except RuntimeError:
-        return  # Socket already closed in helper
-
-    # --- Hydrate context & last_event from DB (D-2) ---
-    try:
-        row = (
-            supabase.table("sessions")
-            .select("context_json", "last_event_json", "current_question_json")
-            .eq("id", str(session_id))
-            .eq("user_id", str(user.id))
-            .maybe_single()
-            .execute()
-        ).data
-    except APIError as e:
-        if e.code == "204":   # no content – first connection for this session
-            row = None
-        else:
-            raise
-
-    # Import TutorFSM here, inside the function, before it's used
-    from ai_tutor.fsm import TutorFSM
-
-    if row and row["context_json"]:
-        ctx = TutorContext.model_validate_json(row["context_json"])
-        last_event = json.loads(row["last_event_json"])
-        current_question_json = row.get("current_question_json")
-    else:
-        ctx = TutorContext(session_id=session_id, user_id=user.id)
-        last_event = None
-        current_question_json = None
-
-    # Accept the connection
-    await ws.accept()
-
-    # Resume mid-objective if reconnecting and we were awaiting user input
-    if ctx.state == 'awaiting_user' and last_event:
-        fsm_resume = TutorFSM(ctx)
-        resume_result = await fsm_resume.on_user_message(last_event)
-        # Send resumed result to client
-        if hasattr(resume_result, 'model_dump'):
-            await ws.send_json(resume_result.model_dump(mode='json'))
-        elif isinstance(resume_result, dict):
-            await ws.send_json(resume_result)
-        else:
-            await ws.send_json({'response': resume_result})
-        # Persist resumed context
-        await session_manager.update_session_context(supabase, session_id, user.id, ctx)
-
-    # --- Send current_question_json if present (for race-free resume) ---
-    if current_question_json:
-        await ws.send_json({"type": "run_item_stream_event", "item": current_question_json})
-
-    # --- Resume pending question if needed (D-3) ---
-    if ctx.user_model_state.pending_interaction_type == "checking_question":
-        # Send the cached QuestionOutputItem over WS before continuing
-        if last_event and last_event.get("event_type") == "system_question":
-            await ws.send_json(last_event["data"])  # Assumes QuestionOutputItem is in last_event['data']
-
-    # Heartbeat: send system_tick every 60 seconds to keep connection alive
-    @repeat_every(seconds=60)
-    async def heartbeat():
-        await ws.send_json({"event_type": "system_tick"})
-
-    # Snapshot mastery values to detect later updates
-    mastery_prev = {topic: state.mastery for topic, state in ctx.user_model_state.concepts.items()}
-
-    tutor_ctx = ctx  # Use hydrated context for rest of handler
+        log.info(f"WebSocket: Authentication successful for user {user.id}, session {session_id}")
+    except RuntimeError as auth_err:
+        log.warning(f"WebSocket: Authentication failed for session {session_id}: {auth_err}")
+        return
+    except Exception as e:
+         log.error(f"WebSocket: Unexpected error during authentication for session {session_id}: {e}\n{traceback.format_exc()}", exc_info=True)
+         try: await ws.close(code=1008)
+         except: pass
+         return
 
     try:
-        while True:
-            try:
-                # Read raw payload text
-                payload_text = await ws.receive_text()
-                payload = json.loads(payload_text)
-                event_data = payload.get('data', {}) # Extract data first
-
-                # Determine the event type, prioritizing 'type' over 'event_type'
-                if 'type' in payload:
-                    event_type = payload['type']
-                elif 'event_type' in payload:
-                    event_type = payload['event_type'] # Use event_type if type is missing
-                    print(f"[WebSocket Warning] Received message using deprecated 'event_type': {payload_text}")
-                else:
-                    # Handle messages without type/event_type
-                    print(f"[WebSocket Warning] Received message without 'type' or 'event_type': {payload_text}")
-                    await ws.send_json({"type": "error", "detail": "Message missing 'type' field."})
-                    continue # Skip processing this message
-
-                # Construct the 'incoming' dict for the FSM with the correct 'type' key
-                incoming: Dict[str, Any] = {'type': event_type, 'data': event_data}
-
-                # --- Check for internal/system message types BEFORE handling specific handlers or passing to FSM ---
-                if incoming['type'] in ['ping', 'system_tick']:
-                    log.debug("Received system message, ignoring.", message_type=incoming['type'])
-                    continue # Ignore pings and system ticks, don't pass to FSM
-
-                # --- Handle specific types like 'pace_change', 'help_request' --- 
-                # Check incoming['type'] now
-                if incoming['type'] == "pace_change":
-                    value = incoming['data'].get("value") # Get value from data field
-                    try:
-                        factor = float(value)
-                        tutor_ctx.user_model_state.learning_pace_factor = factor
-                        await session_manager.update_session_context(supabase, session_id, user.id, tutor_ctx)
-                        # Acknowledge to client
-                        await ws.send_json({"type": "pace_change", "value": factor})
-                    except Exception as e:
-                        await ws.send_json({"type": "error", "detail": f"Invalid pace_change value: {e}"})
-                    continue # Go to next WebSocket message
-                
-                if incoming['type'] == "help_request":
-                    mode = incoming['data'].get("mode") # Get mode from data field
-                    if mode == "stuck":
-                        tutor_ctx.user_model_state.pending_interaction_type = "summary_prompt"
-                        tutor_ctx.user_model_state.pending_interaction_details = {"reason": "stuck"}
-                        # Log help_request for analytics
-                        try:
-                            supabase.table("actions").insert({
-                                "session_id": str(session_id),
-                                "user_id": str(user.id),
-                                "action_type": "help_request",
-                                "action_details": {"mode": mode}
-                            }).execute()
-                        except Exception as e:
-                            log.warning("ws_help_request_log_failed", error=str(e))
-                        await session_manager.update_session_context(supabase, session_id, user.id, tutor_ctx)
-                        # Acknowledge reception
-                        await ws.send_json({"type": "help_request_ack"})
-                    else:
-                        await ws.send_json({"type": "error", "detail": "Invalid help_request mode"})
-                    continue # Go to next WebSocket message
-                # --- End specific type handling ---
-
-            except WebSocketDisconnect:  # client closed connection
-                log.info("WebSocket disconnected by client", session_id=str(session_id))
-                break
-            except json.JSONDecodeError:
-                log.warning("WebSocket received invalid JSON", session_id=str(session_id))
-                await ws.send_json({"type": "error", "detail": "Malformed JSON message."})
-                continue
-            except Exception as e:
-                log.error("WebSocket receive error", session_id=str(session_id), error=str(e), exc_info=True)
-                await ws.send_json({"type": "error", "detail": f"Error processing message: {str(e)}"})
-                continue
-
-            # Use our new FSM to handle the incoming event
-            try:
-                fsm = TutorFSM(tutor_ctx)
-                result = await fsm.on_user_message(incoming) # Pass the correctly structured dict
-                # Send back the final response from the FSM
-                if hasattr(result, 'model_dump'):
-                    await ws.send_json(result.model_dump(mode='json'))
-                elif isinstance(result, dict):
-                    await ws.send_json(result)
-                else:
-                    # Handle unexpected FSM return types
-                    log.warning("Unexpected FSM result type", result_type=type(result), result=result, session_id=str(session_id))
-                    await ws.send_json({'type': 'message', 'text': f'Tutor response: {str(result)}'})
-                # Persist context after FSM transition
-                await session_manager.update_session_context(supabase, session_id, user.id, tutor_ctx)
-            except Exception as e:
-                # Log the error and inform the client
-                log.error("FSMError", error=str(e), session_id=str(session_id), exc_info=True)
-                await ws.send_json({"type": "error", "detail": f"Internal tutor error. Please try again."})
-                # Consider if context should be persisted here or if the error state needs handling
-                # For now, just report and continue the loop
-
-    finally:
-        # Graceful close if we exit the loop for any reason
+        row: Optional[Dict] = None
         try:
-            await ws.close()
-        except Exception:  # noqa: BLE001
-            pass
-        # After streaming events, detect and emit mastery updates
-        for topic, mastery_state in tutor_ctx.user_model_state.concepts.items():
-            prev = mastery_prev.get(topic)
-            new_mastery = mastery_state.mastery
-            new_confidence = mastery_state.confidence
-            if prev is None or abs(new_mastery - prev) >= 0.05:
-                await ws.send_json({
-                    "type": "mastery_update",
-                    "topic": topic,
-                    "mastery": new_mastery,
-                    "confidence": new_confidence
-                })
-        # Update previous mastery snapshot
-        mastery_prev = {t: s.mastery for t, s in tutor_ctx.user_model_state.concepts.items()} 
+            log.info(f"WebSocket: Fetching context from DB for session {session_id}")
+            select_resp = supabase.table("sessions").select("context_data").eq("id", str(session_id)).eq("user_id", str(user.id)).maybe_single().execute()
+            row = select_resp.data
+            log.info(f"WebSocket: DB fetch completed for session {session_id}. Data found: {'Yes' if row else 'No'}")
+            if row:
+                 log.debug(f"WebSocket: Raw data dict from DB for {session_id}: {row}")
+
+        except APIError as api_err:
+            if api_err.code == "204":
+                log.info(f"WebSocket: No existing context found for session {session_id} (APIError code 204). Initializing fresh context.")
+                row = None
+            else:
+                log.error(f"WebSocket: Supabase APIError fetching context for {session_id}: Code={api_err.code}, Message={api_err.message}, Details={api_err.details}", exc_info=True)
+                await ws.close(code=1011, reason="Internal server error fetching context.")
+                return
+        except Exception as db_err:
+            log.error(f"WebSocket: Unexpected error fetching context from DB for {session_id}: {db_err}\n{traceback.format_exc()}", exc_info=True)
+            await ws.close(code=1011, reason="Internal server error fetching context.")
+            return
+
+        try:
+             if row and row.get("context_data"):
+                  log.info(f"WebSocket: Hydrating TutorContext from DB data for {session_id}")
+                  context_dict = row["context_data"]
+                  if isinstance(context_dict, str):
+                       context_dict = json.loads(context_dict)
+                  context_dict.setdefault('session_id', str(session_id))
+                  context_dict.setdefault('user_id', str(user.id))
+                  ctx = TutorContext.model_validate(context_dict)
+                  log.info(f"WebSocket: TutorContext hydrated successfully for {session_id}. Loaded folder_id: {ctx.folder_id}")
+             else:
+                  log.info(f"WebSocket: Initializing new TutorContext for {session_id} (no prior data or context_data missing)")
+                  ctx = TutorContext(session_id=session_id, user_id=user.id, folder_id=None)
+                  log.info(f"WebSocket: Initialized fresh context for {session_id}")
+
+        except (ValidationError, TypeError, json.JSONDecodeError) as parse_error:
+            log.error(f"WebSocket: Failed to parse/validate context_data for session {session_id}: {parse_error}\nRaw context_data: {row.get('context_data') if row else 'N/A'}", exc_info=True)
+            await ws.close(code=1011, reason="Internal server error processing context.")
+            return
+        except Exception as ctx_err:
+            log.error(f"WebSocket: Unexpected error initializing context for {session_id}: {ctx_err}\n{traceback.format_exc()}", exc_info=True)
+            await ws.close(code=1011, reason="Internal server error initializing context.")
+            return
+
+        await ws.accept()
+        log.info(f"WebSocket: Connection accepted for session {session_id}")
+
+        if not ctx:
+             log.error(f"WebSocket: CRITICAL - Context object is None after loading/initialization for session {session_id}.")
+             await ws.close(code=1011, reason="Internal server error: context unavailable.")
+             return
+
+        log.info(f"WebSocket: Context verified after accept. folder_id = {ctx.folder_id}")
+
+        # --- Resume/State Handling Logic ---
+        if getattr(ctx, 'current_quiz_question', None):
+            log.info(f"WebSocket: Found pending question in context for session {session_id}. Sending to client.")
+            pending_question_payload = {
+                "type": "question",
+                "question": ctx.current_quiz_question.model_dump(mode='json'),
+                "topic": getattr(ctx, 'current_teaching_topic', "Unknown Topic")
+            }
+            await ws.send_json({
+                 "content_type": "question",
+                 "data": pending_question_payload,
+                 "user_model_state": ctx.user_model_state.model_dump(mode='json')
+            })
+            log.info(f"WebSocket: Pending question sent for session {session_id}.")
+        else:
+             log.info(f"WebSocket: No pending question found in context for session {session_id}.")
+
+        from ai_tutor.fsm import TutorFSM
+        log.info(f"WebSocket: Entering main receive loop for session {session_id}")
+        while True:
+            payload_text = await ws.receive_text()
+            log.debug(f"WebSocket: Received raw message for {session_id}: {payload_text}")
+            payload = json.loads(payload_text)
+            event_data = payload.get('data', {})
+
+            if 'type' in payload:
+                event_type = payload['type']
+            elif 'event_type' in payload:
+                event_type = payload['event_type']
+                log.warning(f"[WebSocket Warning] Received message using deprecated 'event_type' for {session_id}: {payload_text}")
+            else:
+                log.warning(f"[WebSocket Warning] Received message without 'type' or 'event_type' for {session_id}: {payload_text}")
+                await ws.send_json({"type": "error", "detail": "Message missing 'type' field."})
+                continue
+
+            incoming: Dict[str, Any] = {'type': event_type, 'data': event_data}
+
+            if incoming['type'] in ['ping', 'system_tick']:
+                log.debug(f"WebSocket: Received system message, ignoring for {session_id}.", message_type=incoming['type'])
+                continue
+
+            log.info(f"WebSocket: Passing event to FSM for session {session_id}. Event type: {incoming['type']}")
+            if not ctx:
+                 log.error(f"WebSocket: Context became None before FSM call for session {session_id}")
+                 await ws.send_json({"type": "error", "detail": "Internal server error: Session context lost."})
+                 break
+
+            fsm = TutorFSM(ctx)
+            try:
+                 final_response_data = await fsm.on_user_message(incoming)
+                 log.info(f"WebSocket: FSM processed event for {session_id}. Response type: {getattr(final_response_data, 'response_type', type(final_response_data))}")
+
+                 if hasattr(final_response_data, 'model_dump'):
+                      await ws.send_json(final_response_data.model_dump(mode='json'))
+                 elif isinstance(final_response_data, dict):
+                      await ws.send_json(final_response_data)
+                 else:
+                      log.warning(f"WebSocket: Unexpected FSM result type for {session_id}", result_type=type(final_response_data))
+                      await ws.send_json({'type': 'message', 'text': f'Tutor response: {str(final_response_data)}'})
+
+                 log.info(f"WebSocket: Updating context in DB after FSM step for {session_id}")
+                 await session_manager.update_session_context(supabase, session_id, user.id, ctx)
+                 log.info(f"WebSocket: Context updated in DB for {session_id}")
+
+            except Exception as fsm_err:
+                 log.error(f"WebSocket: FSMError processing event for session {session_id}: {fsm_err}\n{traceback.format_exc()}", exc_info=True)
+                 await ws.send_json({"type": "error", "detail": f"Internal tutor error. Please try again."})
+
+    except WebSocketDisconnect:
+         log.info(f"WebSocket disconnected by client (main loop or setup) for session_id={str(session_id)}")
+    except Exception as main_err:
+         log.error(f"Unhandled exception in WebSocket main processing for session {session_id}: {type(main_err).__name__}: {main_err}\n{traceback.format_exc()}", exc_info=True)
+         try:
+             await ws.send_json({"type": "error", "detail": "Internal server error encountered."})
+             await ws.close(code=1011, reason="Internal server processing error.")
+         except:
+             pass
+    finally:
+        log.info(f"WebSocket: Entering finally block for session {session_id}")
+        if ctx and hasattr(ctx, 'user_model_state') and hasattr(ctx.user_model_state, 'concepts'):
+            try:
+                 log.info(f"WebSocket: Processing final mastery updates for {session_id}")
+                 mastery_prev = {} # Reconstruct prev mastery if needed, or load from ctx if stored
+                 for topic, mastery_state in ctx.user_model_state.concepts.items():
+                     prev = mastery_prev.get(topic)
+                     new_mastery = mastery_state.mastery
+                     new_confidence = mastery_state.confidence
+                     if prev is None or abs(new_mastery - prev) >= 0.05:
+                          log.debug(f"Sending mastery update for {topic}: {new_mastery}")
+                          await ws.send_json({
+                               "type": "mastery_update",
+                               "topic": topic,
+                               "mastery": new_mastery,
+                               "confidence": new_confidence
+                          })
+            except Exception as mastery_err:
+                 log.error(f"Error sending mastery updates for {session_id}: {mastery_err}", exc_info=True)
+        else:
+            log.warning(f"WebSocket: Skipping final mastery updates for session {session_id} because context (ctx) or concepts are not available.")
+        log.info(f"WebSocket: Exiting handler for session {session_id}")
+        try:
+            if ws.client_state != WebSocketState.DISCONNECTED:
+                 log.info(f"WebSocket: Attempting close in finally block for {session_id}. Current state: {ws.client_state}")
+                 await ws.close()
+                 log.info(f"WebSocket: Close call completed for {session_id}")
+            else:
+                 log.info(f"WebSocket: Socket already disconnected in finally block for {session_id}.")
+        except RuntimeError as e:
+             if 'Cannot call "send" once a close message has been sent' in str(e):
+                  log.warning(f"WebSocket: Tried to close already closed connection for {session_id}.")
+             else:
+                  log.error(f"WebSocket: Error during WebSocket close for {session_id}: {e}", exc_info=True)
+        except Exception as close_err:
+            log.error(f"WebSocket: Generic error during WebSocket close for {session_id}: {close_err}", exc_info=True) 
