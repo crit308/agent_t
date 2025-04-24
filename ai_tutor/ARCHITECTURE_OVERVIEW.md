@@ -147,4 +147,4 @@ A – See `tests/` folder: `test_fsm_transitions.py`, `test_planner_output.py`, 
 
 ✦ Happy hacking! ✦ 
 
-![AI Tutor data‑flow](docs/assets/architecture_v2.svg) 
+![AI Tutor data-flow](docs/assets/architecture.svg) 

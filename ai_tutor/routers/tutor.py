@@ -382,89 +382,27 @@ async def log_user_summary_event(
         logger.error("LogUserSummary", f"Failed to log user summary: {e}")
         return
 
-# --- New Interaction Endpoint ---
-@router.post(
-    "/sessions/{session_id}/interact",
-    response_model=None,  # Disable automatic response model to avoid invalid field type
-    dependencies=[Depends(verify_token)], # Add auth dependency
-    summary="Interact with the AI Tutor",
-    tags=["Tutoring Workflow"]
-)
-async def interact_with_tutor(
-    session_id: UUID, # Expect UUID
-    request: Request, # Get request directly
-    interaction_input: InteractionRequestData = Body(...),
-    supabase: Client = Depends(get_supabase_client), # To save context
-    tutor_context: TutorContext = Depends(get_tutor_context)
-):
-    logger.info(f"\n=== Starting /interact for session {session_id} ===")
-    logger.info(f"[Interact] Input Type: {interaction_input.type}, Data: {interaction_input.data}")
-    logger.info(f"[Interact] Context BEFORE Orchestrator: pending={tutor_context.user_model_state.pending_interaction_type}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
-
-    user: User = request.state.user
-    # Import TutorFSM here to avoid circular import at module load
-    from ai_tutor.fsm import TutorFSM
-    # Invoke the new FSM wrapper
-    last_event = {"type": interaction_input.type, "data": interaction_input.data or {}}
-    fsm = TutorFSM(tutor_context)
-    try:
-        final_response_data = await fsm.on_user_message(last_event)
-    except Exception as exc:
-        # Log TutorFSM errors using our output logger
-        logger.error("TutorFSM", exc)
-        # Return a serializable error response using ErrorResponse structure
-        error_data = ErrorResponse(response_type="error", message=f"Internal FSM error: {str(exc)}")
-        # Need to wrap this in InteractionResponseData
-        return InteractionResponseData(content_type="error", data=error_data, user_model_state=tutor_context.user_model_state)
-
-    # --- Save Context AFTER determining the final response ---
-    # Persist last_event and pending_interaction_type for session resume
-    # TODO: Review if last_event and pending_interaction_type are still the right things to save from TutorContext
-    # self.ctx seems to hold the definitive state now.
-    # tutor_context.last_event = last_event # Already set in on_user_message
-    # tutor_context.pending_interaction_type = tutor_context.user_model_state.pending_interaction_type # State is now in ctx.state
-    logger.info(f"[Interact] Saving final context state to Supabase for session {session_id}")
-    await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
-    logger.info(f"[Interact] Context saved AFTER run: state={tutor_context.state}, topic='{tutor_context.current_teaching_topic}', segment={tutor_context.user_model_state.current_topic_segment_index}")
-
-    # Build response based on what FSM returned
-    if hasattr(final_response_data, 'response_type'):
-        # Case 1: FSM returned a Pydantic model (e.g., ExplanationResponse, QuestionResponse from ExecutorAgent.run -> CONTINUE)
-        content_type = final_response_data.response_type
-        data = final_response_data
-    elif isinstance(final_response_data, dict) and 'response_type' in final_response_data:
-        # Case 2: FSM returned a dictionary with 'response_type' (e.g., error or message dicts from FSM itself)
-        content_type = final_response_data['response_type'] # Get the type ('error', 'message')
-        # Try to parse the dict into a known Pydantic model for consistency
-        try:
-            if content_type == "error":
-                 # Use the ErrorResponse model for structure
-                 data = ErrorResponse(**final_response_data)
-            elif content_type == "message":
-                 # Use the MessageResponse model for structure
-                 data = MessageResponse(**final_response_data)
-            else:
-                 # Unknown response_type from FSM dict, pass raw dict (shouldn't happen ideally)
-                 logger.warning(f"[Interact Warning] Unknown response_type '{content_type}' in dict from FSM. Passing raw dict.")
-                 data = final_response_data
-        except Exception as parse_exc:
-            # Handle cases where the dict doesn't match the Pydantic model structure
-            logger.error(f"[Interact Error] Failed to parse FSM dict into {content_type} model: {parse_exc}. Dict: {final_response_data}")
-            content_type = "error"
-            data = ErrorResponse(response_type="error", message="Internal error processing tutor response.")
-    else:
-        # Case 3: Fallback for unexpected return type from FSM (e.g., None, str, different dict)
-        logger.warning(f"[Interact Warning] Unexpected return type from FSM: {type(final_response_data)}. Value: {final_response_data}. Defaulting to message.")
-        content_type = "message" # Default to message
-        # Use MessageResponse model
-        data = MessageResponse(response_type="message", text=f"Unexpected response from tutor: {str(final_response_data)}")
-
-    # Construct the final API response
-    return InteractionResponseData(
-        content_type=content_type, # Use the determined content_type
-        data=data, # Use the (potentially parsed) data
-        user_model_state=tutor_context.user_model_state
-    )
+# --- Interaction Endpoint removed (handled by WebSocket now) ---
+# @router.post(
+#     "/sessions/{session_id}/interact",
+#     ...
+# )
+# async def interact_with_tutor(...):
+#     ...
+#     # Import TutorFSM here to avoid circular import at module load
+#     # from ai_tutor.fsm import TutorFSM # <-- REMOVED IMPORT
+#     # Invoke the new FSM wrapper
+#     ...
+#     # final_response_data = await fsm.on_user_message(last_event)
+#     ...
+#     # --- Save Context AFTER determining the final response ---
+#     ...
+#     # await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
+#     ...
+#     # Build response based on what FSM returned
+#     ...
+#     # Construct the final API response
+#     ...
 
 # --- Remove POST /quiz/submit (Legacy) ---
 # Quiz answers are now handled via the /interact endpoint.

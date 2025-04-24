@@ -44,15 +44,23 @@ def log_tool(fn):
             else:
                 sess_id = getattr(ctx, "session_id", None)
                 user_id = getattr(ctx, "user_id", None)
+            
+            # --- NEW: Get agent version (placeholder) ---
+            # TODO: Find a better way to get the agent version dynamically
+            agent_version = "Tutor" # Hardcoded based on tutor_agent_factory.py
+            # --- END NEW ---
+
             enqueue("edge_logs", {
                 "session_id": str(sess_id) if sess_id is not None else None,
                 "user_id": str(user_id) if user_id is not None else None,
                 "tool": fn.__name__,
-                "latency_ms": ms,
+                "latency_ms": ms, # Original tool latency
+                "turn_latency_ms": ms, # Using tool latency as turn_latency_ms for now <--- NEW
                 "prompt_tokens": getattr(usage, "prompt_tokens", None),
                 "completion_tokens": getattr(usage, "completion_tokens", None),
                 # Optional trace ID
                 "trace_id": getattr(ctx, "trace_id", None),
+                "agent_version": agent_version # <--- NEW
             })
             # Persist context after every successful tool (still sync)
             if hasattr(ctx, "context") and isinstance(ctx.context, TutorContext):

@@ -1,9 +1,10 @@
 from ai_tutor.core.llm import LLMClient
 from ai_tutor.context import TutorContext
 from agents.run_context import RunContextWrapper
-from ai_tutor.skills import skill
+from ai_tutor.skills import skill, as_tool
 
 @skill(cost="medium")
+@as_tool
 async def explain_concept(ctx: RunContextWrapper[TutorContext], topic: str, explanation_details: str) -> str:
     """Skill that uses LLMClient to explain a concept."""
     llm = LLMClient()

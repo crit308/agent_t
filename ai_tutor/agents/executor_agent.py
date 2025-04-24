@@ -2,12 +2,15 @@
 ExecutorAgent: picks and executes skills to fulfill a learning objective.
 """
 
-from ai_tutor.core.enums import ExecutorStatus
 from ai_tutor.context import TutorContext
 from ai_tutor.agents.models import FocusObjective
-from ai_tutor.api_models import ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse
+from ai_tutor.api_models import ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse
 from agents.run_context import RunContextWrapper
 from typing import Any
+
+# Define custom exception for budget issues
+class BudgetExceededError(Exception):
+    pass
 
 async def choose_tactic(ctx: TutorContext, objective: FocusObjective):
     """
@@ -71,9 +74,11 @@ class ExecutorAgent:
     """Executor that runs skills to fulfill a FocusObjective."""
 
     @staticmethod
-    async def run(objective: FocusObjective, ctx: TutorContext) -> tuple[ExecutorStatus, Any]:
+    async def run(objective: FocusObjective, ctx: TutorContext) -> Any:
         """
-        Execute one skill tactic for the given objective and return (status, result).
+        Execute one skill tactic for the given objective and return the result payload.
+        Raises BudgetExceededError if high-cost skill budget is exhausted.
+        Raises ValueError if wrapping the result fails.
         """
         # Wrap context for tool invocation
         wrapper = RunContextWrapper(ctx)
@@ -86,80 +91,74 @@ class ExecutorAgent:
         cost = getattr(skill_fn, '_skill_cost', None)
         if cost == 'high':
             if ctx.high_cost_calls >= ctx.max_high_cost_calls:
-                # Budget exhausted: treat as stuck and skip this tactic
-                return ExecutorStatus.STUCK, MessageResponse(response_type='message', text=f"High-cost skill budget exceeded ({ctx.high_cost_calls}/{ctx.max_high_cost_calls})")
+                # Budget exhausted: raise exception
+                msg = f"High-cost skill budget exceeded ({ctx.high_cost_calls}/{ctx.max_high_cost_calls}) for tactic '{tactic}'"
+                print(f"[Executor Error] {msg}") # Log it too
+                raise BudgetExceededError(msg)
             ctx.high_cost_calls += 1
         result = await skill_fn(wrapper, **params)
-        
+
         # Update context for next evaluation - Use a structured summary if possible
         # For now, keep simple string conversion, but TODO: improve this
         ctx.last_interaction_summary = str(result)
-        
-        # Determine status
-        if objective_completed(ctx, objective):
-            status = ExecutorStatus.COMPLETED
-            # Result for COMPLETED/STUCK is often just a status message, handled by FSM
-            # FSM now explicitly sends messages for these, so we might not need result here
-            output = None # Or maybe return the last raw result for logging?
-        elif stuck(ctx):
-            status = ExecutorStatus.STUCK
-            # FSM now explicitly sends messages for these, so we might not need result here
-            output = None
-        else:
-            status = ExecutorStatus.CONTINUE
-            # --- Wrap the result based on the tactic for CONTINUE status ---
-            try:
-                if tactic == 'explain_concept' or tactic == 'remediate_concept' or tactic == 'answer_question':
-                    # Assuming result is the explanation text string
-                    # Increment segment index *before* checking for last segment
-                    ctx.user_model_state.current_topic_segment_index += 1
-                    output = ExplanationResponse(
-                        response_type='explanation',
-                        text=str(result), # Ensure it's a string
-                        topic=objective.topic, # Use topic from objective
-                        segment_index=ctx.user_model_state.current_topic_segment_index, # Use updated segment
-                        # TODO: Add more robust logic to determine is_last_segment (e.g., based on planner/KB structure)
-                        is_last_segment= (ctx.user_model_state.current_topic_segment_index >= 3) # Placeholder: assume quiz after 3 segments
-                    )
-                elif tactic == 'create_quiz':
-                    # Assuming result is a QuizQuestion object from the skill
-                    # TODO: Verify the actual return type of create_quiz skill
-                    from ai_tutor.agents.models import QuizQuestion # Import locally if needed
-                    if isinstance(result, QuizQuestion):
-                         output = QuestionResponse(
-                              response_type='question',
-                              question=result,
-                              topic=objective.topic
-                         )
-                    else:
-                         # Handle unexpected result type from create_quiz
-                         print(f"[Executor Warning] Unexpected result type from create_quiz: {type(result)}. Expected QuizQuestion.")
-                         output = MessageResponse(response_type='message', text=f"Generated quiz data (raw): {str(result)}")
-                
-                elif tactic == 'evaluate_quiz':
-                     # Assuming result is a QuizFeedbackItem object from the skill
-                     # TODO: Verify the actual return type of evaluate_quiz skill
-                     from ai_tutor.agents.models import QuizFeedbackItem # Import locally if needed
-                     if isinstance(result, QuizFeedbackItem):
-                          output = FeedbackResponse(
-                               response_type='feedback',
-                               feedback=result,
-                               topic=objective.topic
-                               # TODO: Add correct_answer, explanation if available from skill
-                          )
-                     else:
-                          # Handle unexpected result type
-                          print(f"[Executor Warning] Unexpected result type from evaluate_quiz: {type(result)}. Expected QuizFeedbackItem.")
-                          output = MessageResponse(response_type='message', text=f"Feedback generated (raw): {str(result)}")
+
+        # --- Always wrap the result based on the tactic --- 
+        output: Any = None
+        try:
+            if tactic == 'explain_concept' or tactic == 'remediate_concept' or tactic == 'answer_question':
+                # Assuming result is the explanation text string
+                # Increment segment index *before* checking for last segment
+                ctx.user_model_state.current_topic_segment_index += 1
+                output = ExplanationResponse(
+                    response_type='explanation',
+                    text=str(result), # Ensure it's a string
+                    topic=objective.topic, # Use topic from objective
+                    segment_index=ctx.user_model_state.current_topic_segment_index, # Use updated segment
+                    # TODO: Add more robust logic to determine is_last_segment (e.g., based on planner/KB structure)
+                    is_last_segment= (ctx.user_model_state.current_topic_segment_index >= 3) # Placeholder: assume quiz after 3 segments
+                )
+            elif tactic == 'create_quiz':
+                # Assuming result is a QuizQuestion object from the skill
+                # TODO: Verify the actual return type of create_quiz skill
+                from ai_tutor.agents.models import QuizQuestion # Import locally if needed
+                if isinstance(result, QuizQuestion):
+                     output = QuestionResponse(
+                          response_type='question',
+                          question=result,
+                          topic=objective.topic
+                     )
                 else:
-                    # Fallback for unknown tactic if status is CONTINUE
-                    print(f"[Executor Warning] Unknown tactic '{tactic}' resulted in CONTINUE status. Returning raw result as MessageResponse.")
-                    output = MessageResponse(response_type='message', text=f"Tutor response: {str(result)}")
+                     # Handle unexpected result type from create_quiz
+                     print(f"[Executor Warning] Unexpected result type from create_quiz: {type(result)}. Expected QuizQuestion.")
+                     # Return an error response instead of raw data
+                     output = ErrorResponse(response_type='error', message=f"Internal error: Unexpected quiz format from '{tactic}'.")
 
-            except Exception as e:
-                 # Handle potential errors during response model creation
-                 print(f"[Executor Error] Failed to wrap result for tactic '{tactic}': {e}")
-                 status = ExecutorStatus.STUCK # Treat as stuck if wrapping fails
-                 output = MessageResponse(response_type='error', message="Error processing tutor response.")
+            elif tactic == 'evaluate_quiz':
+                 # Assuming result is a QuizFeedbackItem object from the skill
+                 # TODO: Verify the actual return type of evaluate_quiz skill
+                 from ai_tutor.agents.models import QuizFeedbackItem # Import locally if needed
+                 if isinstance(result, QuizFeedbackItem):
+                      output = FeedbackResponse(
+                           response_type='feedback',
+                           feedback=result,
+                           topic=objective.topic
+                           # TODO: Add correct_answer, explanation if available from skill
+                      )
+                 else:
+                      # Handle unexpected result type
+                      print(f"[Executor Warning] Unexpected result type from evaluate_quiz: {type(result)}. Expected QuizFeedbackItem.")
+                      # Return an error response
+                      output = ErrorResponse(response_type='error', message=f"Internal error: Unexpected feedback format from '{tactic}'.")
+            else:
+                # Fallback for unknown tactic
+                print(f"[Executor Warning] Unknown tactic '{tactic}' executed. Returning raw result as MessageResponse.")
+                output = MessageResponse(response_type='message', text=f"Tutor response: {str(result)}")
 
-        return status, output 
+        except Exception as e:
+             # Handle potential errors during response model creation
+             msg = f"Failed to wrap result for tactic '{tactic}': {e}"
+             print(f"[Executor Error] {msg}")
+             raise ValueError(msg) from e # Raise an error if wrapping fails
+
+        # Return the wrapped payload directly
+        return output 

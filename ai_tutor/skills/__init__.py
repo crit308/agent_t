@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from agents import function_tool
 from ai_tutor.telemetry import log_tool
+from agents.tool import FunctionTool as _FT
 
-# Registry map: name 2 callable
-SKILL_REGISTRY: dict[str, callable] = {}
+# Registry map: name  2 callable
+# SKILL_REGISTRY: dict[str, callable] = {} # Replaced by _REGISTRY for tools
+_REGISTRY = {}
 
 def skill(cost: str = "low", *ft_args, **ft_kwargs):
     """Decorator: (1) logs, (2) registers FunctionTool, (3) tracks cost."""
@@ -15,18 +17,18 @@ def skill(cost: str = "low", *ft_args, **ft_kwargs):
         # Attach metadata
         wrapped._skill_cost = cost  # noqa: SLF001 (used by ExecutorAgent)
 
-        # Register with Agents SDK
-        function_tool(strict_mode=True, *ft_args, **ft_kwargs)(wrapped)
+        # Register with Agents SDK (legacy, keep for now? Or rely on @as_tool?)
+        # function_tool(strict_mode=True, *ft_args, **ft_kwargs)(wrapped)
 
-        # Add to python-side registry
-        SKILL_REGISTRY[wrapped.__name__] = wrapped
+        # Add to python-side registry (legacy, keep for now?)
+        # SKILL_REGISTRY[wrapped.__name__] = wrapped
         return wrapped
 
     return decorator
 
-# re-export helper for ExecutorAgent
-def get_tool(name: str):
-    return SKILL_REGISTRY[name]
+# # re-export helper for ExecutorAgent (legacy)
+# def get_tool(name: str):
+#     return SKILL_REGISTRY[name]
 
 # --- Import all skill modules *after* defining the registry helpers ---
 
@@ -45,4 +47,20 @@ for finder, module_name, ispkg in pkgutil.iter_modules(__path__): # Use the exis
             # Add some logging/printing to see if specific skills fail to import
             print(f"Error importing skill module '{module_name}': {e}")
 
-# All modules under ai_tutor/skills are now imported and registered 
+# All modules under ai_tutor/skills are now imported and registered
+
+def as_tool(fn=None, *, name: str | None = None):
+    """Decorator to register a skill function as an agents.tool.FunctionTool."""
+    def decorator(func):
+        tool = _FT(python_fn=func, name=name or func.__name__)
+        _REGISTRY[tool.name] = tool
+        # If the original function was also decorated with @skill, ensure it's still callable
+        # This might need adjustment based on how @skill and @as_tool interact
+        return func # Return the original function, tool is registered separately
+    return decorator(fn) if fn else decorator
+
+def list_tools():
+    """Return every FunctionTool the Tutor Agent can call."""
+    # Make sure all modules are imported before listing
+    # (The loop above should handle this on initial load)
+    return list(_REGISTRY.values()) 

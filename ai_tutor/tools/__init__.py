@@ -7,7 +7,7 @@ from typing import Any, Optional, Literal, Union, cast, Dict, List
 import os
 from datetime import datetime
 import traceback
-from ai_tutor.dependencies import SUPABASE_CLIENT
+from ai_tutor.dependencies import SUPABASE_CLIENT, get_supabase_client
 from ai_tutor.context import TutorContext, UserConceptMastery, UserModelState, is_mastered
 from ai_tutor.agents.models import QuizQuestion, QuizFeedbackItem, ExplanationResult, QuizCreationResult
 from ai_tutor.core.schema import PlannerOutput
@@ -20,6 +20,7 @@ from ai_tutor.telemetry import log_tool
 from pydantic import BaseModel
 from ai_tutor.skills import skill
 from ai_tutor.core.llm import LLMClient
+from agents import invoke, Runner
 
 _exports: List[str] = []
 def _export(obj):
@@ -78,22 +79,30 @@ async def update_user_model(
     confusion_point: Optional[str] = None,
     last_accessed: Optional[str] = None,
     mastered_objective_title: Optional[str] = None,
-) -> str:
-    """Updates the user model state with interaction outcomes and temporal data."""
+):
+    """Updates the user model state with interaction outcomes and temporal data. Yields a mastery_notification event if mastery threshold is crossed."""
     print(f"[Tool update_user_model] Updating '{topic}' with outcome '{outcome}'")
     if not ctx.context or not ctx.context.user_model_state:
         raise ToolExecutionError("TutorContext or UserModelState not found.", code="missing_context")
     if not topic or not isinstance(topic, str):
         raise ToolExecutionError("Invalid topic provided for user model update.", code="invalid_topic")
+
+    # Initialize Supabase client
+    supabase = get_supabase_client()
+
     if topic not in ctx.context.user_model_state.concepts:
         ctx.context.user_model_state.concepts[topic] = UserConceptMastery()
+
     concept_state = ctx.context.user_model_state.concepts[topic]
     old_mastery = concept_state.mastery
     previously_mastered = is_mastered(concept_state)
+
     concept_state.last_interaction_outcome = outcome
     concept_state.last_accessed = last_accessed or datetime.now().isoformat()
+
     if confusion_point and confusion_point not in concept_state.confusion_points:
         concept_state.confusion_points.append(confusion_point)
+
     if outcome in ['correct', 'incorrect', 'mastered', 'struggled']:
         concept_state.attempts += 1
         if outcome in ['correct', 'mastered']:
@@ -104,29 +113,63 @@ async def update_user_model(
                 ctx.context.user_model_state.learning_pace_factor = max(
                     0.5, ctx.context.user_model_state.learning_pace_factor - 0.1
                 )
+
     if mastered_objective_title and mastered_objective_title not in ctx.context.user_model_state.mastered_objectives_current_section:
         ctx.context.user_model_state.mastered_objectives_current_section.append(mastered_objective_title)
         print(f"[Tool] Marked objective '{mastered_objective_title}' as mastered for current section.")
-    print(f"[Tool] Updated '{topic}' - Mastery: {concept_state.mastery:.2f}, "
-          f"Confidence: {concept_state.confidence}, "
-          f"Pace: {ctx.context.user_model_state.learning_pace_factor:.2f}")
-    if not previously_mastered and is_mastered(concept_state):
-        print(f"[Tool update_user_model] Mastery achieved for '{topic}'. Triggering planner agent.")
-        from ai_tutor.tools import call_planner_agent
-        if ctx.context.current_focus_objective is None:
-            await invoke(call_planner_agent, ctx)
-    mastery = concept_state.mastery
-    confidence = concept_state.confidence
-    if hasattr(ctx.context, "ws"):
-        try:
-            await ctx.context.ws.send_json({"type": "mastery_update", "topic": topic, "mastery": mastery, "confidence": confidence})
-        except Exception:
-            pass
-    new_mastery = mastery
+
+    new_mastery = concept_state.mastery
+    new_confidence = concept_state.confidence
     delta_mastery = new_mastery - old_mastery
-    if SUPABASE_CLIENT:
+
+    print(f"[Tool] Updated '{topic}' - Mastery: {new_mastery:.2f}, "
+          f"Confidence: {new_confidence}, "
+          f"Pace: {ctx.context.user_model_state.learning_pace_factor:.2f}")
+
+    # Check for mastery *after* updating alpha/beta
+    if not previously_mastered and is_mastered(concept_state):
+        print(f"[Tool update_user_model] Mastery achieved for '{topic}'. Emitting notification and persisting event.")
+        notif = {
+            "type": "mastery_notification",
+            "topic": topic,
+            "prob": round(new_mastery, 2)
+        }
+        # Runner.run_streamed understands dicts → sends as run_item_stream_event
+        yield notif
+
+        # Persist mastery event to DB
+        if supabase:
+            try:
+                insert_data = {
+                    "session_id": str(ctx.context.session_id),
+                    "user_id": str(ctx.context.user_id),
+                    "topic": topic,
+                    "prob": new_mastery,
+                }
+                print(f"[Tool update_user_model] Inserting mastery event: {insert_data}")
+                supabase.table("mastery_events").insert(insert_data).execute()
+                print(f"[Tool update_user_model] Mastery event inserted successfully.")
+            except Exception as e:
+                print(f"[Tool update_user_model] Failed to log mastery event: {e}")
+        else:
+            print("[Tool update_user_model] Warning: Supabase client not available, skipping mastery event logging.")
+
+        # Trigger planner agent if needed (existing logic)
+        # from ai_tutor.tools import call_planner_agent # Consider moving import to top if always needed
+        # if ctx.context.current_focus_objective is None:
+        #     await invoke(call_planner_agent, ctx) # This might need adjustment if update_user_model is always yielded from
+
+    # Send mastery update via WebSocket (existing logic)
+    if hasattr(ctx.context, "ws") and ctx.context.ws:
         try:
-            SUPABASE_CLIENT.table("concept_events").insert({
+            await ctx.context.ws.send_json({"type": "mastery_update", "topic": topic, "mastery": new_mastery, "confidence": new_confidence})
+        except Exception as ws_err:
+            print(f"[Tool update_user_model] Failed to send WebSocket mastery update: {ws_err}")
+
+    # Log concept event (existing logic - uses SUPABASE_CLIENT directly, might need changing if get_supabase_client is the standard)
+    if supabase:
+        try:
+            supabase.table("concept_events").insert({
                 "session_id": str(ctx.context.session_id),
                 "user_id": str(ctx.context.user_id),
                 "concept": topic,
@@ -135,7 +178,9 @@ async def update_user_model(
             }).execute()
         except Exception as e:
             print(f"[Tool update_user_model] Failed to log concept event: {e}")
-    return f"User model updated for {topic}."
+
+    # Return a confirmation message (will only be returned if not yielding)
+    yield f"User model updated for {topic}."
 
 @_export
 @skill(cost="low")

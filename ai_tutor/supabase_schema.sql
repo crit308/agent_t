@@ -311,7 +311,9 @@ CREATE TABLE public.edge_logs (
     prompt_tokens int,
     completion_tokens int,
     created_at timestamptz DEFAULT now(),
-    trace_id uuid
+    trace_id uuid,
+    agent_version text,
+    turn_latency_ms int
 );
 COMMENT ON TABLE public.edge_logs IS 'Fine-grained telemetry for tool usage, latency, and token counts.';
 ALTER TABLE public.edge_logs ENABLE ROW LEVEL SECURITY;

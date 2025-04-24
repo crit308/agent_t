@@ -21,11 +21,31 @@ import traceback
 from pydantic import ValidationError  # Import ValidationError
 from ai_tutor.agents.models import QuizQuestion # Ensure QuizQuestion is imported
 from starlette.websockets import WebSocketDisconnect, WebSocketState # Import WebSocketState
+from ai_tutor.agents.tutor_agent_factory import build_tutor_agent
+from agents import Runner, set_event_handler, on_event
 
 router = APIRouter()
 
 # Use shared session manager instance (same as other routers) – no stateful behaviour here
 session_manager = SessionManager()
+
+# --- NEW: LLM Cost Tracking Hook ---
+@on_event("llm_end")
+async def _acc_cost(evt):
+    # Cost calculation based on GPT-4o mini pricing ($0.15 / 1M input, $0.60 / 1M output as of July 2024)
+    # Simplified to cents per 1K tokens
+    cost_cents_input = evt.usage.prompt_tokens * 0.00015  # $0.00015 per token -> $0.15 / 1M tokens
+    cost_cents_output = evt.usage.completion_tokens * 0.00060 # $0.0006 per token -> $0.60 / 1M tokens
+    cost_cents = cost_cents_input + cost_cents_output
+    ctx = evt.context              # TutorContext attached to RunContext
+    if ctx:
+        # Accumulate cost for the turn
+        current_turn_cost = getattr(ctx, "_turn_cost_cents", 0)
+        ctx._turn_cost_cents = current_turn_cost + cost_cents
+        log.debug(f"Accumulated LLM cost for turn: {ctx._turn_cost_cents:.4f} cents (Event cost: {cost_cents:.4f}) Session: {ctx.session_id}")
+    else:
+        log.warning("LLM cost event received but no context found.")
+# --- END NEW Hook ---
 
 # Helper to authenticate a websocket connection and return the Supabase user
 ALLOW_URL_TOKEN = os.getenv("ENV", "prod") != "prod"
@@ -164,7 +184,6 @@ async def tutor_stream(
         else:
              log.info(f"WebSocket: No pending question found in context for session {session_id}.")
 
-        from ai_tutor.fsm import TutorFSM
         log.info(f"WebSocket: Entering main receive loop for session {session_id}")
         while True:
             payload_text = await ws.receive_text()
@@ -172,6 +191,7 @@ async def tutor_stream(
             payload = json.loads(payload_text)
             event_data = payload.get('data', {})
 
+            # Determine event type robustly
             if 'type' in payload:
                 event_type = payload['type']
             elif 'event_type' in payload:
@@ -188,32 +208,75 @@ async def tutor_stream(
                 log.debug(f"WebSocket: Received system message, ignoring for {session_id}.", message_type=incoming['type'])
                 continue
 
-            log.info(f"WebSocket: Passing event to FSM for session {session_id}. Event type: {incoming['type']}")
+            log.info(f"WebSocket: Processing event for session {session_id}. Event type: {incoming['type']}")
             if not ctx:
-                 log.error(f"WebSocket: Context became None before FSM call for session {session_id}")
+                 log.error(f"WebSocket: Context became None before processing for session {session_id}")
                  await ws.send_json({"type": "error", "detail": "Internal server error: Session context lost."})
                  break
 
-            fsm = TutorFSM(ctx)
+            # --- Agent Logic ---
+            if incoming['type'] != 'user_message' or 'text' not in incoming.get('data', {}):
+                log.warning(f"WebSocket received non-text message type '{incoming['type']}', skipping agent run.")
+                # Send an ack or appropriate response if needed?
+                await ws.send_json({"type": "ack", "detail": f"Agent received: {incoming['type']}"})
+                continue # Skip agent run for non-text messages
+
             try:
-                 final_response_data = await fsm.on_user_message(incoming)
-                 log.info(f"WebSocket: FSM processed event for {session_id}. Response type: {getattr(final_response_data, 'response_type', type(final_response_data))}")
+                log.info(f"WebSocket: Invoking Agent for session {session_id}")
+                tutor_agent = build_tutor_agent()
+                user_message = incoming["data"]["text"]
 
-                 if hasattr(final_response_data, 'model_dump'):
-                      await ws.send_json(final_response_data.model_dump(mode='json'))
-                 elif isinstance(final_response_data, dict):
-                      await ws.send_json(final_response_data)
-                 else:
-                      log.warning(f"WebSocket: Unexpected FSM result type for {session_id}", result_type=type(final_response_data))
-                      await ws.send_json({'type': 'message', 'text': f'Tutor response: {str(final_response_data)}'})
+                # Define the context persistence hook
+                async def on_tool_end(event):
+                    tool_name = event.get('tool_name', 'unknown_tool')
+                    # Persist context after any tool finishes execution
+                    log.info(f"[on_tool_end hook] Tool '{tool_name}' finished for session {session_id}. Saving context.")
+                    if ctx: # Ensure ctx is still valid
+                        try:
+                            await session_manager.update_session_context(supabase, session_id, user.id, ctx)
+                            log.info(f"[on_tool_end hook] Context saved successfully for session {session_id}.")
+                        except Exception as save_err:
+                            log.error(f"[on_tool_end hook] Failed to save context for session {session_id}: {save_err}\n{traceback.format_exc()}", exc_info=True)
+                    else:
+                         log.warning(f"[on_tool_end hook] Context object was None, skipping save for session {session_id}.")
 
-                 log.info(f"WebSocket: Updating context in DB after FSM step for {session_id}")
-                 await session_manager.update_session_context(supabase, session_id, user.id, ctx)
-                 log.info(f"WebSocket: Context updated in DB for {session_id}")
+                # Register the event handler for the runner
+                set_event_handler("tool_end", on_tool_end)
 
-            except Exception as fsm_err:
-                 log.error(f"WebSocket: FSMError processing event for session {session_id}: {fsm_err}\n{traceback.format_exc()}", exc_info=True)
-                 await ws.send_json({"type": "error", "detail": f"Internal tutor error. Please try again."})
+                async for delta in Runner.run_streamed(
+                    tutor_agent,
+                    input=user_message, # Pass the user's text message
+                    context=ctx,        # Pass the loaded TutorContext
+                ):
+                    # Ensure delta is serializable - Runner should yield dicts
+                    if isinstance(delta, dict):
+                        await ws.send_json(delta)
+                    else:
+                        log.warning(f"Agent stream yielded non-dict delta: {type(delta)}. Converting to string.")
+                        await ws.send_json({"type": "message", "text": str(delta)}) # Fallback
+
+                log.info(f"WebSocket: Agent stream finished for session {session_id}")
+
+                # --- NEW: Send Cost Summary ---
+                if ctx and hasattr(ctx, "_turn_cost_cents"):
+                    turn_cost = getattr(ctx, "_turn_cost_cents", 0)
+                    if turn_cost > 0:
+                        log.info(f"Sending cost summary for turn: {turn_cost:.3f} cents. Session: {session_id}")
+                        await ws.send_json({
+                            "type": "cost_summary",
+                            "cents": round(turn_cost, 3),
+                        })
+                        # Reset cost for the next turn
+                        ctx._turn_cost_cents = 0
+                    else:
+                        log.debug(f"Skipping cost summary send, cost is zero. Session: {session_id}")
+                # --- END NEW Cost Summary ---
+
+            except Exception as agent_err:
+                log.error(f"WebSocket: Agent error processing event for session {session_id}: {agent_err}\n{traceback.format_exc()}", exc_info=True)
+                await ws.send_json({"type": "error", "detail": f"Internal tutor error. Please try again."})
+                # Decide if we should break or continue listening
+                # continue # Let's continue for now
 
     except WebSocketDisconnect:
          log.info(f"WebSocket disconnected by client (main loop or setup) for session_id={str(session_id)}")

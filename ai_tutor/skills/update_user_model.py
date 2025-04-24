@@ -5,9 +5,10 @@ from typing import Union
 from ai_tutor.tools import update_user_model
 from ai_tutor.context import TutorContext
 from agents.run_context import RunContextWrapper
-from ai_tutor.skills import skill
+from ai_tutor.skills import skill, as_tool
 
 @skill(cost="low")
+@as_tool
 async def update_user_model_skill(
     ctx: RunContextWrapper[TutorContext],
     topic: str,
