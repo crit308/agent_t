@@ -22,30 +22,12 @@ from pydantic import ValidationError  # Import ValidationError
 from ai_tutor.agents.models import QuizQuestion # Ensure QuizQuestion is imported
 from starlette.websockets import WebSocketDisconnect, WebSocketState # Import WebSocketState
 from ai_tutor.agents.tutor_agent_factory import build_tutor_agent
-from agents import Runner, set_event_handler, on_event
+from agents import Runner  # Import Runner separately
 
 router = APIRouter()
 
 # Use shared session manager instance (same as other routers) – no stateful behaviour here
 session_manager = SessionManager()
-
-# --- NEW: LLM Cost Tracking Hook ---
-@on_event("llm_end")
-async def _acc_cost(evt):
-    # Cost calculation based on GPT-4o mini pricing ($0.15 / 1M input, $0.60 / 1M output as of July 2024)
-    # Simplified to cents per 1K tokens
-    cost_cents_input = evt.usage.prompt_tokens * 0.00015  # $0.00015 per token -> $0.15 / 1M tokens
-    cost_cents_output = evt.usage.completion_tokens * 0.00060 # $0.0006 per token -> $0.60 / 1M tokens
-    cost_cents = cost_cents_input + cost_cents_output
-    ctx = evt.context              # TutorContext attached to RunContext
-    if ctx:
-        # Accumulate cost for the turn
-        current_turn_cost = getattr(ctx, "_turn_cost_cents", 0)
-        ctx._turn_cost_cents = current_turn_cost + cost_cents
-        log.debug(f"Accumulated LLM cost for turn: {ctx._turn_cost_cents:.4f} cents (Event cost: {cost_cents:.4f}) Session: {ctx.session_id}")
-    else:
-        log.warning("LLM cost event received but no context found.")
-# --- END NEW Hook ---
 
 # Helper to authenticate a websocket connection and return the Supabase user
 ALLOW_URL_TOKEN = os.getenv("ENV", "prod") != "prod"
@@ -226,51 +208,28 @@ async def tutor_stream(
                 tutor_agent = build_tutor_agent()
                 user_message = incoming["data"]["text"]
 
-                # Define the context persistence hook
-                async def on_tool_end(event):
-                    tool_name = event.get('tool_name', 'unknown_tool')
-                    # Persist context after any tool finishes execution
-                    log.info(f"[on_tool_end hook] Tool '{tool_name}' finished for session {session_id}. Saving context.")
-                    if ctx: # Ensure ctx is still valid
-                        try:
-                            await session_manager.update_session_context(supabase, session_id, user.id, ctx)
-                            log.info(f"[on_tool_end hook] Context saved successfully for session {session_id}.")
-                        except Exception as save_err:
-                            log.error(f"[on_tool_end hook] Failed to save context for session {session_id}: {save_err}\n{traceback.format_exc()}", exc_info=True)
-                    else:
-                         log.warning(f"[on_tool_end hook] Context object was None, skipping save for session {session_id}.")
-
-                # Register the event handler for the runner
-                set_event_handler("tool_end", on_tool_end)
-
                 async for delta in Runner.run_streamed(
                     tutor_agent,
                     input=user_message, # Pass the user's text message
                     context=ctx,        # Pass the loaded TutorContext
                 ):
-                    # Ensure delta is serializable - Runner should yield dicts
                     if isinstance(delta, dict):
                         await ws.send_json(delta)
                     else:
                         log.warning(f"Agent stream yielded non-dict delta: {type(delta)}. Converting to string.")
-                        await ws.send_json({"type": "message", "text": str(delta)}) # Fallback
+                        await ws.send_json({"type": "message", "text": str(delta)})
 
                 log.info(f"WebSocket: Agent stream finished for session {session_id}")
 
-                # --- NEW: Send Cost Summary ---
-                if ctx and hasattr(ctx, "_turn_cost_cents"):
-                    turn_cost = getattr(ctx, "_turn_cost_cents", 0)
-                    if turn_cost > 0:
-                        log.info(f"Sending cost summary for turn: {turn_cost:.3f} cents. Session: {session_id}")
-                        await ws.send_json({
-                            "type": "cost_summary",
-                            "cents": round(turn_cost, 3),
-                        })
-                        # Reset cost for the next turn
-                        ctx._turn_cost_cents = 0
-                    else:
-                        log.debug(f"Skipping cost summary send, cost is zero. Session: {session_id}")
-                # --- END NEW Cost Summary ---
+                # --- Persist context AFTER the agent turn completes ---
+                if ctx: # Check context exists
+                    try:
+                        log.info(f"WebSocket: Updating context in DB after agent run for {session_id}")
+                        await session_manager.update_session_context(supabase, session_id, user.id, ctx)
+                        log.info(f"WebSocket: Context updated successfully in DB for {session_id}")
+                    except Exception as save_err:
+                        log.error(f"WebSocket: Failed to save context after agent run for session {session_id}: {save_err}\n{traceback.format_exc()}", exc_info=True)
+                # --- End Persistence ---
 
             except Exception as agent_err:
                 log.error(f"WebSocket: Agent error processing event for session {session_id}: {agent_err}\n{traceback.format_exc()}", exc_info=True)
