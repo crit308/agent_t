@@ -28,9 +28,10 @@ from agents.items import MessageOutputItem, ToolCallOutputItem, HandoffOutputIte
 from openai.types.responses import ResponseTextDeltaEvent, ResponseOutputText
 from ai_tutor.api_models import (
     InteractionResponseData, ExplanationResponse, QuestionResponse,
-    FeedbackResponse, MessageResponse, ErrorResponse
+    FeedbackResponse, MessageResponse, ErrorResponse, UserModelState # Ensure UserModelState is imported here
 )
-from ai_tutor.agents.models import QuizQuestion, QuizFeedbackItem
+from ai_tutor.agents.models import QuizQuestion, QuizFeedbackItem, FocusObjective
+from fastapi import HTTPException
 
 router = APIRouter()
 
@@ -103,6 +104,34 @@ async def safe_close(ws: WebSocket, code: int = 1000, reason: Optional[str] = No
          log.warning(f"safe_close: Error during WebSocket close: {e}") # Log expected errors during close
     except Exception as e:
          log.error(f"safe_close: Unexpected error during close: {e}", exc_info=True)
+
+# --- Add Phase 1 Stub Functions --- #
+async def run_planner_stub(ctx: TutorContext) -> FocusObjective:
+    log.info("[Stub] Running Planner Stub")
+    # Return a fixed, simple objective based on backend_change.md example
+    objective = FocusObjective(
+        topic="Introduction",
+        learning_goal="Understand the purpose of this stub session",
+        priority=5,
+        target_mastery=0.8, # Required field
+        # relevant_concepts=[], # Optional fields
+        # suggested_approach="Explain basics"
+    )
+    log.info("[Stub] Planner Stub finished", objective=objective.model_dump())
+    return objective
+
+async def run_executor_stub(ctx: TutorContext, user_input: str) -> MessageResponse:
+    log.info(f"[Stub] Running Executor Stub with input: '{user_input}'")
+    # Return a fixed, simple message response based on backend_change.md example
+    current_goal = ctx.current_focus_objective.learning_goal if ctx.current_focus_objective else 'None'
+    response_text = f"Executor stub received: '{user_input}'. Session goal is '{current_goal}'"
+    response = MessageResponse(
+        response_type="message",
+        text=response_text
+    )
+    log.info("[Stub] Executor Stub finished", response=response.model_dump())
+    return response
+# --- End Phase 1 Stub Functions --- #
 
 @router.websocket("/ws/session/{session_id}")
 async def tutor_stream(
@@ -213,7 +242,14 @@ async def tutor_stream(
         else:
              log.info(f"WebSocket: No pending question found in context for session {session_id}.")
 
-        log.info(f"WebSocket: Entering main receive loop for session {session_id}")
+        log.info(f"WebSocket: Entering main receive loop")
+        # Use a flag in the connection scope, not on ctx, as ctx might be reloaded
+        planner_run_complete = False 
+        # Check if context ALREADY has an objective from a previous connection to this session
+        if ctx and ctx.current_focus_objective:
+            log.info("Existing FocusObjective found in loaded context. Skipping Planner Stub.")
+            planner_run_complete = True
+
         while True:
             try:
                 payload_text = await ws.receive_text()
@@ -260,134 +296,122 @@ async def tutor_stream(
                      await safe_send_json(ws, {"type": "ack", "detail": f"Agent received unhandled type: {incoming['type']}"}, "Unhandled Type Ack")
                      continue
 
-                # --- Agent Logic ---
+                # --- Agent/Stub Logic Invocation (Phase 1 Implementation) ---
                 try:
-                    log.info(f"WebSocket: Invoking Agent for session {session_id} with input: {agent_input[:50]}...")
-                    tutor_agent = build_tutor_agent()
-                    # Ensure agent_input is defined based on 'start' or 'user_message'
-                    agent_input = ""
-                    if incoming['type'] == 'start':
-                        agent_input = "Start the lesson."
-                    elif incoming['type'] == 'user_message' and 'text' in incoming.get('data', {}):
-                        agent_input = incoming["data"]["text"]
-                    else: # Should have been caught earlier, but safeguard
-                        log.error(f"Invalid agent trigger: {incoming['type']}")
-                        raise ValueError("Invalid trigger for agent run")
+                    log.info(f"WebSocket: Processing event type: {event_type}")
+                    save_context_needed = False # Flag to indicate if context needs saving
+                    response_to_send: Optional[InteractionResponseData] = None
 
-                    run_result_stream = Runner.run_streamed(
-                        tutor_agent,
-                        input=agent_input,
-                        context=ctx,
-                    )
-
-                    final_response_sent = False # Flag to ensure we only send one final payload
-                    async for stream_event in run_result_stream.stream_events():
-                        log.debug(f"Processing stream event type: {getattr(stream_event, 'type', 'Unknown')}")
-
-                        response_payload = None
-                        content_type = None
-
-                        # --- Handle Raw Text Deltas ---
-                        if isinstance(stream_event, RawResponsesStreamEvent):
-                             raw_data = stream_event.data
-                             if hasattr(raw_data, 'type') and raw_data.type == 'response.output_text.delta':
-                                  delta_text = getattr(raw_data, 'delta', '')
-                                  if delta_text:
-                                       # Send raw delta for immediate display
-                                       raw_delta_payload = {
-                                           "type": "raw_delta", # Custom type for frontend hook
-                                           "delta": delta_text
-                                       }
-                                       await safe_send_json(ws, raw_delta_payload, "Delta Send")
-                                       continue # Don't process further if it's just a delta
-
-                        # --- Handle Final Item Completions ---
-                        elif isinstance(stream_event, RunItemStreamEvent) and stream_event.item:
-                            item = stream_event.item
-                            if stream_event.name == 'message_output_created' and isinstance(item, MessageOutputItem):
-                                # --- FIX: Correctly access text content ---
-                                final_text = ""
-                                # The raw_item usually holds the OpenAI response structure
-                                if item.raw_item and hasattr(item.raw_item, 'content') and item.raw_item.content:
-                                    # Content is often a list, iterate through parts
-                                    for part in item.raw_item.content:
-                                         # Check if the part is a text part
-                                         if isinstance(part, ResponseOutputText) and hasattr(part, 'text'):
-                                              final_text += part.text
-                                # --- End FIX ---
-
-                                if final_text:
-                                    content_type = "message"
-                                    response_payload = MessageResponse(
-                                         response_type="message",
-                                         text=final_text.strip() # Strip potential whitespace
-                                     )
-                                    log.info(f"Detected completed MessageOutputItem: {final_text[:50]}...")
-                                else:
-                                    log.warning("MessageOutputItem created but no text content found.")
-
-                            elif stream_event.name == 'tool_call_output_created' and isinstance(item, ToolCallOutputItem):
-                                tool_name = item.tool_name
-                                tool_output = item.output
-                                log.info(f"Detected completed ToolCallOutputItem for tool: {tool_name}")
-
-                                if tool_name == 'create_quiz' and isinstance(tool_output, QuizQuestion):
-                                     content_type = "question"
-                                     response_payload = QuestionResponse(
-                                         response_type="question", question=tool_output,
-                                         topic=ctx.current_teaching_topic or "Unknown"
-                                     )
-                                     ctx.current_quiz_question = tool_output
-                                     ctx.user_model_state.pending_interaction_type = 'checking_question'
-
-                                elif tool_name == 'evaluate_quiz' and isinstance(tool_output, QuizFeedbackItem):
-                                     content_type = "feedback"
-                                     response_payload = FeedbackResponse(
-                                         response_type="feedback", feedback=tool_output,
-                                         topic=ctx.current_teaching_topic or "Unknown"
-                                     )
-                                     ctx.current_quiz_question = None
-                                     ctx.user_model_state.pending_interaction_type = None
-
-                                else:
-                                     log.warning(f"Unhandled completed tool output for {tool_name}")
-
-                        # --- Send Final Structured Payload ---
-                        if response_payload and content_type and not final_response_sent:
-                            api_response = InteractionResponseData(
-                                content_type=content_type,
-                                data=response_payload,
-                                user_model_state=ctx.user_model_state
-                            )
-                            await safe_send_json(ws, api_response.model_dump(mode='json'), f"Final Payload Send ({content_type})")
-                            log.info(f"Sent final formatted {content_type} response to client.")
-                            final_response_sent = True
-                            # break # Uncomment if you want to stop after first final payload
-
-                    # --- Handle case where stream finishes without sending a final payload ---
-                    if not final_response_sent:
-                        log.warning(f"Agent stream for session {session_id} finished without sending a structured response.")
-                        fallback_payload = MessageResponse(response_type="message", text="Finished processing.")
-                        fallback_response = InteractionResponseData(content_type="message", data=fallback_payload, user_model_state=ctx.user_model_state)
-                        await safe_send_json(ws, fallback_response.model_dump(mode='json'), "Fallback Send")
-
-                    log.info(f"WebSocket: Agent stream processing finished for session {session_id}")
-
-                    # --- Persist context AFTER the agent turn completes ---
-                    if ctx:
+                    # --- Planner Logic (Run on first message) ---
+                    if not planner_run_complete:
+                        log.info("WebSocket: First message received, running Planner Stub.")
                         try:
-                            log.info(f"WebSocket: Updating context in DB after agent run for {session_id}")
-                            await session_manager.update_session_context(supabase, session_id, user.id, ctx)
-                            log.info(f"WebSocket: Context updated successfully in DB for {session_id}")
-                        except Exception as save_err:
-                            log.error(f"WebSocket: Failed to save context after agent run for session {session_id}: {save_err}\n{traceback.format_exc()}", exc_info=True)
-                    else:
-                        log.warning(f"WebSocket: Context object was None after agent run, cannot save state for session {session_id}")
+                            planner_objective = await run_planner_stub(ctx)
+                            ctx.current_focus_objective = planner_objective # Store result in context
+                            log.info("WebSocket: Planner Stub successful, objective stored in context.")
+                            save_context_needed = True # Need to save the new objective
+                            planner_run_complete = True # Mark planner as run for this connection
 
-                except Exception as agent_err:
-                     log.error(f"WebSocket: Agent error processing event for session {session_id}: {agent_err}\n{traceback.format_exc()}", exc_info=True)
-                     error_data = ErrorResponse(response_type="error", message="Internal tutor error. Please try again.")
-                     await safe_send_json(ws, error_data.model_dump(mode='json'), "Agent Error Send")
+                            # Send confirmation message back to client
+                            planner_confirm_msg = MessageResponse(response_type="message", text="Session ready. What would you like to work on first?")
+                            response_to_send = InteractionResponseData(content_type="message", data=planner_confirm_msg, user_model_state=ctx.user_model_state)
+                            log.info("WebSocket: Prepared planner confirmation message.")
+
+                        except Exception as planner_err:
+                             log.error(f"WebSocket: Planner Stub failed: {planner_err}", exc_info=True)
+                             # Send specific error for planner failure
+                             await send_error_response(
+                                 ws,
+                                 message="Failed to plan the session.",
+                                 error_code="PLANNER_STUB_ERROR",
+                                 details=f"Planner error: {type(planner_err).__name__}",
+                                 state=ctx.user_model_state
+                             )
+                             # Continue or break? Let's continue but don't proceed to save/send response
+                             continue
+
+                    # --- Executor Logic (Run on subsequent user_message) ---
+                    elif event_type == 'user_message' and agent_input:
+                        log.info("WebSocket: Subsequent message received, running Executor Stub.")
+                        if not ctx.current_focus_objective:
+                             log.warning("Executor Stub called but no focus objective found in context. Skipping.")
+                             await send_error_response(
+                                 ws, "Cannot process message: session goal not set.", "EXECUTOR_STUB_ERROR",
+                                 details="No focus objective available.", state=ctx.user_model_state
+                             )
+                             continue
+                        try:
+                            executor_result: MessageResponse = await run_executor_stub(ctx, agent_input)
+                            # No explicit context modification in stub, but could happen in real agent
+                            # save_context_needed = True # Uncomment if executor modifies context
+                            log.info("WebSocket: Executor Stub successful.")
+
+                            # Wrap executor response
+                            response_to_send = InteractionResponseData(
+                                content_type="message", # Per Coordination Point 3
+                                data=executor_result,
+                                user_model_state=ctx.user_model_state # Always include user model state
+                            )
+                            log.info("WebSocket: Prepared executor response message.")
+
+                        except Exception as executor_err:
+                             log.error(f"WebSocket: Executor Stub failed: {executor_err}", exc_info=True)
+                             await send_error_response(
+                                 ws,
+                                 message="Failed to process your message.",
+                                 error_code="EXECUTOR_STUB_ERROR",
+                                 details=f"Executor error: {type(executor_err).__name__}",
+                                 state=ctx.user_model_state
+                             )
+                             continue
+                    else:
+                        # Handle cases like receiving 'start' after planner already ran, or other unhandled types
+                        log.warning(f"WebSocket: Received event '{event_type}' when not expected or not handled in stub logic.")
+                        # Optionally send an ack or ignore
+                        # await safe_send_json(ws, {"type": "ack", "detail": f"Event '{event_type}' received."}, "Event Ack")
+                        continue # Skip saving/sending for unhandled cases in this state
+
+                    # --- Save Context if Needed --- #
+                    if save_context_needed:
+                        try:
+                            log.info("WebSocket: Attempting to save context after stub execution.")
+                            success = await session_manager.update_session_context(supabase, session_id, user.id, ctx)
+                            if success:
+                                log.info("WebSocket: Context saved successfully after stub execution.")
+                            else:
+                                log.warning("WebSocket: update_session_context returned False, context may not be saved.")
+                        except HTTPException as save_exc:
+                            log.error(f"WebSocket: Failed to save context after stub execution: Status={save_exc.status_code}, Detail={save_exc.detail}", exc_info=False)
+                            await send_error_response(
+                                ws, "Failed to save session progress.", "CONTEXT_SAVE_FAILED",
+                                details=f"Database error: {save_exc.status_code}", state=ctx.user_model_state
+                            )
+                            # Continue after save failure, don't break the loop unless critical
+                        except Exception as generic_save_err:
+                             log.error(f"WebSocket: Unexpected error saving context after stub execution: {generic_save_err}", exc_info=True)
+                             await send_error_response(
+                                 ws, "An unexpected error occurred while saving session progress.", "INTERNAL_SERVER_ERROR",
+                                 details=f"Save exception: {type(generic_save_err).__name__}", state=ctx.user_model_state
+                             )
+
+                    # --- Send Response --- #
+                    if response_to_send:
+                        log.info(f"WebSocket: Sending {response_to_send.content_type} response to client.")
+                        await safe_send_json(ws, response_to_send.model_dump(mode='json'), f"{response_to_send.content_type.capitalize()} Response Send")
+                    else:
+                        # This shouldn't happen if logic is correct, but log if it does
+                        log.warning("WebSocket: Reached end of try block with no response to send.")
+
+                except Exception as e:
+                    log.error(f"Unexpected error in stub logic: {e}", exc_info=True)
+                    await send_error_response(
+                        ws,
+                        message="Internal server error during stub processing.",
+                        error_code="INTERNAL_SERVER_ERROR",
+                        details=str(e),
+                        state=ctx.user_model_state
+                    )
+                    continue
 
             except WebSocketDisconnect as ws_disconnect:
                 log.info(f"WebSocket disconnected by client during receive/processing for session {session_id}: Code={ws_disconnect.code}, Reason={ws_disconnect.reason}")

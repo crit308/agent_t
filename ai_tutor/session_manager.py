@@ -8,11 +8,10 @@ from pathlib import Path
 from supabase import Client, PostgrestAPIResponse
 from fastapi import HTTPException # For raising errors
 from uuid import UUID # Import UUID
+import structlog # Add structlog
 
-from ai_tutor.context import TutorContext # Import the main context model
-
-# Needed for context creation
-from ai_tutor.context import UserModelState
+from ai_tutor.context import TutorContext, UserModelState # Import UserModelState
+from pydantic import ValidationError # Import ValidationError
 
 # Models might still be needed if SessionManager directly interacts with them.
 from ai_tutor.agents.models import LessonPlan, LessonContent, Quiz, QuizFeedback, SessionAnalysis
@@ -28,6 +27,8 @@ if TYPE_CHECKING:
 # WARNING: This will lose state on server restart and doesn't scale horizontally.
 # Consider using Redis or a database for production.
 _sessions: Dict[str, Dict[str, Any]] = {}
+
+log = structlog.get_logger(__name__) # Add logger
 
 class SessionManager:
     """Manages session state for AI Tutor sessions."""
@@ -128,47 +129,106 @@ class SessionManager:
             raise HTTPException(status_code=500, detail=f"Database error during session creation: {e}")
 
     async def get_session_context(self, supabase: Client, session_id: UUID, user_id: UUID) -> Optional[TutorContext]:
-        """Retrieves the TutorContext for a given session ID and user ID from Supabase."""
+        """Retrieves and validates the TutorContext from Supabase."""
+        log.debug("Attempting to fetch session context from DB", session_id=str(session_id), user_id=str(user_id))
         try:
-            response: PostgrestAPIResponse = supabase.table("sessions").select("context_data").eq("id", str(session_id)).eq("user_id", user_id).maybe_single().execute()
+            response: PostgrestAPIResponse = supabase.table("sessions").select("context_data").eq("id", str(session_id)).eq("user_id", str(user_id)).maybe_single().execute()
 
-            if response.data and response.data.get("context_data"):
-                # Parse the JSONB data back into TutorContext
-                return TutorContext(**response.data["context_data"])
-            elif response.data is None: # No matching session found for user
-                return None
-            else: # Data exists but context_data might be missing/null
-                 print(f"Warning: Session {session_id} found but context_data is missing or null.")
+            if not response.data:
+                log.info("No session found or context_data is null", session_id=str(session_id), user_id=str(user_id))
+                return None # No session found for this user/id
+
+            context_data = response.data.get("context_data")
+            if not context_data:
+                 log.warning("Session found but context_data field is null or empty.", session_id=str(session_id))
+                 # Decide if this should return None or initialize a default context
+                 # Returning None for now, assuming FE/caller handles initialization
                  return None
+
+            # --- Parse and Validate --- #
+            try:
+                if isinstance(context_data, str):
+                    try:
+                        context_dict = json.loads(context_data)
+                    except json.JSONDecodeError as json_err:
+                        log.error("Failed to decode JSON from context_data", session_id=str(session_id), error=str(json_err))
+                        # Raise a specific exception or return None, depending on desired handling
+                        # Raising HTTPException might be too much here, maybe a custom error or None
+                        raise ValueError("Invalid JSON in context_data") from json_err
+                elif isinstance(context_data, dict):
+                    context_dict = context_data
+                else:
+                    log.error("context_data is neither string nor dict", session_id=str(session_id), type=type(context_data).__name__)
+                    raise ValueError("Invalid type for context_data")
+
+                # Ensure core IDs are present before Pydantic validation (Supabase might not guarantee this)
+                context_dict.setdefault('session_id', str(session_id))
+                context_dict.setdefault('user_id', str(user_id))
+
+                # Validate with Pydantic
+                ctx = TutorContext.model_validate(context_dict)
+                log.info("Session context successfully fetched and validated", session_id=str(session_id))
+                return ctx
+
+            except (ValidationError, ValueError, TypeError) as validation_err:
+                 log.error("Failed to validate context_data against TutorContext model", session_id=str(session_id), error=str(validation_err), exc_info=True)
+                 # Return None or raise a specific error? Returning None for now.
+                 # This indicates corrupted data in the DB.
+                 return None # Treat validation failure as if context doesn't exist or is unusable
+
+        except APIError as api_err:
+            log.error("Supabase APIError fetching session context", session_id=str(session_id), code=api_err.code, message=api_err.message, exc_info=True)
+            # Propagate a generic error upwards
+            raise HTTPException(status_code=503, detail=f"Database error fetching session: {api_err.code}") # 503 Service Unavailable might be appropriate
         except Exception as e:
-            print(f"Error fetching session {session_id} context from Supabase: {e}")
-            raise HTTPException(status_code=500, detail=f"Database error fetching session context: {e}")
+            log.error("Unexpected error fetching session context from Supabase", session_id=str(session_id), error=str(e), exc_info=True)
+            # Propagate a generic error upwards
+            raise HTTPException(status_code=500, detail=f"Internal error fetching session context")
 
     async def update_session_context(self, supabase: Client, session_id: UUID, user_id: UUID, context: TutorContext) -> bool:
         """Updates the TutorContext for a given session ID in Supabase."""
-        context_dict = context.model_dump(mode='json')
+        log.debug("Attempting to update session context in DB", session_id=str(session_id), user_id=str(user_id))
+        try:
+            # Ensure context can be serialized before attempting DB update
+            context_dict = context.model_dump(mode='json')
+            # Basic check: ensure it's a dictionary
+            if not isinstance(context_dict, dict):
+                 log.error("Context serialization failed, did not produce a dictionary.", session_id=str(session_id), type=type(context_dict).__name__)
+                 raise TypeError("Failed to serialize context to dictionary")
+            log.debug("Context serialized successfully for update.", session_id=str(session_id))
+
+        except (ValidationError, TypeError) as serialization_err:
+             log.error("Failed to serialize TutorContext before update", session_id=str(session_id), error=str(serialization_err), exc_info=True)
+             # Don't raise HTTPException here, return False or raise a specific internal error?
+             # Returning False indicates update failure without stopping WebSocket potentially.
+             return False
+
         try:
             update_data = {
                 "context_data": context_dict,
-                # Update folder_id if it changed in the context (might not be necessary)
                 "folder_id": str(context.folder_id) if context.folder_id else None
+                # Add updated_at? Supabase trigger should handle this automatically.
             }
-            response: PostgrestAPIResponse = supabase.table("sessions").update(update_data).eq("id", str(session_id)).eq("user_id", user_id).execute()
+            log.info("Executing Supabase update for session context", session_id=str(session_id))
+            response: PostgrestAPIResponse = supabase.table("sessions").update(update_data).eq("id", str(session_id)).eq("user_id", str(user_id)).execute()
 
-            # For simplicity, just checking for errors.
-            # We removed the check for response.error as it caused an AttributeError
-            # Now relying on the execute() call to raise an exception on failure.
-            print(f"Updated session {session_id} context successfully.")
+            # Check if the update actually affected any rows (although .execute() might raise error on failure)
+            # Supabase python client v1/v2 behaviour might differ here. Assuming execute raises on DB error.
+            # if not response.data: # This check might be unreliable depending on Supabase version/return
+            #    log.warning("Supabase update command executed but reported no data change.", session_id=str(session_id))
+            #    # Consider this a soft failure?
+            #    # return False
+
+            log.info("Session context updated successfully in DB", session_id=str(session_id))
             return True
+        except APIError as api_err:
+            log.error("Supabase APIError updating session context", session_id=str(session_id), code=api_err.code, message=api_err.message, data_sent=str(update_data)[:200], exc_info=True)
+            # Raise a specific exception to be caught by the caller (e.g., tutor_ws)
+            raise HTTPException(status_code=503, detail=f"Database error updating session: {api_err.code}")
         except Exception as e:
-            # Check if the exception is directly from Supabase and has details
-            # This depends on the exception types raised by supabase-py
-            # Example check (might need adjustment):
-            # if hasattr(e, 'details'):
-            #     print(f"Supabase API Error updating session {session_id}: {e.details}")
-            # else:
-            print(f"Exception updating session {session_id} context: {e}")
-            raise HTTPException(status_code=500, detail=f"Database error updating session context: {e}")
+            log.error("Unexpected error updating session context in Supabase", session_id=str(session_id), error=str(e), exc_info=True)
+            # Raise a specific exception
+            raise HTTPException(status_code=500, detail=f"Internal error updating session context")
 
     # session_exists might not be needed if get_session handles the lookup failure
 
