@@ -113,13 +113,17 @@ async def upload_session_documents(
     if not temp_paths:
         raise HTTPException(status_code=400, detail="No files provided for upload.")
 
-    # Embed files into vector store synchronously
-    logger.info(f"Starting embedding files for session {session_id}")
-    vector_store_id = tutor_context.vector_store_id
-    messages: List[str] = []
+    # --- Section for Embedding and Analysis ---
+    embedding_successful = False
+    analysis_status = "pending" # Default status
     try:
+        # Embed files into vector store synchronously
+        logger.info(f"Starting embedding files for session {session_id}")
+        vector_store_id = tutor_context.vector_store_id
+        messages: List[str] = []
         for path, name in zip(temp_paths, filenames):
             logger.info(f"Calling upload_and_process_file for {name}")
+            # This call now includes polling and can raise TimeoutError or other exceptions
             result = await file_upload_manager.upload_and_process_file(
                 file_path=path,
                 user_id=user.id,
@@ -128,39 +132,65 @@ async def upload_session_documents(
             )
             logger.info(f"upload_and_process_file returned for {name}: {result}")
             if result.vector_store_id:
-                vector_store_id = result.vector_store_id
-            messages.append(f"{name} embedded into {vector_store_id}")
+                vector_store_id = result.vector_store_id # Update vector store ID if created
+            messages.append(f"{name} processed successfully.")
+
+        embedding_successful = True # Mark embedding as successful if loop completes
+
+        # Update session context after successful embedding
+        tutor_context.uploaded_file_paths.extend(filenames)
+        tutor_context.vector_store_id = vector_store_id
+        await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
+
+        # Perform document analysis only if embedding was successful
+        logger.info(f"Calling analyze_documents for vector_store_id {vector_store_id}")
+        try:
+            analysis = await analyze_documents(vector_store_id, context=tutor_context, supabase=supabase)
+            logger.info(f"analyze_documents returned: {analysis}")
+            tutor_context.analysis_result = analysis
+            analysis_status = "completed"
+        except Exception as analysis_exc:
+            logger.error("AnalysisError", analysis_exc)
+            logger.info(f"Exception during analysis: {analysis_exc}")
+            analysis_status = "failed" # Mark analysis as failed
+            messages.append(f"Document analysis failed: {analysis_exc}")
+            # Optionally re-raise or handle differently
+
+    except TimeoutError as te:
+        logger.error("EmbeddingTimeout", te)
+        logger.info(f"Timeout during embedding file processing: {te}")
+        analysis_status = "timeout"
+        messages.append(f"File processing timed out: {te}")
+        # Optionally re-raise or handle differently
     except Exception as e:
-        logger.error("EmbedError", e)
+        logger.error("EmbeddingError", e)
         logger.info(f"Exception during embedding: {e}")
+        analysis_status = "failed"
+        messages.append(f"File embedding failed: {e}")
+        # Optionally re-raise or handle differently
+
+    finally:
+        # Clean up temporary files regardless of outcome
         for p in temp_paths:
             if os.path.exists(p):
-                os.remove(p)
-        raise HTTPException(status_code=500, detail=f"Embedding error: {e}")
+                try:
+                    os.remove(p)
+                    logger.info(f"Removed temporary file: {p}")
+                except OSError as remove_err:
+                    logger.warning(f"Could not remove temporary file {p}: {remove_err}")
 
-    # Update session context after embedding
-    tutor_context.uploaded_file_paths.extend(filenames)
-    tutor_context.vector_store_id = vector_store_id
-    await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
-
-    # Perform document analysis synchronously
-    logger.info(f"Calling analyze_documents for vector_store_id {vector_store_id}")
+    # Persist context after analysis (or analysis attempt)
+    # Ensures vector_store_id and analysis_result (even if None/error) are saved
     try:
-        analysis = await analyze_documents(vector_store_id, context=tutor_context, supabase=supabase)
-        logger.info(f"analyze_documents returned: {analysis}")
-        tutor_context.analysis_result = analysis
-        analysis_status = "completed"
-    except Exception as e:
-        logger.error("AnalysisError", e)
-        logger.info(f"Exception during analysis: {e}")
-        analysis_status = "pending"
+        await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
+        logger.info(f"Final session context update successful for {session_id}")
+    except Exception as update_exc:
+        logger.error(f"Failed to perform final context update for session {session_id}: {update_exc}")
+        # If this fails, the state might be inconsistent. Consider implications.
 
-    # Persist context after analysis
-    await session_manager.update_session_context(supabase, session_id, user.id, tutor_context)
-
-    logger.info(f"Returning DocumentUploadResponse for session {session_id}")
+    logger.info(f"Returning DocumentUploadResponse for session {session_id} with analysis_status: {analysis_status}")
     return DocumentUploadResponse(
-        vector_store_id=vector_store_id,
+        vector_store_id=tutor_context.vector_store_id, # Use context value which might have been updated
         files_received=filenames,
         analysis_status=analysis_status,
         message="; ".join(messages)

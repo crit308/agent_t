@@ -50,42 +50,38 @@ class AnalysisResponse(BaseModel):
 # --- Interaction Response Models ---
 
 class ExplanationResponse(BaseModel):
-    """Response containing a detailed explanation of a topic."""
-    response_type: Literal["explanation"]
+    """Response containing a detailed explanation segment."""
+    response_type: Literal["explanation"] = "explanation"
     text: str
-    topic: str
-    segment_index: int # Make segment_index required
-    is_last_segment: bool # Indicate if more segments follow
-    references: Optional[List[str]] = None
-    model_config = {"extra": "forbid"}
+    topic: Optional[str] = None
+    segment_index: Optional[int] = None
+    is_last_segment: Optional[bool] = None
 
 class QuestionResponse(BaseModel):
-    """Response containing a quiz question."""
-    response_type: Literal["question"]
+    """Response containing a quiz question to present to the user."""
+    response_type: Literal["question"] = "question"
     question: QuizQuestion
-    topic: str
-    context: Optional[str] = None
-    model_config = {"extra": "forbid"}
+    topic: Optional[str] = None
 
 class FeedbackResponse(BaseModel):
     """Response containing feedback on a student's answer."""
-    response_type: Literal["feedback"]
+    response_type: Literal["feedback"] = "feedback"
     feedback: QuizFeedbackItem
-    topic: str
+    topic: Optional[str] = None
     correct_answer: Optional[str] = None
     explanation: Optional[str] = None
     model_config = {"extra": "forbid"}
 
 class MessageResponse(BaseModel):
     """For general messages from the tutor."""
-    response_type: Literal["message"]
+    response_type: Literal["message"] = "message"
     text: str
     message_type: Optional[str] = None  # e.g., "info", "success", "warning"
     model_config = {"extra": "forbid"}
 
 class ErrorResponse(BaseModel):
     """For error messages and exceptional cases."""
-    response_type: Literal["error"]
+    response_type: Literal["error"] = "error"
     message: str
     error_code: Optional[str] = None
     details: Optional[dict] = None
@@ -102,10 +98,11 @@ class InteractionResponseData(BaseModel):
     content_type: str # Matches InteractionContentType in frontend (e.g., 'explanation', 'question')
     data: Union[ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse, Dict[str, Any]] # Explicitly allow Dict for fallbacks
     user_model_state: UserModelState # Include the updated user model state
+    status: Optional[str] = None # e.g., "awaiting_user_input", "error", etc.
 
 TutorInteractionResponse = Union[
     ExplanationResponse,
-    QuestionResponse, 
+    QuestionResponse,
     FeedbackResponse,
     MessageResponse,
     ErrorResponse

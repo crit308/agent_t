@@ -2,6 +2,8 @@ import os
 import base64
 from typing import List, Optional, TYPE_CHECKING
 import openai
+import asyncio
+import time
 from pydantic import BaseModel
 from supabase import Client
 from uuid import UUID
@@ -112,18 +114,54 @@ class FileUploadManager:
                 print(f"Using EXISTING vector store: {self.vector_store_id}")
 
             # Add the file to the vector store
-            self.client.vector_stores.files.create(
+            vector_store_file = self.client.vector_stores.files.create(
                 vector_store_id=self.vector_store_id,
                 file_id=file_id
             )
             
             print(f"Added file {file_id} to vector store {self.vector_store_id}")
             
-            # Check status of the file in vector store
-            files_status = self.client.vector_stores.files.list(
-                vector_store_id=self.vector_store_id
-            )
-            print(f"Vector store files status: {files_status}")
+            # --- Start Polling Logic ---
+            start_time = time.time()
+            timeout = 120 # seconds
+            poll_interval = 2 # seconds
+
+            while time.time() - start_time < timeout:
+                try:
+                    retrieved_file = self.client.vector_stores.files.retrieve(
+                        vector_store_id=self.vector_store_id,
+                        file_id=file_id
+                    )
+                    status = retrieved_file.status
+                    print(f"Polling file {file_id} status: {status}")
+
+                    if status == "completed":
+                        print(f"File {file_id} processing completed.")
+                        break # Exit loop on success
+                    elif status == "failed":
+                        print(f"Error: File {file_id} processing failed. Last error: {retrieved_file.last_error}")
+                        # Raise an exception or handle the failure appropriately
+                        raise Exception(f"OpenAI file processing failed for {filename}. Error: {retrieved_file.last_error}")
+                    elif status in ["cancelled", "expired"]: # Handle other terminal states
+                         print(f"Error: File {file_id} processing {status}.")
+                         raise Exception(f"OpenAI file processing {status} for {filename}.")
+
+                except Exception as poll_exc:
+                    # Handle API errors during polling if needed, or re-raise
+                    print(f"Exception during polling file status: {poll_exc}")
+                    raise # Re-raise the exception to signal a failure
+
+                await asyncio.sleep(poll_interval) # Wait before next poll
+            else: # This block executes if the while loop completes without a break (timeout)
+                print(f"Error: Polling timed out for file {file_id} after {timeout} seconds.")
+                raise TimeoutError(f"File processing timed out for {filename} after {timeout} seconds.")
+            # --- End Polling Logic ---
+            
+            # Check status of the file in vector store (Optional: For logging/debugging after loop)
+            # files_status = self.client.vector_stores.files.list(
+            #     vector_store_id=self.vector_store_id
+            # )
+            # print(f"Final vector store files status: {files_status}")
             
             # Update the folder record with the vector_store_id (if newly created or maybe always to be safe)
             try:

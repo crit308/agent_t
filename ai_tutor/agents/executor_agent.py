@@ -1,164 +1,215 @@
-"""
-ExecutorAgent: picks and executes skills to fulfill a learning objective.
-"""
+from __future__ import annotations
+import logging
+from typing import Optional, Union, Dict
+
+from ai_tutor.exceptions import ExecutorError # Import from new file
 
 from ai_tutor.context import TutorContext
-from ai_tutor.agents.models import FocusObjective
-from ai_tutor.api_models import ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse
-from agents.run_context import RunContextWrapper
-from typing import Any
+from ai_tutor.agents.models import QuizQuestion, QuizFeedbackItem, FocusObjective # Added FocusObjective
+from ai_tutor.api_models import (
+    InteractionResponseData,
+    ExplanationResponse,
+    QuestionResponse,
+    # QuizFeedbackItem, # Defined in agents.models
+    MessageResponse,
+    ErrorResponse,
+)
+from ai_tutor.context import UserModelState
+from ai_tutor.core.llm import LLMClient
+# Import necessary skill decorators and potentially the Runner if needed
+# from ai_tutor.skills import skill # Example
+# from agents.run_context import RunContextWrapper # Example if using ADK Runner
+from ai_tutor.utils.tool_helpers import invoke 
+# Corrected skill imports:
+from ai_tutor.skills.explain_concept import explain_concept
+from ai_tutor.skills.create_quiz import create_quiz
 
-# Define custom exception for budget issues
-class BudgetExceededError(Exception):
-    pass
+logger = logging.getLogger(__name__)
 
-async def choose_tactic(ctx: TutorContext, objective: FocusObjective):
+# Define the possible structured data payloads for InteractionResponseData
+ResponseType = Union[ExplanationResponse, QuestionResponse, QuizFeedbackItem, MessageResponse, ErrorResponse]
+
+# Corrected SYSTEM_PROMPT_TEMPLATE (now properly closed and clear about response_type)
+SYSTEM_PROMPT_TEMPLATE = (
+    "You are an AI Tutor. Your primary goal is to teach the user about the current Focus Objective.\n\n"
+    "**Current Focus Objective:**\n"
+    "Topic: {objective_topic}\n"
+    "Learning Goal: {objective_goal}\n"
+    "Target Mastery: {objective_mastery}\n\n"
+    "**Current User State:**\n"
+    "{user_model_state_summary}\n\n"
+    "**Your Task:**\n"
+    "1.  Read the User's Last Message (if any): \"{user_message}\"\n"
+    "2.  Analyze the current objective, user state, and user message.\n"
+    "3.  Decide the best next pedagogical step. Choose ONE appropriate skill to call:\n"
+    "    *   `explain_concept(topic: str, details: str)`: To explain a new part of the topic or clarify something. Break explanations into manageable segments. Use `current_topic_segment_index` from context if continuing an explanation.\n"
+    "    *   `create_quiz(topic: str, instructions: str)`: To create a single multiple-choice question to check understanding.\n"
+    "    *   `evaluate_quiz(user_answer_index: int)`: To evaluate the user's answer to the *most recently asked question* (stored in context).\n"
+    "    *   `remediate_concept(topic: str, remediation_details: str)`: To provide targeted help if the user is struggling or answered incorrectly.\n"
+    "    *   `update_user_model(topic: str, outcome: str, details: Optional[str] = None)`: Call this *after* evaluating an answer or determining understanding/struggle from a user message. Use outcomes like 'correct', 'incorrect', 'unsure', 'clarification_needed'.\n"
+    "    *   (If the user asks a direct question, prioritize answering it, potentially using `explain_concept` or generating a simple text response.)\n"
+    "4.  Execute the chosen skill (internally, you don't show the call itself).\n"
+    "5.  Format your final response as a single JSON object conforming EXACTLY to the `InteractionResponseData` schema. Do NOT add any text before or after the JSON.\n\n"
+    "**InteractionResponseData Schema:**\n"
+    "```json\n"
+    "{{\n"
+    "  \"content_type\": \"<type_string>\", // explanation, question, feedback, message, error\n"
+    "  \"data\": {{ \"response_type\": \"<type_string>\", ... }}, // The specific Pydantic model matching content_type. MUST include 'response_type' field inside 'data'.\n"
+    "  \"user_model_state\": {{ ... }} // The FULL, LATEST UserModelState object AFTER any updates.\n"
+    "}}\n"
+    "```\n\n"
+    "**Workflow Logic:**\n"
+    "*   If explaining, use `explain_concept`. Generate `ExplanationResponse` in `data` field (with `response_type: \'explanation\'`). Increment `current_topic_segment_index` in the returned `user_model_state`.\n"
+    "*   **Handling 'Next': If the user input indicates they want to proceed (e.g., 'next', 'continue', or the special input '[NEXT]'), check the `current_topic_segment_index` in the `user_model_state`. If it's less than a threshold (e.g., 2), call `explain_concept` for the next segment. Otherwise, call `create_quiz` to check understanding.**\n"
+    "*   If asking a question, use `create_quiz`. Generate `QuestionResponse` in `data` field (with `response_type: \'question\'`). **Crucially, BEFORE sending the response, store the generated `QuizQuestion` object in the `TutorContext.current_quiz_question` field.** Reset `current_topic_segment_index` in the returned `user_model_state`.\n"
+    "*   If evaluating an answer, use `evaluate_quiz`. Then, use `update_user_model`. Generate `QuizFeedbackItem` in `data` field (with `response_type: \'feedback\'`).\n"
+    "*   If user asks a question/clarification, use `explain_concept` or generate `MessageResponse` (with `response_type: \'message\'`). Use `update_user_model` if appropriate.\n"
+    "*   Check for `objective_complete` condition after `update_user_model`. If met, you might inform the user with a `MessageResponse` before the planner takes over.\n"
+    "\n"
+    "**Important:** Think step-by-step internally to decide the best skill and parameters. Ensure the final output is ONLY the valid `InteractionResponseData` JSON, including the `response_type` inside the `data` field. **Always include the complete, updated `user_model_state` in your response.**"
+)
+
+def _get_user_model_state_summary(user_model_state: Optional[UserModelState]) -> str:
+    """Generates a concise summary of the user model state for the prompt."""
+    if not user_model_state or not user_model_state.concepts:
+        return "User has no tracked concepts yet."
+    
+    state_items = []
+    for topic, state in user_model_state.concepts.items():
+        state_items.append(f"- {topic}: Mastery={state.mastery:.2f}, Confidence={state.confidence}, Attempts={state.attempts}")
+    
+    if not state_items:
+         return "User has no tracked concepts yet."
+         
+    return "Current user concept understanding:\n" + "\n".join(state_items)
+
+async def run_executor(ctx: TutorContext, user_input: Optional[str] = None) -> InteractionResponseData:
     """
-    Choose the next skill (tactic) based on Phase 3 micro-policy:
-    1) Direct question → answer_question
-    2) First explanation segment → explain_concept
-    3) Quiz failed → remediate_concept
-    4) After ≥3 explanation segments → create_quiz
-    5) Default → continue explanation
+    Runs the Executor Agent logic for one turn.
+
+    Args:
+        ctx: The current TutorContext, potentially modified by this function (e.g., current_quiz_question).
+        user_input: The user's message from the frontend.
+
+    Returns:
+        An InteractionResponseData object containing the AI's response and updated state.
     """
-    # Examine the last event for direct questions
-    last_event = getattr(ctx, 'last_event', {}) or {}
-    event_type = last_event.get('event_type')
-    # 1. User answered a quiz question: evaluate answer
-    if event_type == 'user_answer':
-        data = last_event.get('data', {}) or {}
-        answer_index = data.get('user_answer_index')
-        return 'evaluate_quiz', {'user_answer_index': answer_index}
-    # 2. Student asked a direct question
-    if event_type == 'user_question':
-        data = last_event.get('data', {}) or {}
-        question_text = data.get('question') or data.get('question_text', '')
-        return 'answer_question', {'question': question_text}
-    # First segment: explanation
-    if ctx.user_model_state.current_topic_segment_index == 0:
-        return 'explain_concept', {'topic': objective.topic, 'explanation_details': f'Explain the concept: {objective.topic}'}
-    # Quiz failure remediation
-    summary = getattr(ctx, 'last_interaction_summary', '') or ''
-    if isinstance(summary, str) and any(kw in summary.lower() for kw in ['incorrect', 'struggled']):
-        return 'remediate_concept', {'topic': objective.topic, 'remediation_details': f'Review concept due to difficulty: {summary}'}
-    # After several explanation segments, quiz
-    if ctx.user_model_state.current_topic_segment_index >= 3:
-        return 'create_quiz', {'topic': objective.topic, 'instructions': f'Generate a 3-question quiz for {objective.topic}'}
-    # Default: continue explanation
-    return 'explain_concept', {'topic': objective.topic, 'explanation_details': f'Continue explanation for {objective.topic}'}
+    logger.info(f"Executor running for session {ctx.session_id}. User input: '{user_input}'")
 
+    # Check if the objective exists and has a topic
+    if not ctx.current_focus_objective or not ctx.current_focus_objective.topic:
+        logger.error(f"Executor run failed: Missing or invalid focus objective in context for session {ctx.session_id}.")
+        raise ExecutorError("Cannot proceed without a valid focus objective.") # Raise error to be handled by tutor_ws.py
 
-def objective_completed(ctx: TutorContext, objective: FocusObjective) -> bool:
-    """
-    Return True if the user has answered the quiz for this topic and their mastery >= target_mastery.
-    """
-    # Ensure a quiz answer event triggered
-    last_event = getattr(ctx, 'last_event', {}) or {}
-    if last_event.get('event_type') != 'user_answer':
-        return False
-    # Check mastery threshold
-    mastery_state = ctx.user_model_state.concepts.get(objective.topic)
-    if not mastery_state:
-        return False
-    return mastery_state.mastery >= objective.target_mastery
+    topic = ctx.current_focus_objective.topic # Safely access topic now
 
+    if user_input == "[NEXT]":
+        # --- Logic to decide next step based on segment_index ---
+        current_segment_index = ctx.user_model_state.current_topic_segment_index
+        max_segments = 3 # Or get from config/objective if available
 
-def stuck(ctx: TutorContext) -> bool:
-    """
-    Determine if executor is stuck (unable to make progress).
-    Here: never stuck for initial phase.
-    """
-    return False
+        logger.info(f"Executor handling '[NEXT]': Current Segment Index = {current_segment_index}, Max Segments = {max_segments}, Topic = {topic}") # Log state
 
-class ExecutorAgent:
-    """Executor that runs skills to fulfill a FocusObjective."""
+        # Condition to check if more explanation is needed vs. moving to quiz
+        if current_segment_index < max_segments - 1: # e.g., 0, 1 for max_segments=3
+            # Explain next segment
+            next_segment_index = current_segment_index + 1
+            logger.info(f"Executor: Calling explain_concept for segment {next_segment_index}")
+            explanation_string = await invoke(
+                explain_concept, # Function object itself
+                ctx,             # RunContextWrapper
+                topic=topic,     # Keyword arg for topic
+                details=f"Provide explanation segment {next_segment_index} for {topic} based on learning goal: {ctx.current_focus_objective.learning_goal}."
+            )
+            # Update context segment index AFTER successful explanation generation
+            ctx.user_model_state.current_topic_segment_index = next_segment_index
 
-    @staticmethod
-    async def run(objective: FocusObjective, ctx: TutorContext) -> Any:
-        """
-        Execute one skill tactic for the given objective and return the result payload.
-        Raises BudgetExceededError if high-cost skill budget is exhausted.
-        Raises ValueError if wrapping the result fails.
-        """
-        # Wrap context for tool invocation
-        wrapper = RunContextWrapper(ctx)
-        # Choose and run a single tactic
-        tactic, params = await choose_tactic(ctx, objective)
-        # Import get_tool here to avoid circular import at module load
-        from ai_tutor.skills import get_tool
-        skill_fn = get_tool(tactic)
-        # Enforce high-cost skill budget if tagged
-        cost = getattr(skill_fn, '_skill_cost', None)
-        if cost == 'high':
-            if ctx.high_cost_calls >= ctx.max_high_cost_calls:
-                # Budget exhausted: raise exception
-                msg = f"High-cost skill budget exceeded ({ctx.high_cost_calls}/{ctx.max_high_cost_calls}) for tactic '{tactic}'"
-                print(f"[Executor Error] {msg}") # Log it too
-                raise BudgetExceededError(msg)
-            ctx.high_cost_calls += 1
-        result = await skill_fn(wrapper, **params)
+            # Determine if this NEW segment is the last one
+            is_last = (next_segment_index >= max_segments - 1)
 
-        # Update context for next evaluation - Use a structured summary if possible
-        # For now, keep simple string conversion, but TODO: improve this
-        ctx.last_interaction_summary = str(result)
+            explanation_payload = ExplanationResponse(
+                response_type="explanation",
+                text=f"Segment {next_segment_index}: {explanation_string}",
+                topic=topic,
+                segment_index=next_segment_index,
+                is_last_segment=is_last
+            )
+            interaction_response = InteractionResponseData(
+                content_type="explanation",
+                data=explanation_payload,
+                user_model_state=ctx.user_model_state
+            )
+            logger.info(f"Executor successfully generated explanation response for session {ctx.session_id}. Type: {interaction_response.content_type}")
+            return interaction_response
 
-        # --- Always wrap the result based on the tactic --- 
-        output: Any = None
-        try:
-            if tactic == 'explain_concept' or tactic == 'remediate_concept' or tactic == 'answer_question':
-                # Assuming result is the explanation text string
-                # Increment segment index *before* checking for last segment
-                ctx.user_model_state.current_topic_segment_index += 1
-                output = ExplanationResponse(
-                    response_type='explanation',
-                    text=str(result), # Ensure it's a string
-                    topic=objective.topic, # Use topic from objective
-                    segment_index=ctx.user_model_state.current_topic_segment_index, # Use updated segment
-                    # TODO: Add more robust logic to determine is_last_segment (e.g., based on planner/KB structure)
-                    is_last_segment= (ctx.user_model_state.current_topic_segment_index >= 3) # Placeholder: assume quiz after 3 segments
-                )
-            elif tactic == 'create_quiz':
-                # Assuming result is a QuizQuestion object from the skill
-                # TODO: Verify the actual return type of create_quiz skill
-                from ai_tutor.agents.models import QuizQuestion # Import locally if needed
-                if isinstance(result, QuizQuestion):
-                     output = QuestionResponse(
-                          response_type='question',
-                          question=result,
-                          topic=objective.topic
-                     )
-                else:
-                     # Handle unexpected result type from create_quiz
-                     print(f"[Executor Warning] Unexpected result type from create_quiz: {type(result)}. Expected QuizQuestion.")
-                     # Return an error response instead of raw data
-                     output = ErrorResponse(response_type='error', message=f"Internal error: Unexpected quiz format from '{tactic}'.")
+        else:
+            # Move to quiz
+            logger.info("Executor: Entering quiz generation path.") # Log Entry
+            logger.info(f"Executor: About to call create_quiz for topic '{topic}'.") # Log Before Skill Call
+            quiz_question = await invoke(
+                create_quiz, # Function object
+                ctx,         # RunContextWrapper
+                topic=topic, # Keyword arg for topic
+                instructions=f"Generate a multiple-choice question about the main concepts of {topic}."
+            )
+            # Log After Skill Call
+            logger.info(f"Executor: create_quiz returned type: {type(quiz_question)}")
+            if quiz_question:
+                 # Use model_dump_json for logging Pydantic models
+                 logger.info(f"Executor: create_quiz returned question: {quiz_question.model_dump_json(indent=2) if isinstance(quiz_question, QuizQuestion) else quiz_question}")
+            
+            # Add an explicit check
+            if not isinstance(quiz_question, QuizQuestion):
+                logger.error("Executor: create_quiz did NOT return a valid QuizQuestion object!")
+                raise ExecutorError("Invalid data received from create_quiz skill.")
 
-            elif tactic == 'evaluate_quiz':
-                 # Assuming result is a QuizFeedbackItem object from the skill
-                 # TODO: Verify the actual return type of evaluate_quiz skill
-                 from ai_tutor.agents.models import QuizFeedbackItem # Import locally if needed
-                 if isinstance(result, QuizFeedbackItem):
-                      output = FeedbackResponse(
-                           response_type='feedback',
-                           feedback=result,
-                           topic=objective.topic
-                           # TODO: Add correct_answer, explanation if available from skill
-                      )
-                 else:
-                      # Handle unexpected result type
-                      print(f"[Executor Warning] Unexpected result type from evaluate_quiz: {type(result)}. Expected QuizFeedbackItem.")
-                      # Return an error response
-                      output = ErrorResponse(response_type='error', message=f"Internal error: Unexpected feedback format from '{tactic}'.")
-            else:
-                # Fallback for unknown tactic
-                print(f"[Executor Warning] Unknown tactic '{tactic}' executed. Returning raw result as MessageResponse.")
-                output = MessageResponse(response_type='message', text=f"Tutor response: {str(result)}")
+            # Log Before Storing
+            logger.info(f"Executor: Attempting to store question in context.")
+            ctx.current_quiz_question = quiz_question
+            logger.info(f"Executor: Stored quiz question in context: {quiz_question.question[:50]}...")
 
-        except Exception as e:
-             # Handle potential errors during response model creation
-             msg = f"Failed to wrap result for tactic '{tactic}': {e}"
-             print(f"[Executor Error] {msg}")
-             raise ValueError(msg) from e # Raise an error if wrapping fails
+            # Log Before Payload Creation
+            logger.info("Executor: Creating QuestionResponse payload.")
+            question_payload = QuestionResponse(
+                response_type="question",
+                question=quiz_question,
+                topic=topic
+            )
+            # Log Before Wrapper Creation
+            logger.info("Executor: Wrapping in InteractionResponseData.")
+            interaction_response = InteractionResponseData(
+                content_type="question",
+                data=question_payload,
+                user_model_state=ctx.user_model_state
+            )
+            # Log Before Return
+            logger.info(f"Executor: Returning InteractionResponseData with content_type='question'.")
+            return interaction_response
 
-        # Return the wrapped payload directly
-        return output 
+    else: # Handle actual user text messages
+        logger.warning(f"Executor: Received user text '{user_input}' - basic explanation logic executing.")
+        # Fallback to first explanation for now if direct message received after planning
+        explanation_string = await invoke(explain_concept, ctx, topic=topic, details=f"Explain the basics of {topic}.")
+        ctx.user_model_state.current_topic_segment_index = 0 # Reset/set segment index
+        explanation_payload = ExplanationResponse(
+            response_type="explanation",
+            text=explanation_string,
+            topic=topic,
+            segment_index=0,
+            is_last_segment=False # Assume more follows
+        )
+        interaction_response = InteractionResponseData(
+            content_type="explanation",
+            data=explanation_payload,
+            user_model_state=ctx.user_model_state
+        )
+        logger.info(f"Executor generated initial explanation response for session {ctx.session_id}. Type: {interaction_response.content_type}")
+        return interaction_response
+
+# Note: The actual skill implementations (explain_concept, create_quiz, etc.)
+# need to be created in the skills/ directory as per the requirements document.
+# The Executor LLM will conceptually "call" these, but in this direct LLM approach,
+# the LLM generates the output *as if* it called the skill.
+# If using an Agent framework (like ADK Runner), the LLM would output a tool call,
+# the framework would execute the skill function, and return the result to the LLM.
+# This implementation uses the direct LLM approach for simplicity based on the prompt design. 

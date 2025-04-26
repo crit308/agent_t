@@ -20,6 +20,7 @@ from ai_tutor.core.schema import PlannerOutput
 import logging
 import traceback
 import json
+from ai_tutor.agents.models import FocusObjective
 
 # Global cache for concept graph edges and last updated timestamp
 _dag_cache = {
@@ -31,7 +32,9 @@ _dag_cache_lock = asyncio.Lock()
 async def _get_concept_graph_edges(supabase):
     """Fetch concept prerequisite edges from Supabase without relying on updated_at column."""
     response = supabase.table("concept_graph").select("prereq, concept").execute()
-    return response.data or []
+    if response and hasattr(response, 'data') and response.data:
+        return response.data
+    return []
 
 logger = logging.getLogger(__name__)
 
@@ -94,137 +97,160 @@ async def dag_query(ctx: RunContextWrapper[TutorContext], mastered: list[str]) -
     logger.info(f"Tool: dag_query - Calculated candidates: {candidates}")
     return candidates
 
-async def run_planner(ctx: TutorContext) -> PlannerOutput:
-    """Direct planner that invokes meta-skills and uses LLMClient to decide the next focus objective."""
-    logger.info(f"run_planner started for session {ctx.session_id}")
+async def determine_session_focus(ctx: TutorContext) -> FocusObjective:
+    """Analyzes the KB and user state to determine the primary FocusObjective for the session."""
+    logger.info(f"determine_session_focus started for session {ctx.session_id}")
     wrapper = RunContextWrapper(ctx)
-    kb_text = None
-    next_concepts = None
-    mastered = []
+    kb_text: Optional[str] = None
+    next_concepts: Optional[List[str]] = None
+    mastered: List[str] = []
+    user_model_state_summary: str = "No user model state available."
 
     try:
         # 1. Retrieve knowledge base
-        logger.info(f"run_planner: Calling read_knowledge_base for session {ctx.session_id}")
+        logger.info(f"determine_session_focus: Calling read_knowledge_base for session {ctx.session_id}")
         try:
             kb_text = await read_knowledge_base(wrapper)
-            logger.info(f"run_planner: read_knowledge_base returned for session {ctx.session_id}. Length: {len(kb_text) if kb_text else 'None'}")
+            logger.info(f"determine_session_focus: read_knowledge_base returned for session {ctx.session_id}. Length: {len(kb_text) if kb_text else 'None'}")
             if kb_text and "Error:" in kb_text: # Check for errors returned by the tool
-                 logger.error(f"run_planner: Error from read_knowledge_base: {kb_text}")
-                 # Raise specific error to be caught by outer block
+                 logger.error(f"determine_session_focus: Error from read_knowledge_base: {kb_text}")
                  raise ValueError(f"Failed to read knowledge base: {kb_text}")
         except Exception as tool_e:
-            logger.error(f"run_planner: Exception calling read_knowledge_base for session {ctx.session_id}: {tool_e}\n{traceback.format_exc()}", exc_info=True)
+            logger.error(f"determine_session_focus: Exception calling read_knowledge_base for session {ctx.session_id}: {tool_e}\n{traceback.format_exc()}", exc_info=True)
             raise # Re-raise to outer block
 
-        # 2. Determine mastered concepts
+        # 2. Determine mastered concepts and summarize user model state
         try:
-            mastered = [t for t, s in ctx.user_model_state.concepts.items() if s.mastery > 0.8 and s.confidence >= 5]
-            logger.info(f"run_planner: Determined mastered concepts for session {ctx.session_id}: {mastered}")
+            if ctx.user_model_state and ctx.user_model_state.concepts:
+                 mastered = [t for t, s in ctx.user_model_state.concepts.items() if s.mastery > 0.8 and s.confidence >= 5] # Assuming 0.8 mastery and 5 confidence means mastered
+                 # Create a summary string for the prompt
+                 state_items = []
+                 for topic, state in ctx.user_model_state.concepts.items():
+                     state_items.append(f"- {topic}: Mastery={state.mastery:.2f}, Confidence={state.confidence}, Attempts={state.attempts}")
+                 if state_items:
+                     user_model_state_summary = "Current user concept understanding:\n" + "\n".join(state_items)
+                 else:
+                     user_model_state_summary = "User has no tracked concepts yet."
+
+            logger.info(f"determine_session_focus: Determined mastered concepts for session {ctx.session_id}: {mastered}")
+            logger.info(f"determine_session_focus: User model state summary for prompt: {user_model_state_summary}")
         except Exception as mastery_e:
-             logger.error(f"run_planner: Error determining mastered concepts for session {ctx.session_id}: {mastery_e}", exc_info=True)
-             # Continue, maybe with empty mastered list?
+             logger.error(f"determine_session_focus: Error processing user model state for session {ctx.session_id}: {mastery_e}", exc_info=True)
+             # Continue, maybe with empty mastered list and default summary
 
-        # 3. Query DAG for next learnable concepts
-        logger.info(f"run_planner: Calling dag_query for session {ctx.session_id}")
+        # 3. Query DAG for next learnable concepts (Optional but helpful)
+        logger.info(f"determine_session_focus: Calling dag_query for session {ctx.session_id}")
         try:
-            next_concepts = await dag_query(wrapper, mastered)
-            logger.info(f"run_planner: dag_query returned for session {ctx.session_id}: {next_concepts}")
+            # Ensure get_supabase_client is awaited if it's async, might need adjustment if dag_query handles it internally
+            # supabase_client = await get_supabase_client() # Assuming get_supabase_client is async
+            # next_concepts = await dag_query(wrapper, mastered, supabase_client) # Pass client if needed
+            next_concepts = await dag_query(wrapper, mastered) # Assumes dag_query gets its own client
+            logger.info(f"determine_session_focus: dag_query returned for session {ctx.session_id}: {next_concepts}")
         except Exception as tool_e:
-            logger.error(f"run_planner: Exception calling dag_query for session {ctx.session_id}: {tool_e}\n{traceback.format_exc()}", exc_info=True)
-            raise # Re-raise to outer block
+            logger.error(f"determine_session_focus: Exception calling dag_query for session {ctx.session_id}: {tool_e}\n{traceback.format_exc()}", exc_info=True)
+            # Don't raise, planner can still function without DAG info, though less optimally
+            next_concepts = None # Indicate that DAG info is unavailable
 
         # 4. Call LLM
         llm = LLMClient()
         system_msg = {
             "role": "system",
             "content": (
-                "You are the Focus Planner. You have two tools: read_knowledge_base and dag_query. "
-                "Use the knowledge base content and concept relationships to pick the single most important next learning objective. "
-                "Respond ONLY with a JSON object matching the PlannerOutput schema (objectives: list of {topic, learning_goal, target_mastery, priority})."
+                "You are the Focus Planner agent. Your task is to analyze the provided Knowledge Base text, the user's current concept understanding (User Model State), and potential next concepts based on prerequisites (if available). "
+                "Based on this analysis, select the single most important FocusObjective for the current tutoring session. Consider the importance of topics, prerequisites, and the user's progress. "
+                "Output ONLY a single, valid JSON object conforming exactly to the FocusObjective Pydantic model schema. Ensure 'topic', 'learning_goal', 'priority' (integer 1-5), and 'target_mastery' fields are ALWAYS included. Do not add any commentary before or after the JSON object."
+                "\n\nFocusObjective Schema:\n"
+                "{\n"
+                "  'topic': str,              // The primary topic or concept to focus on.\n"
+                "  'learning_goal': str,      // A specific, measurable goal (e.g., 'Understand local vs global scope').\n"
+                "  'priority': int,           // Priority 1-5 (5=highest). MANDATORY FIELD.\n"
+                "  'relevant_concepts': List[str], // Optional list of related concepts from the KB.\n"
+                "  'suggested_approach': Optional[str], // Optional hint (e.g., 'Needs examples').\n"
+                "  'target_mastery': float,   // Target mastery level (e.g., 0.8). MANDATORY FIELD.\n"
+                "  'initial_difficulty': Optional[str] // Optional initial difficulty (e.g., 'Medium').\n"
+                "}"
             )
         }
+
+        # Construct user messages, handling potentially large KB text and missing info
+        kb_snippet = (kb_text[:3000] + "... (truncated)") if kb_text and len(kb_text) > 3000 else (kb_text or "Not Available")
+        dag_info = f"Suggested next learnable concepts based on prerequisites: {next_concepts}" if next_concepts is not None else "Prerequisite information (DAG) is not available for planning."
+
         messages = [
             system_msg,
-            {"role": "user", "content": f"Knowledge base:\n{kb_text or 'Not Available'}"}, # Handle None
-            {"role": "user", "content": f"Mastered concepts: {mastered}"},
-            {"role": "user", "content": f"Next learnable concepts: {next_concepts or 'None Available'}"} # Handle None
+            {"role": "user", "content": f"Knowledge Base Content:\n{kb_snippet}"},
+            {"role": "user", "content": user_model_state_summary},
+            {"role": "user", "content": dag_info},
+            {"role": "user", "content": "Select the single best FocusObjective for this session based on all available information. Respond only with the JSON object."}
         ]
-        logger.info(f"run_planner: Calling LLM for session {ctx.session_id}")
+        logger.info(f"determine_session_focus: Calling LLM for session {ctx.session_id}")
         try:
-            response_text = await llm.chat(messages)
-            logger.info(f"run_planner: LLM call completed for session {ctx.session_id}")
+            response_text = await llm.chat(messages) # Removed response_format
+            logger.info(f"determine_session_focus: LLM call completed for session {ctx.session_id}")
         except Exception as llm_e:
-             logger.error(f"run_planner: LLM call failed for session {ctx.session_id}: {llm_e}", exc_info=True)
-             raise # Re-raise to outer block
+             logger.error(f"determine_session_focus: LLM call failed for session {ctx.session_id}: {llm_e}", exc_info=True)
+             raise ValueError("LLM call failed during focus planning.") from llm_e
 
-        # Clean up model response: strip markdown fences and extract JSON
-        import re
-        cleaned = response_text.strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```[^\n]*\n", "", cleaned)
-        if cleaned.endswith("```"):
-            cleaned = re.sub(r"\n```$", "", cleaned)
-        start = cleaned.find('{')
-        end = cleaned.rfind('}')
-        if start != -1 and end != -1:
-            cleaned = cleaned[start:end+1]
-        else:
-            cleaned = "{}" # Ensure valid JSON if extraction fails
-
-        # Load cleaned JSON into dict and coerce types for validation
+        # 5. Parse and Validate LLM Response
         try:
-            logger.info(f"run_planner: Attempting to parse LLM response JSON for {ctx.session_id}")
-            data = json.loads(cleaned)
-            logger.info(f"run_planner: JSON parsed successfully for {ctx.session_id}: {data}")
-
-            # Handle fallback and type coercion logic
-            if not data.get("objectives"):
-                logger.warning(f"run_planner: LLM response missing 'objectives'. Applying fallback for session {ctx.session_id}")
-                fallback_topic = next_concepts[0] if next_concepts else "General Review"
-                data["objectives"] = [
-                    {
-                        "topic": fallback_topic,
-                        "learning_goal": f"Understand the concept of {fallback_topic}",
-                        "target_mastery": 0.8,
-                        "priority": 3,
-                    }
-                ]
+            logger.info(f"determine_session_focus: Attempting to parse LLM response JSON for {ctx.session_id}")
+            # LLMClient with json_object mode should return parsed dict directly or raise error
+            if isinstance(response_text, str): # Fallback if json_object mode didn't work as expected
+                 # Clean up model response: strip markdown fences and extract JSON
+                 import re
+                 cleaned = response_text.strip()
+                 if cleaned.startswith("```"):
+                     cleaned = re.sub(r"^```[^\\n]*\\n", "", cleaned)
+                 if cleaned.endswith("```"):
+                     cleaned = re.sub(r"\\n```$", "", cleaned)
+                 start = cleaned.find('{')
+                 end = cleaned.rfind('}')
+                 if start != -1 and end != -1:
+                     json_str = cleaned[start:end+1]
+                 else:
+                    logger.error(f"determine_session_focus: Could not extract JSON object from LLM string response: {response_text}")
+                    raise ValueError("LLM did not return a valid JSON object string.")
+                 data = json.loads(json_str)
+            elif isinstance(response_text, dict):
+                data = response_text # Assume it's already parsed JSON
             else:
-                logger.info(f"run_planner: Processing {len(data.get('objectives',[]))} objectives from LLM for session {ctx.session_id}")
-                for obj in data.get("objectives", []):
-                    tm = obj.get("target_mastery")
-                    if isinstance(tm, str):
-                        try: obj["target_mastery"] = float(tm)
-                        except ValueError: obj["target_mastery"] = 0.8 # Default fallback
-                    pr = obj.get("priority")
-                    if isinstance(pr, str):
-                        try: obj["priority"] = int(pr)
-                        except ValueError: obj["priority"] = 3 # Default fallback
+                 logger.error(f"determine_session_focus: Unexpected LLM response type: {type(response_text)}")
+                 raise ValueError("Unexpected LLM response type during focus planning.")
 
-            # Validate and create PlannerOutput model
-            logger.info(f"run_planner: Attempting to validate PlannerOutput for {ctx.session_id}. Data: {data}")
-            output = PlannerOutput.model_validate(data)
-            logger.info(f"run_planner: PlannerOutput validated successfully for {ctx.session_id}")
+            logger.info(f"determine_session_focus: JSON parsed/obtained successfully for {ctx.session_id}: {data}")
+
+            # Validate and create FocusObjective model
+            logger.info(f"determine_session_focus: Attempting to validate FocusObjective for {ctx.session_id}. Data: {data}")
+            # Ensure target_mastery is present and a float before validation if needed
+            if 'target_mastery' not in data or not isinstance(data.get('target_mastery'), (float, int)):
+                 logger.warning(f"determine_session_focus: 'target_mastery' missing or not a number in LLM response for {ctx.session_id}. Setting default 0.8. Data: {data}")
+                 data['target_mastery'] = 0.8 # Add default if missing, as it's required by spec
+
+            # Ensure priority is present and an int before validation if needed
+            if 'priority' not in data or not isinstance(data.get('priority'), int):
+                 logger.warning(f"determine_session_focus: 'priority' missing or not an int in LLM response for {ctx.session_id}. Setting default 3. Data: {data}")
+                 data['priority'] = 3 # Add default if missing
+
+            focus_objective = FocusObjective.model_validate(data)
+            logger.info(f"determine_session_focus: FocusObjective validated successfully for {ctx.session_id}")
 
         except json.JSONDecodeError as json_e:
-            logger.error(f"run_planner: Failed to parse LLM JSON response for session {ctx.session_id}: {json_e}. Response: {cleaned}", exc_info=True)
+            logger.error(f"determine_session_focus: Failed to parse LLM JSON response for session {ctx.session_id}: {json_e}. Response: {response_text}", exc_info=True)
             raise ValueError("Failed to parse planner output from LLM") from json_e
         except Exception as val_e: # Catch Pydantic validation errors etc.
-             logger.error(f"run_planner: Failed to validate PlannerOutput for session {ctx.session_id}: {val_e}. Data: {data}", exc_info=True)
+             logger.error(f"determine_session_focus: Failed to validate FocusObjective for session {ctx.session_id}: {val_e}. Data: {data}", exc_info=True)
              raise ValueError("Failed to validate planner output") from val_e
 
-        # Store chosen objective in context
-        if output.objectives:
-             ctx.current_focus_objective = output.objectives[0]
-             logger.info(f"run_planner: Stored focus objective '{ctx.current_focus_objective.topic}' in context for session {ctx.session_id}")
-        else:
-             logger.warning(f"run_planner: Planner output had no objectives for session {ctx.session_id}")
+        # 6. Store chosen objective in context
+        ctx.current_focus_objective = focus_objective
+        logger.info(f"determine_session_focus: Stored focus objective '{ctx.current_focus_objective.topic}' in context for session {ctx.session_id}")
 
-        logger.info(f"run_planner finished successfully for session {ctx.session_id}")
-        return output
+        logger.info(f"determine_session_focus finished successfully for session {ctx.session_id}")
+        return focus_objective
 
     except Exception as outer_e:
          # Catch any exception missed by inner blocks
-         logger.critical(f"Unhandled exception within run_planner for session {ctx.session_id}: {type(outer_e).__name__}: {outer_e}\n{traceback.format_exc()}", exc_info=True)
-         # Re-raise to be caught by the endpoint handler
+         logger.critical(f"Unhandled exception within determine_session_focus for session {ctx.session_id}: {type(outer_e).__name__}: {outer_e}\n{traceback.format_exc()}", exc_info=True)
+         # Consider returning a default/fallback FocusObjective or re-raise
+         # For now, re-raising to be caught by the endpoint handler
          raise 
