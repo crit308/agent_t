@@ -129,7 +129,7 @@ async def run_executor(ctx: TutorContext, user_input: Optional[str] = None) -> I
 
             explanation_payload = ExplanationResponse(
                 response_type="explanation",
-                text=f"Segment {next_segment_index}: {explanation_string}",
+                text=explanation_string,
                 topic=topic,
                 segment_index=next_segment_index,
                 is_last_segment=is_last

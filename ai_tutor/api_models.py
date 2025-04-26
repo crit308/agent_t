@@ -66,11 +66,11 @@ class QuestionResponse(BaseModel):
 class FeedbackResponse(BaseModel):
     """Response containing feedback on a student's answer."""
     response_type: Literal["feedback"] = "feedback"
-    feedback: QuizFeedbackItem
-    topic: Optional[str] = None
-    correct_answer: Optional[str] = None
-    explanation: Optional[str] = None
-    model_config = {"extra": "forbid"}
+    item: QuizFeedbackItem  # Changed 'feedback' to 'item' and removed redundant fields
+    # topic: Optional[str] = None # Removed
+    # correct_answer: Optional[str] = None # Removed
+    # explanation: Optional[str] = None # Removed
+    # model_config = {"extra": "forbid"} # Can be kept or removed based on strictness needs
 
 class MessageResponse(BaseModel):
     """For general messages from the tutor."""

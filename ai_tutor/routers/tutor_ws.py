@@ -339,9 +339,14 @@ async def tutor_stream(
                             save_context_needed = True # Context was modified by skills
 
                             # 3. Prepare response
+                            # Wrap the feedback_item in FeedbackResponse
+                            feedback_payload = FeedbackResponse(
+                                response_type="feedback",
+                                item=feedback_item
+                            )
                             response_to_send = InteractionResponseData(
                                 content_type="feedback",
-                                data=feedback_item, # Send the feedback item as data
+                                data=feedback_payload, # Use the wrapped payload
                                 user_model_state=ctx.user_model_state, # Send the *updated* state
                                 status="awaiting_user_input" # Always wait after feedback
                             )
@@ -399,27 +404,26 @@ async def tutor_stream(
                              await send_error_response(ws, "Cannot process yet, session not initialized.", "STATE_ERROR", state=ctx.user_model_state)
                              continue
                         if not ctx.current_focus_objective:
-                             log.warning("Executor called for 'next' but no focus objective found in context. Skipping.")
-                             await send_error_response(ws, "Cannot process next step: session goal not set.", "EXECUTOR_ERROR", details="No focus objective available for 'next'.", state=ctx.user_model_state)
+                             log.warning("Executor called but no focus objective found in context. Skipping.")
+                             await send_error_response(ws, "Cannot process 'next': session goal not set.", "EXECUTOR_ERROR", details="No focus objective available.", state=ctx.user_model_state)
                              continue
                         try:
-                            # Call executor with placeholder input for 'next'
+                            # Pass "[NEXT]" as user_input to the executor
                             executor_result = await run_executor(ctx, user_input="[NEXT]") 
-                            # Log the result (Already added in previous step, ensure it's detailed enough)
-                            log.info(f"tutor_ws after executor ('next'): Result content_type='{executor_result.content_type}', Data type='{type(executor_result.data).__name__}'")
-                            save_context_needed = True # Assume context might be modified
-                            log.info("WebSocket: Executor successful for 'next' event.")
+                            log.info(f"WebSocket: Executor result for 'next': content_type={executor_result.content_type}, data type={type(executor_result.data).__name__}")
+                            save_context_needed = True 
+                            log.info("WebSocket: Executor successful for 'next'.")
                             response_to_send = executor_result
                             log.info("WebSocket: Prepared executor response message for 'next'.")
 
                         except ExecutorError as executor_custom_err:
                              log.error(f"WebSocket: Executor failed for 'next' with ExecutorError: {executor_custom_err}", exc_info=True)
-                             await send_error_response(ws, "Failed to process the next step.", "EXECUTOR_ERROR", details=f"Executor error on 'next': {executor_custom_err}", state=ctx.user_model_state)
-                             continue # Skip to next message
-                        except Exception as e:
-                             log.error(f"WebSocket: Unexpected error processing 'next' for session {session_id}: {e}", exc_info=True)
-                             await send_error_response(ws, "Internal server error processing next step.", "INTERNAL_SERVER_ERROR", details=f"Unexpected error on 'next': {type(e).__name__}", state=ctx.user_model_state)
-                             continue # Skip to next message
+                             await send_error_response(ws, "Failed to advance.", "EXECUTOR_ERROR", details=f"Executor error: {executor_custom_err}", state=ctx.user_model_state)
+                             continue
+                        except Exception as executor_err:
+                             log.error(f"WebSocket: Executor failed for 'next' with unexpected Exception: {executor_err}", exc_info=True)
+                             await send_error_response(ws, "Failed to advance.", "EXECUTOR_ERROR", details=f"Unexpected Executor error: {type(executor_err).__name__}", state=ctx.user_model_state)
+                             continue
 
                     else:
                         log.warning(f"WebSocket: Received event '{event_type}' when not expected or not handled.")

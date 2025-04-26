@@ -12,14 +12,22 @@ class LLMClient:
         self.model_name = model_name or os.getenv("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
         openai.api_key = api_key or os.getenv("OPENAI_API_KEY")
 
-    async def chat(self, messages: List[Dict[str, Any]]) -> str:
+    async def chat(
+        self,
+        messages: List[Dict[str, Any]],
+        **openai_kwargs: Any,
+    ) -> str | Dict[str, Any]:
         # Call the synchronous OpenAI API method in a thread to avoid blocking the event loop
         loop = asyncio.get_running_loop()
         response = await loop.run_in_executor(
             None,
             lambda: openai.chat.completions.create(
-            model=self.model_name,
-            messages=messages
+                model=self.model_name,
+                messages=messages,
+                **openai_kwargs
             )
         )
-        return response.choices[0].message.content 
+        # If the reply is regular text, return it; if content is None (JSON-mode),
+        # fall back to the full message dict so callers can parse it.
+        msg = response.choices[0].message
+        return msg.content or msg.model_dump() 
