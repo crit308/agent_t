@@ -41,6 +41,7 @@ CREATE TABLE public.sessions (
     created_at timestamp with time zone NOT NULL DEFAULT now(),
     folder_id uuid NULL, -- Link to the folder this session belongs to
     updated_at timestamp with time zone NOT NULL DEFAULT now(),
+    ended_at timestamptz NULL,
     CONSTRAINT sessions_pkey PRIMARY KEY (id),
     CONSTRAINT sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON UPDATE CASCADE ON DELETE CASCADE,
     CONSTRAINT sessions_folder_id_fkey FOREIGN KEY (folder_id) REFERENCES public.folders(id) ON UPDATE CASCADE ON DELETE SET NULL -- Or CASCADE if sessions should be deleted with folders
@@ -54,6 +55,7 @@ COMMENT ON COLUMN public.sessions.user_id IS 'Links to the authenticated user wh
 COMMENT ON COLUMN public.sessions.context_data IS 'JSONB blob containing the serialized TutorContext Pydantic model.';
 COMMENT ON COLUMN public.sessions.created_at IS 'Timestamp when the session was created.';
 COMMENT ON COLUMN public.sessions.updated_at IS 'Timestamp when the session was last updated.';
+COMMENT ON COLUMN public.sessions.ended_at IS 'Timestamp when the session was considered ended and analysis was triggered.';
 
 -- Create the trigger function for updated_at
 CREATE OR REPLACE FUNCTION public.handle_updated_at()
@@ -332,6 +334,87 @@ CREATE TABLE IF NOT EXISTS public.embeddings_cache (
 COMMENT ON TABLE public.embeddings_cache IS
   'Deduplicates embeddings by SHA‑256 hash of chunk text.';
 COMMIT;
+
+-- ==========================================
+-- 10. INTERACTION LOGS TABLE (Phase 3)
+-- ==========================================
+CREATE TABLE public.interaction_logs (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id uuid NOT NULL REFERENCES public.sessions(id) ON DELETE CASCADE, -- Ensure logs are deleted if session is deleted
+    user_id uuid NOT NULL, -- For RLS and potentially analytics filtering
+    role text NOT NULL CHECK (role IN ('user', 'agent', 'system')), -- System for messages not directly from user/agent? Or just user/agent? Let's stick to user/agent for simplicity now.
+    content text NOT NULL, -- The text message or a JSON representation of structured content
+    content_type text NOT NULL DEFAULT 'text', -- e.g., 'text', 'explanation', 'question', 'feedback', 'error'
+    event_type text NULL, -- e.g., 'user_message', 'next', 'answer', 'start' (for user actions)
+    created_at timestamptz NOT NULL DEFAULT now(),
+    -- Optional: Add trace_id if easily available when logging, useful for deep dives
+    trace_id uuid NULL
+);
+
+COMMENT ON TABLE public.interaction_logs IS 'Stores chronological log of user messages and agent responses during a session.';
+COMMENT ON COLUMN public.interaction_logs.role IS 'Who generated the content (user or agent).';
+COMMENT ON COLUMN public.interaction_logs.content_type IS 'The type of content (matches InteractionResponseData content_type or "user_input").';
+COMMENT ON COLUMN public.interaction_logs.event_type IS 'The type of user action that triggered this part of the interaction (e.g., next, answer).';
+
+-- Enable RLS
+ALTER TABLE public.interaction_logs ENABLE ROW LEVEL SECURITY;
+
+-- Grant necessary permissions
+GRANT SELECT, INSERT ON public.interaction_logs TO authenticated;
+
+-- RLS Policy for interaction_logs (Users can only read their own logs)
+CREATE POLICY "Allow individual user select access for interaction logs"
+ON public.interaction_logs
+FOR SELECT
+USING (auth.uid() = user_id);
+
+-- Policy allowing authenticated users to INSERT logs (backend service will use service_role key)
+-- Note: The actual INSERT will likely be done by the backend service role key, bypassing RLS.
+-- This policy is more for completeness if direct inserts were ever needed (unlikely).
+CREATE POLICY "Allow individual user insert access for interaction logs"
+ON public.interaction_logs
+FOR INSERT
+WITH CHECK (auth.uid() = user_id);
+
+-- ==========================================
+-- 11. RPC FUNCTION FOR KB UPDATE (Phase 3)
+-- ==========================================
+CREATE OR REPLACE FUNCTION public.append_to_knowledge_base(
+    target_folder_id uuid,
+    new_summary_text text
+)
+RETURNS void -- Or return boolean for success/failure if needed
+LANGUAGE plpgsql
+SECURITY DEFINER -- Important: Allows function to run with definer's privileges (usually postgres superuser) to bypass RLS if needed for updates
+AS $$
+DECLARE
+    current_kb_text text;
+    timestamp_header text;
+BEGIN
+    -- Add a timestamp header to the new summary
+    timestamp_header := '-- Summary appended on: ' || now()::text || ' --';
+
+    -- Lock the row to prevent concurrent updates (optional but safer)
+    SELECT knowledge_base INTO current_kb_text
+    FROM public.folders
+    WHERE id = target_folder_id
+    FOR UPDATE;
+
+    -- Append the new text with a separator and header
+    UPDATE public.folders
+    SET knowledge_base = COALESCE(current_kb_text, '') || E'\n\n' || timestamp_header || E'\n\n' || new_summary_text
+    WHERE id = target_folder_id;
+
+    -- No explicit return needed for void function
+END;
+$$;
+
+-- Grant execute permission to the authenticated role (or service_role if called only by backend)
+GRANT EXECUTE ON FUNCTION public.append_to_knowledge_base(uuid, text) TO service_role; -- Grant only to service role for backend use
+-- If you needed authenticated users to call it directly (unlikely):
+-- GRANT EXECUTE ON FUNCTION public.append_to_knowledge_base(uuid, text) TO authenticated;
+
+COMMENT ON FUNCTION public.append_to_knowledge_base(uuid, text) IS 'Appends provided text (session summary) to the knowledge_base field of the specified folder, adding a timestamp header.';
 
 -- ==========================================
 -- END OF SCHEMA INITIALIZATION

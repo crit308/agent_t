@@ -156,7 +156,7 @@ async def determine_session_focus(ctx: TutorContext) -> FocusObjective:
         system_msg = {
             "role": "system",
             "content": (
-                "You are the Focus Planner agent. Your task is to analyze the provided Knowledge Base text, the user's current concept understanding (User Model State), and potential next concepts based on prerequisites (if available). "
+                "You are the Focus Planner agent. Your task is to analyze the provided Knowledge Base text (potentially truncated to show recent history), the user's current concept understanding (User Model State), and potential next concepts based on prerequisites (if available). "
                 "Based on this analysis, select the single most important FocusObjective for the current tutoring session. Consider the importance of topics, prerequisites, and the user's progress. "
                 "Output ONLY a single, valid JSON object conforming exactly to the FocusObjective Pydantic model schema. Ensure 'topic', 'learning_goal', 'priority' (integer 1-5), and 'target_mastery' fields are ALWAYS included. Do not add any commentary before or after the JSON object."
                 "\n\nFocusObjective Schema:\n"
@@ -172,13 +172,27 @@ async def determine_session_focus(ctx: TutorContext) -> FocusObjective:
             )
         }
 
-        # Construct user messages, handling potentially large KB text and missing info
-        kb_snippet = (kb_text[:3000] + "... (truncated)") if kb_text and len(kb_text) > 3000 else (kb_text or "Not Available")
+        # --- KB Truncation Logic (Task E-2) --- #
+        KB_INPUT_LIMIT_BYTES = 8000 # Approx 8kB ~ 2k tokens
+        kb_prompt_content: str
+        if kb_text and len(kb_text.encode('utf-8')) > KB_INPUT_LIMIT_BYTES:
+             # Get the last N bytes (tail)
+             kb_tail_bytes = kb_text.encode('utf-8')[-KB_INPUT_LIMIT_BYTES:]
+             # Decode carefully, ignoring errors if split mid-character
+             kb_snippet = kb_tail_bytes.decode('utf-8', errors='ignore')
+             kb_prompt_content = f"... (Beginning of Knowledge Base truncated)\n\n{kb_snippet}"
+             logger.warning(f"Knowledge base text for session {ctx.session_id} truncated to last ~{KB_INPUT_LIMIT_BYTES} bytes for planner prompt.")
+        elif kb_text:
+             kb_prompt_content = kb_text
+        else:
+             kb_prompt_content = "Knowledge Base is empty or unavailable."
+        # --- End KB Truncation Logic ---
+
         dag_info = f"Suggested next learnable concepts based on prerequisites: {next_concepts}" if next_concepts is not None else "Prerequisite information (DAG) is not available for planning."
 
         messages = [
             system_msg,
-            {"role": "user", "content": f"Knowledge Base Content:\n{kb_snippet}"},
+            {"role": "user", "content": f"Knowledge Base Content (Recent History):\n{kb_prompt_content}"},
             {"role": "user", "content": user_model_state_summary},
             {"role": "user", "content": dag_info},
             {"role": "user", "content": "Select the single best FocusObjective for this session based on all available information. Respond only with the JSON object."}
