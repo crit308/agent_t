@@ -15,29 +15,29 @@ async def update_user_model(
     topic: str,
     outcome: Literal['correct', 'incorrect', 'unsure', 'clarification_needed', 'explained'],
     details: Optional[str] = None
-) -> str:
+) -> UserModelState:
     """Updates the user's mastery model for a given topic based on the interaction outcome.
     
-    Modifies ctx.context.user_model_state.concepts[topic] by updating alpha/beta
+    Modifies ctx.user_model_state.concepts[topic] by updating alpha/beta
     based on 'correct'/'incorrect' outcomes, increments attempts, and updates timestamps.
-    Returns a confirmation message.
+    Returns the modified UserModelState object.
     """
     logger.info(f"Updating user model for topic: '{topic}', outcome: '{outcome}'")
     
     # Ensure user model state and concepts dictionary exist
-    if not ctx.context.user_model_state:
+    if not ctx.user_model_state:
         logger.warning("User model state not found in context. Initializing.")
-        ctx.context.user_model_state = UserModelState()
-    if not isinstance(ctx.context.user_model_state.concepts, dict):
+        ctx.user_model_state = UserModelState()
+    if not isinstance(ctx.user_model_state.concepts, dict):
          logger.warning("User model concepts dictionary not found. Initializing.")
-         ctx.context.user_model_state.concepts = {}
+         ctx.user_model_state.concepts = {}
 
     # Get or create the concept state
-    if topic not in ctx.context.user_model_state.concepts:
+    if topic not in ctx.user_model_state.concepts:
         logger.info(f"First interaction with topic '{topic}'. Creating new concept state.")
-        ctx.context.user_model_state.concepts[topic] = UserConceptMastery()
+        ctx.user_model_state.concepts[topic] = UserConceptMastery()
         
-    concept_state = ctx.context.user_model_state.concepts[topic]
+    concept_state = ctx.user_model_state.concepts[topic]
     
     # Update based on outcome
     if outcome == 'correct':
@@ -65,11 +65,11 @@ async def update_user_model(
 
     # Update common fields
     concept_state.last_interaction_outcome = outcome
+    # Update the last accessed timestamp with an ISO string
     concept_state.last_accessed = datetime.now(timezone.utc).isoformat()
-    
-    # Update current_topic in overall state if this skill implies focus
-    ctx.context.user_model_state.current_topic = topic
-    
-    msg = f"User model updated for topic '{topic}' based on outcome '{outcome}'. Mastery: {concept_state.mastery:.2f}, Confidence: {concept_state.confidence}"
-    logger.info(msg)
-    return msg # Return confirmation 
+
+    # Update current_topic in overall state
+    ctx.user_model_state.current_topic = topic
+
+    logger.info(f"User model for '{topic}' updated: Mastery={concept_state.mastery:.3f}, Confidence={concept_state.confidence}, Attempts={concept_state.attempts}")
+    return ctx.user_model_state # Return the modified state object 

@@ -98,7 +98,6 @@ class InteractionResponseData(BaseModel):
     content_type: str # Matches InteractionContentType in frontend (e.g., 'explanation', 'question')
     data: Union[ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse, Dict[str, Any]] # Explicitly allow Dict for fallbacks
     user_model_state: UserModelState # Include the updated user model state
-    status: Optional[str] = None # e.g., "awaiting_user_input", "error", etc.
 
 TutorInteractionResponse = Union[
     ExplanationResponse,

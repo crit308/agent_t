@@ -13,13 +13,13 @@ logger = logging.getLogger(__name__)
 async def evaluate_quiz(ctx: RunContextWrapper[TutorContext], user_answer_index: int) -> QuizFeedbackItem:
     """Evaluates the user's answer against the current QuizQuestion stored in context.
     
-    Reads `ctx.context.current_quiz_question`, compares the answer, constructs
-    a QuizFeedbackItem, clears `ctx.context.current_quiz_question`, and returns
+    Reads `ctx.current_quiz_question`, compares the answer, constructs
+    a QuizFeedbackItem, clears `ctx.current_quiz_question`, and returns
     the feedback item.
     """
     logger.info(f"Evaluating quiz answer. User selected index: {user_answer_index}")
     
-    question = ctx.context.current_quiz_question
+    question = ctx.current_quiz_question
     
     if not question or not isinstance(question, QuizQuestion):
         logger.error("evaluate_quiz skill called but no valid QuizQuestion found in context.")
@@ -49,9 +49,12 @@ async def evaluate_quiz(ctx: RunContextWrapper[TutorContext], user_answer_index:
         )
         
         # Clear the question from context *after* successful evaluation
-        ctx.context.current_quiz_question = None
+        if ctx.user_model_state:
+            ctx.user_model_state.pending_interaction_type = None
+        ctx.current_quiz_question = None
         logger.info("Cleared current_quiz_question from context.")
 
+        logger.info(f"Quiz evaluation complete. Correct: {feedback.is_correct}")
         return feedback
 
     except Exception as e:

@@ -24,8 +24,6 @@ from fastapi import HTTPException
 from ai_tutor.agents.planner_agent import determine_session_focus
 from ai_tutor.agents.executor_agent import run_executor
 from ai_tutor.exceptions import ExecutorError
-from ai_tutor.skills.evaluate_quiz import evaluate_quiz
-from ai_tutor.skills.update_user_model import update_user_model
 from agents.run_context import RunContextWrapper
 
 router = APIRouter()
@@ -121,8 +119,7 @@ async def send_error_response(ws: WebSocket, message: str, error_code: str, deta
         full_response = InteractionResponseData(
             content_type="error",
             data=error_payload,
-            user_model_state=state_obj, # Use the valid state object
-            status="error" # Set status within InteractionResponseData
+            user_model_state=state_obj
         )
         # Send the wrapped response
         await safe_send_json(ws, full_response.model_dump(mode='json'), f"Error Response Send ({error_code})")
@@ -257,6 +254,7 @@ async def tutor_stream(
                 payload = json.loads(payload_text)
                 event_data = payload.get('data', {})
                 event_type = payload.get('type')
+                user_input_text = event_data.get('text') if event_type == 'user_message' else None
 
                 if not event_type:
                     log.warning(f"[WebSocket Warning] Received message without 'type' for {session_id}: {payload_text}")
@@ -274,167 +272,93 @@ async def tutor_stream(
 
                 save_context_needed = False
                 response_to_send: Optional[InteractionResponseData] = None
-                wrapper = RunContextWrapper(ctx) # Create wrapper once per loop
+                status_from_executor: Optional[str] = None
 
                 try:
                     log.info(f"WebSocket: Processing event type: {event_type}")
 
                     # --- Planner Logic --- #
                     if not planner_run_complete and (event_type == 'start' or event_type == 'user_message'):
-                        log.info("WebSocket: First interaction, running Planner.")
+                        log.info("WebSocket: First interaction or new message before objective, running Planner.")
                         try:
                             planner_objective = await determine_session_focus(ctx)
                             ctx.current_focus_objective = planner_objective
                             log.info("WebSocket: Planner successful, objective stored in context.")
-                            save_context_needed = True
+                            save_context_needed = True # Save context after planner
                             planner_run_complete = True
 
-                            # --- Send Initial Message --- #
-                            initial_msg_payload = MessageResponse(response_type="message", text="Okay, I've analyzed the materials and have a focus in mind. How can I help you get started?")
-                            response_to_send = InteractionResponseData(
-                                content_type="message",
-                                data=initial_msg_payload,
-                                user_model_state=ctx.user_model_state,
-                                status="awaiting_user_input"
-                            )
-                            log.info("WebSocket: Sending initial message after planner.")
-                            # (Response will be sent later in the loop)
-                            # --- End Initial Message --- #
+                            # --- Send Initial Message (if it was a user message triggering the planner) ---
+                            # If the planner was triggered by 'start', we might wait for the first user message
+                            # If triggered by user message, we might respond immediately or let executor handle it
+                            if event_type == 'user_message':
+                                log.info("Planner ran due to user message. Letting Executor handle the first response.")
+                                # Let the flow continue to the executor block below
+                            elif event_type == 'start':
+                                 # Maybe send a generic greeting after planner?
+                                 initial_msg_payload = MessageResponse(
+                                     response_type="message",
+                                     text="Okay, I've analyzed the materials and have a focus in mind. Let me know when you're ready to begin!"
+                                 )
+
+                                 response_to_send = InteractionResponseData(
+                                     content_type="message",
+                                     data=initial_msg_payload,
+                                     user_model_state=ctx.user_model_state,
+                                 )
+                                 status_from_executor = "awaiting_user_input"  # Set status explicitly
+                                 log.info("WebSocket: Sending initial message after planner (start event).")
+                                 # Response will be sent later
 
                         except Exception as planner_err:
                              log.error(f"WebSocket: Planner failed: {planner_err}", exc_info=True)
                              await send_error_response(ws, "Failed to plan the session.", "PLANNER_ERROR", details=f"Planner error: {type(planner_err).__name__}: {planner_err}", state=ctx.user_model_state)
                              continue # Skip to next message if planner fails
 
-                    # --- Direct Answer Evaluation Logic --- #
-                    if event_type == 'answer':
-                        log.info("WebSocket: Answer event received, evaluating directly.")
-                        answer_index = event_data.get('answer_index')
-                        if answer_index is None or not isinstance(answer_index, int):
-                            log.warning(f"WebSocket: Invalid or missing 'answer_index' in answer payload: {event_data}")
-                            await send_error_response(ws, "Invalid answer payload.", "INVALID_PAYLOAD", details="Missing or invalid 'answer_index'.", state=ctx.user_model_state)
+                    # --- Executor Logic --- # 
+                    # This block runs if:
+                    # 1. Planner just completed (and didn't set a response_to_send for 'start' event)
+                    # 2. Planner was already complete and we received 'user_message', 'next', or 'answer'
+                    if not response_to_send: # Only run executor if planner didn't already prepare a response
+                        if not planner_run_complete:
+                            log.warning(f"WebSocket: Executor logic reached but planner hasn't run. Event: {event_type}. This shouldn't happen if planner handles 'start'/'user_message' first.")
+                            await send_error_response(ws, "Cannot process yet, session not initialized.", "STATE_ERROR", state=ctx.user_model_state)
                             continue
                         
+                        # Check if there is a focus objective before calling executor
                         if not ctx.current_focus_objective:
-                            log.warning("Cannot evaluate answer: current_focus_objective is missing.")
-                            await send_error_response(ws, "Cannot evaluate answer: session goal not set.", "EVALUATION_ERROR", details="No focus objective available.", state=ctx.user_model_state)
-                            continue
+                             log.warning(f"Executor called (event: {event_type}) but no focus objective found in context. Skipping.")
+                             await send_error_response(ws, f"Cannot process '{event_type}': session goal not set.", "EXECUTOR_ERROR", details="No focus objective available.", state=ctx.user_model_state)
+                             continue
                             
+                        # All event types ('user_message', 'next', 'answer', potentially others) go to the executor
+                        log.info(f"WebSocket: Invoking Executor for event type '{event_type}'")
                         try:
-                            # 1. Evaluate the quiz answer
-                            feedback_item: QuizFeedbackItem = await evaluate_quiz(wrapper, answer_index)
-                            log.info("WebSocket: evaluate_quiz skill successful.")
-                            
-                            # 2. Update the user model based on feedback
-                            outcome = 'correct' if feedback_item.is_correct else 'incorrect'
-                            # Use topic from focus objective as primary source
-                            topic = ctx.current_focus_objective.topic 
-                            if not topic:
-                                # Fallback to topic from question if needed (less ideal)
-                                topic = getattr(feedback_item, 'related_section', None) or "Unknown Topic"
-                                log.warning(f"FocusObjective missing topic, falling back to topic: {topic}")
-                            
-                            update_msg = await update_user_model(wrapper, topic=topic, outcome=outcome, details=feedback_item.improvement_suggestion)
-                            log.info(f"WebSocket: update_user_model skill successful: {update_msg}")
-                            save_context_needed = True # Context was modified by skills
-
-                            # 3. Prepare response
-                            # Wrap the feedback_item in FeedbackResponse
-                            feedback_payload = FeedbackResponse(
-                                response_type="feedback",
-                                item=feedback_item
+                            # Call the refactored run_executor
+                            executor_result_data, status_from_executor = await run_executor(
+                                ctx,
+                                user_input_text, # Will be None for 'next', 'answer'
+                                event_type,      # Pass the type explicitly
+                                event_data       # Pass the data dict (contains answer_index if type is 'answer')
                             )
-                            response_to_send = InteractionResponseData(
-                                content_type="feedback",
-                                data=feedback_payload, # Use the wrapped payload
-                                user_model_state=ctx.user_model_state, # Send the *updated* state
-                                status="awaiting_user_input" # Always wait after feedback
-                            )
-                            log.info("WebSocket: Prepared feedback response message.")
-
-                        except Exception as skill_err:
-                             log.error(f"WebSocket: Error during answer evaluation skills: {skill_err}", exc_info=True)
-                             await send_error_response(ws, "Failed to evaluate your answer.", "EVALUATION_ERROR", details=f"Evaluation error: {type(skill_err).__name__}: {skill_err}", state=ctx.user_model_state)
-                             continue
-
-                    # --- Executor Logic (User Message or Start AFTER planner) --- #
-                    elif event_type == 'user_message' or event_type == 'start':
-                        # This block now runs only *after* the planner has run (planner_run_complete is True)
-                        # Or if it's the first message that *also* ran the planner above.
-                        # If response_to_send is already set (by planner), skip executor for this turn.
-                        if response_to_send:
-                             log.info(f"WebSocket: Skipping executor as response already prepared (likely initial message).")
-                        elif not planner_run_complete:
-                             log.warning(f"WebSocket: Executor called with type '{event_type}' but planner hasn't run. This shouldn't happen.")
-                             await send_error_response(ws, "Cannot process yet, session not initialized.", "STATE_ERROR", state=ctx.user_model_state)
-                             continue
-                        else:
-                            user_input_text = event_data.get('text') if event_type == 'user_message' else None # Use None if 'start' after planner
-                            log.info(f"WebSocket: '{event_type}' event received (post-planner), running Executor.")
-                            if not ctx.current_focus_objective:
-                                 log.warning("Executor called but no focus objective found in context. Skipping.")
-                                 await send_error_response(ws, "Cannot process message: session goal not set.", "EXECUTOR_ERROR", details="No focus objective available.", state=ctx.user_model_state)
-                                 continue
-                            try:
-                                executor_result = await run_executor(ctx, user_input=user_input_text)
-                                log.info(f"WebSocket: Executor result content_type: {executor_result.content_type}, data type: {type(executor_result.data).__name__}")
-                                # Assume executor modifies context internally (e.g., via update_user_model call by LLM)
-                                # and returns the *final* state in InteractionResponseData
-                                save_context_needed = True # Save context after executor runs
-                                log.info("WebSocket: Executor successful.")
-                                response_to_send = executor_result
-                                log.info("WebSocket: Prepared executor response message.")
-
-                            # Catch the specific ExecutorError
-                            except ExecutorError as executor_custom_err:
-                                 log.error(f"WebSocket: Executor failed with ExecutorError: {executor_custom_err}", exc_info=True)
-                                 await send_error_response(ws, "Failed to process your message.", "EXECUTOR_ERROR", details=f"Executor error: {executor_custom_err}", state=ctx.user_model_state)
-                                 continue
-                            except Exception as executor_err:
-                                 # Catch any other unexpected errors from executor
-                                 log.error(f"WebSocket: Executor failed with unexpected Exception: {executor_err}", exc_info=True)
-                                 await send_error_response(ws, "Failed to process your message.", "EXECUTOR_ERROR", details=f"Unexpected Executor error: {type(executor_err).__name__}", state=ctx.user_model_state)
-                                 continue
-                    
-                    # --- ADDED: Executor Logic for 'next' event ---
-                    elif event_type == 'next':
-                        log.info(f"WebSocket: Invoking Executor for session {session_id} due to 'next' event.")
-                        if not planner_run_complete:
-                             log.warning(f"WebSocket: Executor called with type '{event_type}' but planner hasn't run. This shouldn't happen.")
-                             await send_error_response(ws, "Cannot process yet, session not initialized.", "STATE_ERROR", state=ctx.user_model_state)
-                             continue
-                        if not ctx.current_focus_objective:
-                             log.warning("Executor called but no focus objective found in context. Skipping.")
-                             await send_error_response(ws, "Cannot process 'next': session goal not set.", "EXECUTOR_ERROR", details="No focus objective available.", state=ctx.user_model_state)
-                             continue
-                        try:
-                            # Pass "[NEXT]" as user_input to the executor
-                            executor_result = await run_executor(ctx, user_input="[NEXT]") 
-                            log.info(f"WebSocket: Executor result for 'next': content_type={executor_result.content_type}, data type={type(executor_result.data).__name__}")
-                            save_context_needed = True 
-                            log.info("WebSocket: Executor successful for 'next'.")
-                            response_to_send = executor_result
-                            log.info("WebSocket: Prepared executor response message for 'next'.")
+                            log.info(f"WebSocket: Executor returned -> Response Type='{executor_result_data.content_type}', Status='{status_from_executor}'")
+                            response_to_send = executor_result_data
+                            save_context_needed = True # Assume executor run might change context (even if just reading)
 
                         except ExecutorError as executor_custom_err:
-                             log.error(f"WebSocket: Executor failed for 'next' with ExecutorError: {executor_custom_err}", exc_info=True)
-                             await send_error_response(ws, "Failed to advance.", "EXECUTOR_ERROR", details=f"Executor error: {executor_custom_err}", state=ctx.user_model_state)
+                             log.error(f"WebSocket: Executor failed with ExecutorError: {executor_custom_err}", exc_info=True)
+                             await send_error_response(ws, f"Failed to process your request ('{event_type}').", "EXECUTOR_ERROR", details=f"Executor error: {executor_custom_err}", state=ctx.user_model_state)
                              continue
                         except Exception as executor_err:
-                             log.error(f"WebSocket: Executor failed for 'next' with unexpected Exception: {executor_err}", exc_info=True)
-                             await send_error_response(ws, "Failed to advance.", "EXECUTOR_ERROR", details=f"Unexpected Executor error: {type(executor_err).__name__}", state=ctx.user_model_state)
+                             log.error(f"WebSocket: Executor failed with unexpected Exception: {executor_err}", exc_info=True)
+                             await send_error_response(ws, f"Failed to process your request ('{event_type}').", "EXECUTOR_ERROR", details=f"Unexpected Executor error: {type(executor_err).__name__}", state=ctx.user_model_state)
                              continue
 
-                    else:
-                        log.warning(f"WebSocket: Received event '{event_type}' when not expected or not handled.")
-                        # Optional: Send error for unhandled types
-                        # await send_error_response(ws, f"Unknown command type: {event_type}", "UNKNOWN_COMMAND", state=ctx.user_model_state)
-                        continue
-
-                    # --- Save Context --- #
-                    if save_context_needed:
+                    # --- Save Context (Always save after successful processing leading to a response) --- #
+                    # Note: Markdown says "Save context after EVERY executor turn". Let's ensure it runs if response_to_send exists.
+                    if save_context_needed and response_to_send: # Ensure we only save if processing was potentially successful 
                         try:
                             log.info("WebSocket: Attempting to save context after processing.")
+                            # Ensure we pass the *potentially modified* ctx from executor
                             success = await session_manager.update_session_context(supabase, session_id, user.id, ctx)
                             if success:
                                 log.info("WebSocket: Context saved successfully after processing.")
@@ -443,23 +367,51 @@ async def tutor_stream(
                         except Exception as save_err:
                              # Log error but don't break connection, try to send response anyway
                              log.error(f"WebSocket: Error saving context: {save_err}", exc_info=True)
-                             await send_error_response(ws, "Failed to save session progress.", "CONTEXT_SAVE_FAILED", details=f"Database error: {type(save_err).__name__}", state=ctx.user_model_state)
+                             # Maybe send an error response here? Or just log?
+                             # Let's log for now, as the main response might still be useful.
+                             # await send_error_response(ws, "Failed to save session progress.", "CONTEXT_SAVE_FAILED", details=f"Database error: {type(save_err).__name__}", state=ctx.user_model_state)
 
                     # --- Send Response & Handle Status --- #
-                    if response_to_send:
-                        # Log before sending
-                        log.info(f"tutor_ws: Attempting to send {response_to_send.content_type} to client...")
-                        log.info(f"WebSocket: Sending {response_to_send.content_type} response to client.")
-                        await safe_send_json(ws, response_to_send.model_dump(mode='json'), f"{response_to_send.content_type.capitalize()} Response Send")
-                        status = getattr(response_to_send, 'status', None)
-                        # For Phase 2, all successful statuses lead to waiting for the user
-                        if status == "awaiting_user_input" or status == "objective_complete" or status == "explanation_delivered":
-                            log.info(f"WebSocket: Status is '{status}'. Waiting for next user message.")
-                        elif status == "error":
-                            log.error("WebSocket: Status is 'error'. Error payload was sent.")
-                        continue # Continue loop after sending response
+                    if response_to_send and status_from_executor:
+                        log.info(f"WebSocket: Sending {response_to_send.content_type} response to client. Status: {status_from_executor}")
+                        # Remove the deprecated top-level status field before sending
+                        response_dict = response_to_send.model_dump(mode='json')
+                        response_dict.pop('status', None) # Remove status field if it exists
+                        await safe_send_json(ws, response_dict, f"{response_to_send.content_type.capitalize()} Response Send")
+
+                        # Handle flow based on status from executor
+                        log.info(f"WebSocket: Handling executor status: '{status_from_executor}'")
+                        if status_from_executor == 'awaiting_user_input':
+                            log.info(f"WebSocket: Status is '{status_from_executor}'. Waiting for next client message.")
+                            continue # Continue loop normally
+                        elif status_from_executor == 'objective_complete':
+                            log.info(f"WebSocket: Status is '{status_from_executor}'. Objective complete. Clearing objective and resetting planner.")
+                            # Clear objective and reset planner flag
+                            ctx.current_focus_objective = None
+                            planner_run_complete = False 
+                            save_context_needed = True # Need to save the cleared objective
+                            log.info("WebSocket: Cleared current_focus_objective and reset planner_run_complete flag. Will run Planner on next message.")
+                            # Save the context *again* to persist the cleared objective
+                            try:
+                                log.info("WebSocket: Attempting to save context after objective completion.")
+                                success = await session_manager.update_session_context(supabase, session_id, user.id, ctx)
+                                if success: log.info("WebSocket: Context saved successfully after objective completion.")
+                                else: log.warning("WebSocket: Context save failed after objective completion.")
+                            except Exception as save_err_complete:
+                                log.error(f"WebSocket: Error saving context after objective completion: {save_err_complete}", exc_info=True)
+                            continue # Wait for next user message to trigger planner
+                        else:
+                            log.warning(f"WebSocket: Received unknown status '{status_from_executor}' from executor. Defaulting to awaiting input.")
+                            continue # Default behaviour
                     else:
-                        log.warning("WebSocket: Reached end of processing block with no response to send.")
+                        # This case might happen if planner runs, sets save_context_needed, but decides not to send a message immediately.
+                        # Or if an error occurred before response_to_send was set.
+                        if not response_to_send:
+                             log.warning("WebSocket: Reached end of processing block with no response to send. Ensure all paths (including errors) are handled.")
+                        if not status_from_executor and response_to_send:
+                             log.warning("WebSocket: Response generated but no status returned from executor. Defaulting to awaiting input.")
+                             await safe_send_json(ws, response_to_send.model_dump(mode='json'), "Response Send (No Status)")
+                             continue
 
                 except Exception as e:
                     log.error(f"Unexpected error in main processing logic: {e}", exc_info=True)
@@ -476,7 +428,9 @@ async def tutor_stream(
          log.error(f"Unhandled exception in WebSocket handler for session {session_id}: {type(main_err).__name__}: {main_err}\n{traceback.format_exc()}", exc_info=True)
          # Use safe_send_json for the final error message attempt
          error_data = ErrorResponse(response_type="error", message="Internal server error encountered.")
-         await safe_send_json(ws, error_data.model_dump(mode='json'), "Main Error Send")
+         # Need to wrap error_data in InteractionResponseData structure if send_error_response isn't used
+         full_error_response = InteractionResponseData(content_type="error", data=error_data, user_model_state=UserModelState()) # Provide default state
+         await safe_send_json(ws, full_error_response.model_dump(mode='json'), "Main Error Send")
     finally:
         log.info(f"WebSocket: Entering finally block for session {session_id}")
         if ctx and hasattr(ctx, 'user_model_state') and hasattr(ctx.user_model_state, 'concepts'):
