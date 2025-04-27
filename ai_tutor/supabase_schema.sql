@@ -42,6 +42,7 @@ CREATE TABLE public.sessions (
     folder_id uuid NULL, -- Link to the folder this session belongs to
     updated_at timestamp with time zone NOT NULL DEFAULT now(),
     ended_at timestamptz NULL,
+    analysis_status TEXT NULL, -- Possible values: NULL (default), 'processing', 'success', 'failed'
     CONSTRAINT sessions_pkey PRIMARY KEY (id),
     CONSTRAINT sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON UPDATE CASCADE ON DELETE CASCADE,
     CONSTRAINT sessions_folder_id_fkey FOREIGN KEY (folder_id) REFERENCES public.folders(id) ON UPDATE CASCADE ON DELETE SET NULL -- Or CASCADE if sessions should be deleted with folders
@@ -56,6 +57,7 @@ COMMENT ON COLUMN public.sessions.context_data IS 'JSONB blob containing the ser
 COMMENT ON COLUMN public.sessions.created_at IS 'Timestamp when the session was created.';
 COMMENT ON COLUMN public.sessions.updated_at IS 'Timestamp when the session was last updated.';
 COMMENT ON COLUMN public.sessions.ended_at IS 'Timestamp when the session was considered ended and analysis was triggered.';
+COMMENT ON COLUMN public.sessions.analysis_status IS 'Tracks the status of the post-session analysis background job.';
 
 -- Create the trigger function for updated_at
 CREATE OR REPLACE FUNCTION public.handle_updated_at()
@@ -375,6 +377,11 @@ CREATE POLICY "Allow individual user insert access for interaction logs"
 ON public.interaction_logs
 FOR INSERT
 WITH CHECK (auth.uid() = user_id);
+
+-- Add composite index for efficient log retrieval by session, ordered by time
+CREATE INDEX idx_interaction_logs_session_time ON public.interaction_logs (session_id, created_at);
+
+COMMENT ON INDEX idx_interaction_logs_session_time IS 'Improves performance of fetching interaction logs for a specific session, ordered chronologically.';
 
 -- ==========================================
 -- 11. RPC FUNCTION FOR KB UPDATE (Phase 3)
