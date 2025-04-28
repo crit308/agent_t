@@ -19,7 +19,8 @@ async def evaluate_quiz(ctx: RunContextWrapper[TutorContext], user_answer_index:
     """
     logger.info(f"Evaluating quiz answer. User selected index: {user_answer_index}")
     
-    question = ctx.current_quiz_question
+    # Access the underlying TutorContext via the .context attribute of the wrapper
+    question = ctx.context.current_quiz_question
     
     if not question or not isinstance(question, QuizQuestion):
         logger.error("evaluate_quiz skill called but no valid QuizQuestion found in context.")
@@ -49,9 +50,10 @@ async def evaluate_quiz(ctx: RunContextWrapper[TutorContext], user_answer_index:
         )
         
         # Clear the question from context *after* successful evaluation
-        if ctx.user_model_state:
-            ctx.user_model_state.pending_interaction_type = None
-        ctx.current_quiz_question = None
+        if ctx.context.user_model_state:
+            # Access the underlying context via the .context attribute
+            ctx.context.user_model_state.pending_interaction_type = None
+        ctx.context.current_quiz_question = None
         logger.info("Cleared current_quiz_question from context.")
 
         logger.info(f"Quiz evaluation complete. Correct: {feedback.is_correct}")

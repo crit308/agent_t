@@ -23,7 +23,7 @@ async def queue_session_analysis(session_id: UUID, user_id: UUID, folder_id: Opt
         # Using .is_("analysis_status", "null") for the condition
         # Add .select("id", count="exact") if using Supabase client v2+ for better feedback on rows affected.
         # Since we might be on v1, we use the select-after-update approach recommended in the plan.
-        update_resp = await supabase.table("sessions") \
+        update_resp = supabase.table("sessions") \
             .update({"analysis_status": "processing"}) \
             .eq("id", str(session_id)) \
             .is_("analysis_status", "null") \
@@ -32,7 +32,7 @@ async def queue_session_analysis(session_id: UUID, user_id: UUID, folder_id: Opt
         # Check if update was successful (i.e., we claimed the session)
         # Allow a very short time for the DB update to propagate before checking.
         await asyncio.sleep(0.1)
-        status_check = await supabase.table("sessions").select("analysis_status").eq("id", str(session_id)).single().execute()
+        status_check = supabase.table("sessions").select("analysis_status").eq("id", str(session_id)).single().execute()
 
         # Verify that the status is indeed 'processing'
         if status_check.data and status_check.data.get("analysis_status") == 'processing':
@@ -52,7 +52,7 @@ async def queue_session_analysis(session_id: UUID, user_id: UUID, folder_id: Opt
         # --- Mark Session Ended --- #
         # Now that we've claimed it, mark it as ended.
         logger.info(f"Marking session {session_id} as ended in DB.")
-        await supabase.table("sessions").update({"ended_at": "now()"}).eq("id", str(session_id)).execute()
+        update_resp_ended = supabase.table("sessions").update({"ended_at": "now()"}).eq("id", str(session_id)).execute()
         # Log potential update issues, but proceed as analysis is the main goal now.
 
         # --- Call Analyzer --- #
@@ -66,7 +66,7 @@ async def queue_session_analysis(session_id: UUID, user_id: UUID, folder_id: Opt
             logger.info(f"Attempting to append summary to KB for folder {folder_id}")
             try:
                 rpc_params = {'target_folder_id': str(folder_id), 'new_summary_text': text_summary}
-                rpc_resp = await supabase.rpc('append_to_knowledge_base', rpc_params)
+                rpc_resp = supabase.rpc('append_to_knowledge_base', rpc_params).execute()
                 logger.info(f"Successfully called append_to_knowledge_base RPC for folder {folder_id}. Response: {rpc_resp}")
             except Exception as rpc_err:
                 logger.error(f"Failed to call append_to_knowledge_base RPC for folder {folder_id}: {rpc_err}", exc_info=True)
@@ -93,7 +93,7 @@ async def queue_session_analysis(session_id: UUID, user_id: UUID, folder_id: Opt
 
         # --- Final Status Update: Success --- #
         logger.info(f"Setting analysis_status to 'success' for session {session_id}")
-        await supabase.table("sessions").update({"analysis_status": "success"}).eq("id", str(session_id)).execute()
+        supabase.table("sessions").update({"analysis_status": "success"}).eq("id", str(session_id)).execute()
         logger.info(f"Background task finished successfully for session {session_id}")
 
     except Exception as e:
@@ -102,7 +102,7 @@ async def queue_session_analysis(session_id: UUID, user_id: UUID, folder_id: Opt
         if supabase and can_proceed: # Only update status if this worker successfully claimed the task
             try:
                 logger.error(f"Setting analysis_status to 'failed' for session {session_id}")
-                await supabase.table("sessions").update({"analysis_status": "failed"}).eq("id", str(session_id)).execute()
+                supabase.table("sessions").update({"analysis_status": "failed"}).eq("id", str(session_id)).execute()
             except Exception as update_err:
                  # Log critical failure if we can't even mark the task as failed
                  logger.critical(f"CRITICAL: Failed to update analysis_status to 'failed' for session {session_id} after error: {update_err}", exc_info=True)

@@ -145,11 +145,12 @@ async def tutor_stream(
 
     The client must provide a valid Supabase JWT in the `Authorization` header (Bearer token).
     Each inbound JSON message is forwarded to the TutorFSM orchestrator. All streaming events
-    emitted by the FSM are relayed back to the client in real‑time.
+    emitted by the FSM are relayed back to the client in real-time.
     """
     log.info(f"WebSocket attempting connection for session {session_id}")
     user = None
     ctx: Optional[TutorContext] = None  # Initialize ctx before try
+    session_ended_cleanly = False # Task 2.2: Initialize flag
     try:
         log.info(f"WebSocket: Authenticating for session {session_id}")
         user = await _authenticate_ws(ws, supabase)
@@ -281,6 +282,65 @@ async def tutor_stream(
                      log.debug(f"WebSocket: Received system message, ignoring for {session_id}.", message_type=event_type)
                      continue
 
+                # Task 2.1 Refinement: Handle end_session event with status check
+                elif event_type == 'end_session':
+                    log.info(f"Received 'end_session' event from user for session {session_id}.")
+                    session_ended_cleanly = True # Flag to prevent disconnect trigger
+
+                    if ctx and user:
+                        try:
+                            log.info(f"Checking analysis status before triggering background task via 'end_session' for {session_id}")
+                            # --- Check Status FIRST ---
+                            supabase_client = await get_supabase_client()
+                            status_check = supabase_client.table("sessions") \
+                                .select("analysis_status") \
+                                .eq("id", str(session_id)) \
+                                .maybe_single() \
+                                .execute()
+                            current_status = status_check.data.get("analysis_status") if status_check.data else None
+                            log.info(f"Current analysis_status for session {session_id} before 'end_session' trigger: '{current_status}'")
+
+                            if current_status is None:
+                                # --- Trigger Background Task ---
+                                asyncio.create_task(queue_session_analysis(session_id, user.id, ctx.folder_id))
+                                log.info(f"Background analysis task created for session {session_id}")
+
+                                # --- Send Confirmation to Client ---
+                                confirmation_payload = MessageResponse(
+                                    response_type="message", # Use standard type
+                                    text="Session ending signal received. Your progress analysis will begin shortly."
+                                )
+                                confirmation_response = InteractionResponseData(
+                                    content_type="message", # Use 'message' content type
+                                    data=confirmation_payload,
+                                    user_model_state=ctx.user_model_state # Send final state
+                                )
+                                await safe_send_json(ws, confirmation_response.model_dump(mode='json'), "End Session Confirmation")
+                                log.info(f"Sent end session confirmation to client for {session_id}")
+                            else:
+                                # Analysis already processing or done, inform user differently
+                                log.warning(f"Session {session_id} analysis status is already '{current_status}'. Sending status update instead of triggering.")
+                                status_payload = MessageResponse(
+                                    response_type="message",
+                                    text=f"Session analysis is already {current_status}."
+                                )
+                                status_response = InteractionResponseData(content_type="message", data=status_payload, user_model_state=ctx.user_model_state)
+                                await safe_send_json(ws, status_response.model_dump(mode='json'), "End Session Status Update")
+                                log.info(f"Sent end session status update ({current_status}) to client for {session_id}")
+
+                        except Exception as trigger_err:
+                            log.error(f"Failed to check status, trigger analysis, or send confirmation from 'end_session' for {session_id}: {trigger_err}", exc_info=True)
+                            await send_error_response(ws, "Could not process session ending request.", "END_SESSION_FAIL", state=ctx.user_model_state if ctx else None)
+                    else:
+                        log.warning("Cannot trigger analysis or send confirmation: Context or user missing.")
+                        # Optionally send an error back if connection is still open and ctx/user are missing unexpectedly
+                        await send_error_response(ws, "Internal error: Cannot process end session request.", "END_SESSION_CONTEXT_MISSING", state=None)
+
+                    # Close connection gracefully AFTER sending confirmation/error
+                    log.info(f"Closing WebSocket connection for session {session_id} after handling 'end_session' request.")
+                    await safe_close(ws, code=1000, reason="User ended session")
+                    break # Exit the loop cleanly
+
                 if not ctx:
                      log.error(f"WebSocket: Context became None before processing for session {session_id}")
                      await send_error_response(ws, "Internal server error: Session context lost.", "CONTEXT_LOST", state=ctx.user_model_state if ctx else None)
@@ -337,39 +397,49 @@ async def tutor_stream(
                     if not response_to_send: # Only run executor if planner didn't already prepare a response
                         if not planner_run_complete:
                             log.warning(f"WebSocket: Executor logic reached but planner hasn't run. Event: {event_type}. This shouldn't happen if planner handles 'start'/'user_message' first.")
-                            await send_error_response(ws, "Cannot process yet, session not initialized.", "STATE_ERROR", state=ctx.user_model_state)
+                            await send_error_response(ws, "Cannot process yet, session not initialized.", "STATE_ERROR", state=ctx.user_model_state if ctx else None)
                             continue
                         
                         # Check if there is a focus objective before calling executor
                         if not ctx.current_focus_objective:
                              log.warning(f"Executor called (event: {event_type}) but no focus objective found in context. Skipping.")
-                             await send_error_response(ws, f"Cannot process '{event_type}': session goal not set.", "EXECUTOR_ERROR", details="No focus objective available.", state=ctx.user_model_state)
+                             await send_error_response(ws, f"Cannot process '{event_type}': session goal not set.", "EXECUTOR_ERROR", details="No focus objective available.", state=ctx.user_model_state if ctx else None)
                              continue
                             
                         # All event types ('user_message', 'next', 'answer', potentially others) go to the executor
                         log.info(f"WebSocket: Invoking Executor for event type '{event_type}'")
                         try:
-                            # Call the refactored run_executor
-                            run_ctx = RunContextWrapper.get_context(
-                                workflow_name="AI Tutor - Session Execution",
-                                group_id=str(session_id)
+                            # --- FIX: Use await directly, not async for --- #
+                            executor_result_data, status_from_executor = await run_executor(
+                                ctx,
+                                user_input_text, # Will be None for 'next', 'answer'
+                                event_type,      # Pass the type explicitly
+                                event_data       # Pass the data dict (contains answer_index if type is 'answer')
                             )
-                            response_to_send, status_from_executor = await run_executor(ctx, event_type, event_data, run_ctx)
-                            log.info(f"WebSocket: Executor returned. Response Type: {response_to_send.content_type if response_to_send else 'None'}. Status: {status_from_executor}")
-                            save_context_needed = True # Assume context changed after executor
+                            # --- END FIX --- #
 
-                        except ExecutorError as executor_err:
-                             log.error(f"WebSocket: ExecutorError for session {session_id}: {executor_err}", exc_info=True)
-                             # Use the state from the error if available
-                             error_state = executor_err.state if executor_err.state else (ctx.user_model_state if ctx else None)
-                             await send_error_response(ws, f"Error during processing: {executor_err.message}", executor_err.error_code or "EXECUTOR_ERROR", details=str(executor_err), state=error_state)
-                             save_context_needed = False # Don't save context on unhandled executor error
-                             continue # Allow loop to continue if possible, or break depending on error severity
+                            log.info(f"WebSocket: Executor returned -> Response Type='{executor_result_data.content_type}', Status='{status_from_executor}'")
+                            response_to_send = executor_result_data # Assign the InteractionResponseData part
+                            save_context_needed = True # Assume executor run might change context
 
+                            # --- Log Agent Response (moved here as we have the full response now) --- #
+                            try:
+                                log_content_agent = json.dumps(response_to_send.model_dump(mode='json'))
+                                await log_interaction(ctx, "agent", log_content_agent, response_to_send.content_type, event_type)
+                            except Exception as log_err:
+                                log.error(f"WebSocket ({ctx.session_id}): Failed to log agent response: {log_err}", exc_info=True)
+                            # --- End Log Agent Response --- #
+
+                        except ExecutorError as executor_custom_err:
+                             log.error(f"WebSocket: Executor failed with ExecutorError: {executor_custom_err}", exc_info=True)
+                             current_state = ctx.user_model_state if ctx else UserModelState()
+                             await send_error_response(ws, f"Failed to process your request ('{event_type}').", "EXECUTOR_ERROR", details=f"Executor error: {executor_custom_err}", state=current_state)
+                             continue # Continue loop to wait for next message
                         except Exception as executor_err:
                              log.error(f"WebSocket: Executor failed with unexpected Exception: {executor_err}", exc_info=True)
-                             await send_error_response(ws, f"Failed to process your request ('{event_type}').", "EXECUTOR_ERROR", details=f"Unexpected Executor error: {type(executor_err).__name__}", state=ctx.user_model_state)
-                             continue
+                             current_state = ctx.user_model_state if ctx else UserModelState()
+                             await send_error_response(ws, f"Failed to process your request ('{event_type}').", "EXECUTOR_ERROR", details=f"Unexpected Executor error: {type(executor_err).__name__}", state=current_state)
+                             continue # Continue loop
 
                     # --- Save Context (Always save after successful processing leading to a response) --- #
                     # Note: Markdown says "Save context after EVERY executor turn". Let's ensure it runs if response_to_send exists.
@@ -390,21 +460,12 @@ async def tutor_stream(
                              # await send_error_response(ws, "Failed to save session progress.", "CONTEXT_SAVE_FAILED", details=f"Database error: {type(save_err).__name__}", state=ctx.user_model_state)
 
                     # --- Send Response & Handle Status --- #
+                    # Moved agent logging to *after* successful execution
                     if response_to_send and status_from_executor:
-                        # Serialize the 'data' part for logging
-                        try:
-                            content_to_log = json.dumps(response_to_send.data.model_dump(mode='json'))
-                        except Exception:
-                            content_to_log = str(response_to_send.data) # Fallback
-
-                        log.info(f"WebSocket: Sending {response_to_send.content_type} response...")
+                        log.info(f"WebSocket: Sending {response_to_send.content_type} response... Status: {status_from_executor}")
                         response_dict = response_to_send.model_dump(mode='json')
-                        response_dict.pop('status', None)
+                        response_dict.pop('status', None) # Ensure status isn't duplicated in payload
                         await safe_send_json(ws, response_dict, f"{response_to_send.content_type.capitalize()} Response Send")
-
-                        # Log AFTER successful send
-                        if ctx: # Ensure context still valid
-                            await log_interaction(ctx, 'agent', content_to_log, response_to_send.content_type)
 
                         # Handle flow based on status from executor
                         log.info(f"WebSocket: Handling executor status: '{status_from_executor}'")
@@ -427,30 +488,16 @@ async def tutor_stream(
                             except Exception as save_err_complete:
                                 log.error(f"WebSocket: Error saving context after objective completion: {save_err_complete}", exc_info=True)
                             continue # Wait for next user message to trigger planner
-                        elif status_from_executor == 'quiz_completed':
-                            log.info(f"WebSocket: Quiz completed for session {session_id}, executor signals end.")
-                            # Clear objective and reset planner flag
-                            ctx.current_focus_objective = None
-                            planner_run_complete = False 
-                            save_context_needed = True # Need to save the cleared objective
-                            log.info("WebSocket: Cleared current_focus_objective and reset planner_run_complete flag. Will run Planner on next message.")
-                            # Save the context *again* to persist the cleared objective
-                            try:
-                                log.info("WebSocket: Attempting to save context after objective completion.")
-                                success = await session_manager.update_session_context(supabase, session_id, user.id, ctx)
-                                if success: log.info("WebSocket: Context saved successfully after objective completion.")
-                                else: log.warning("WebSocket: Context save failed after objective completion.")
-                            except Exception as save_err_complete:
-                                log.error(f"WebSocket: Error saving context after objective completion: {save_err_complete}", exc_info=True)
-                            continue # Wait for next user message to trigger planner
+                        # --- Removed 'quiz_completed' special handling, assume it behaves like objective_complete or awaiting_user_input ---
+                        # elif status_from_executor == 'quiz_completed': ...
                         else:
-                            log.warning(f"WebSocket: Received unknown status '{status_from_executor}' from executor. Defaulting to awaiting input.")
+                            log.warning(f"WebSocket: Received unknown or unhandled status '{status_from_executor}' from executor. Defaulting to awaiting input.")
                             continue # Default behaviour
                     else:
                         # This case might happen if planner runs, sets save_context_needed, but decides not to send a message immediately.
                         # Or if an error occurred before response_to_send was set.
-                        if not response_to_send:
-                             log.warning("WebSocket: Reached end of processing block with no response to send. Ensure all paths (including errors) are handled.")
+                        if not response_to_send and planner_run_complete:
+                             log.warning("WebSocket: Reached end of processing block with no response to send (after executor expected). Ensure all paths (including errors) are handled.")
                         if not status_from_executor and response_to_send:
                              log.warning("WebSocket: Response generated but no status returned from executor. Defaulting to awaiting input.")
                              await safe_send_json(ws, response_to_send.model_dump(mode='json'), "Response Send (No Status)")
@@ -462,7 +509,13 @@ async def tutor_stream(
                     continue # Attempt to recover by waiting for next message
 
             except WebSocketDisconnect as ws_disconnect:
-                log.info(f"WebSocket disconnected by client during receive/processing for session {session_id}: Code={ws_disconnect.code}, Reason={ws_disconnect.reason}")
+                log.info(f"WebSocket ({session_id}): Client disconnected cleanly (code={ws_disconnect.code}, reason='{ws_disconnect.reason}').")
+                break # Exit the loop
+            except Exception as loop_err:
+                log.error(f"WebSocket ({session_id}): Unhandled exception in main loop: {loop_err}\n{traceback.format_exc()}", exc_info=True)
+                # Send a generic error if possible
+                await send_error_response(ws, "An unexpected server error occurred.", "UNHANDLED_WS_LOOP_ERROR", details=str(loop_err), state=ctx.user_model_state if ctx else None)
+                # Attempt to break cleanly, but the connection might already be broken
                 break
 
     except WebSocketDisconnect as ws_disconnect_outer:
@@ -475,44 +528,46 @@ async def tutor_stream(
          full_error_response = InteractionResponseData(content_type="error", data=error_data, user_model_state=UserModelState()) # Provide default state
          await safe_send_json(ws, full_error_response.model_dump(mode='json'), "Main Error Send")
     finally:
-        log.info(f"WebSocket: Entering finally block for session {session_id}")
-
-        # --- Trigger Background Analysis Task --- #
-        if ctx and user: # Ensure context and user are available for triggering
-             try:
-                 # --- Check if session already ended to prevent duplicate runs --- #
-                 supabase_client = await get_supabase_client()
-                 ended_check = await supabase_client.table("sessions").select("ended_at").eq("id", str(session_id)).maybe_single().execute()
-                 
-                 if ended_check.data and ended_check.data.get("ended_at") is not None:
-                     log.info(f"Session {session_id} already marked as ended at {ended_check.data.get('ended_at')}. Skipping analysis trigger.")
-                 else:
-                     log.info(f"Triggering background analysis task for session {session_id}")
-                     # Use asyncio.create_task for simple in-process background task
-                     # Pass necessary IDs for the background task
-                     asyncio.create_task(queue_session_analysis(session_id, user.id, ctx.folder_id))
-                     log.info(f"Background analysis task queued for session {session_id}")
-                     
-             except Exception as trigger_err:
-                 log.error(f"Failed to check session end status or trigger background analysis for session {session_id}: {trigger_err}", exc_info=True)
-        else:
-            log.warning(f"Skipping analysis trigger for session {session_id} due to missing context or user.")
-        # --- End Trigger Background Analysis Task ---
-
-        if ctx and hasattr(ctx, 'user_model_state') and hasattr(ctx.user_model_state, 'concepts'):
+        log.info(f"WebSocket ({session_id}): Entering finally block. Cleaning up.")
+        # Task 2.2: Modify Disconnect Trigger
+        if not session_ended_cleanly and ctx and user: # Check the flag!
             try:
-                 log.info(f"WebSocket: Processing final mastery updates for {session_id}")
-                 mastery_prev = {} # Reconstruct prev mastery if needed, or load from ctx if stored
-                 for topic, mastery_state in ctx.user_model_state.concepts.items():
-                     prev = mastery_prev.get(topic)
-                     new_mastery = mastery_state.mastery
-                     new_confidence = mastery_state.confidence
-                     if prev is None or abs(new_mastery - prev) >= 0.05:
-                          log.debug(f"Sending mastery update for {topic}: {new_mastery}")
-                          await safe_send_json(ws, {"type": "mastery_update", "topic": topic, "mastery": new_mastery, "confidence": new_confidence}, "Mastery Update Send")
-            except Exception as mastery_err:
-                 log.error(f"Error sending mastery updates for {session_id}: {mastery_err}", exc_info=True)
+                log.info(f"WebSocket ({session_id}): Saving final context state to DB before potential disconnect trigger.")
+                # Ensure the context is saved before triggering analysis
+                await ctx.save(supabase)
+                log.info(f"WebSocket ({session_id}): Context saved successfully.")
+
+                # --- Check analysis_status BEFORE triggering ---
+                supabase_client = await get_supabase_client()
+                status_check = supabase_client.table("sessions") \
+                    .select("analysis_status") \
+                    .eq("id", str(session_id)) \
+                    .maybe_single() \
+                    .execute()
+
+                current_status = status_check.data.get("analysis_status") if status_check.data else None
+                log.info(f"WebSocket ({session_id}): Current analysis_status from DB on disconnect: '{current_status}'")
+
+                if current_status is None: # Only trigger if analysis hasn't started/finished
+                    log.info(f"Triggering background analysis due to unexpected disconnect for session {session_id}")
+                    asyncio.create_task(queue_session_analysis(session_id, user.id, ctx.folder_id))
+                    log.info(f"WebSocket ({session_id}): Background task scheduled on disconnect.")
+                else:
+                    log.info(f"Skipping analysis trigger on disconnect for session {session_id}: status is '{current_status}'.")
+            except Exception as trigger_err:
+                log.error(f"Failed to trigger background analysis on disconnect for {session_id}: {trigger_err}", exc_info=True)
+            except Exception as final_save_err: # Catch potential save errors too
+                log.error(f"WebSocket ({session_id}): Error saving context in finally block: {final_save_err}", exc_info=True)
+
+        elif session_ended_cleanly:
+            log.info(f"Skipping analysis trigger on disconnect: Session ended cleanly via 'end_session' event.")
         else:
-            log.warning(f"WebSocket: Skipping final mastery updates for session {session_id} because context (ctx) or concepts are not available.")
-        log.info(f"WebSocket: Exiting handler for session {session_id}")
-        await safe_close(ws, code=1000, reason="Handler finished") 
+            log.warning("Skipping analysis trigger on disconnect due to missing context or user.")
+
+        # Make sure the socket is closed
+        log.info(f"WebSocket ({session_id}): Ensuring WebSocket is closed in finally block.")
+        if not session_ended_cleanly:
+             await safe_close(ws) # Use the helper
+        else:
+             log.info(f"WebSocket ({session_id}): Connection already closed by 'end_session' handler. Skipping redundant close call in finally.")
+        log.info(f"WebSocket ({session_id}): Finished finally block.")

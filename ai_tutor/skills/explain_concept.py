@@ -1,4 +1,4 @@
-from agents import function_tool
+from ai_tutor.skills import skill
 from ai_tutor.core.llm import LLMClient
 from ai_tutor.context import TutorContext
 from agents.run_context import RunContextWrapper
@@ -6,7 +6,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-@function_tool
+@skill
 async def explain_concept(
     ctx: RunContextWrapper[TutorContext],
     topic: str,

@@ -30,12 +30,10 @@ async def log_interaction(
     }
     try:
         supabase = await get_supabase_client()
-        response = await supabase.table("interaction_logs").insert(log_data).execute()
+        response = supabase.table("interaction_logs").insert(log_data).execute()
         if response.data:
             logger.debug(f"Interaction logged successfully for session {ctx.session_id}")
         else:
-            # Supabase python client v2 might not have 'error' attribute directly on response
-            error_info = getattr(response, 'error', None) or "Unknown insert error"
-            logger.error(f"Failed to log interaction for session {ctx.session_id}: {error_info}")
+            logger.error(f"Failed to log interaction for session {ctx.session_id}: Supabase response indicates potential issue. Response: {response}")
     except Exception as e:
         logger.error(f"Exception while logging interaction for session {ctx.session_id}: {e}", exc_info=True) 

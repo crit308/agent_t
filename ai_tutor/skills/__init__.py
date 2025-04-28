@@ -3,54 +3,64 @@ from __future__ import annotations
 import importlib
 import inspect
 import pkgutil
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Any
+import logging
+from agents import function_tool
+from agents.tool import FunctionTool as ADKFunctionTool
 
-from agents.tool import FunctionTool as _FT
 from ai_tutor.telemetry import log_tool
 
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 # 1.  In-memory registry (used by ExecutorAgent and tests)
 # --------------------------------------------------------------------------- #
-_REGISTRY: Dict[str, Callable] = {}
+_REGISTRY: Dict[str, ADKFunctionTool] = {}
 SKILL_REGISTRY = _REGISTRY          # <- exported for tests
 
 
 # --------------------------------------------------------------------------- #
 # 2.  Smart decorator – works as @skill or @skill(cost="high")
 # --------------------------------------------------------------------------- #
-def skill(_fn: Callable | None = None, *, cost: str = "low"):
+def skill(_fn: Callable | None = None, *, cost: str = "low", name_override: str | None = None):
     """
-    Decorator for registering an async skill.
+    Decorator for registering an async skill using ADK's @function_tool.
 
-    • Use as @skill                 → defaults to cost="low"
-    • Or  @skill(cost="medium")     → sets custom cost tag
-
-    The wrapped function is:
-    * telemetry-logged
-    * annotated with _skill_cost
-    * inserted into SKILL_REGISTRY
+    - Wraps the function with ADK's @function_tool for SDK compatibility.
+    - Optionally stores the resulting FunctionTool object in a local registry.
+    - Adds a custom _skill_cost attribute (ADK doesn't use this).
     """
-    def _wrap(fn: Callable) -> Callable:
-        wrapped = log_tool(fn)
-        wrapped._skill_cost = cost
-        _REGISTRY[wrapped.__name__] = wrapped
-        return wrapped
+    def decorator(fn: Callable) -> ADKFunctionTool:
+        tool_name = name_override or fn.__name__
+        adk_tool_instance = function_tool(name_override=tool_name, strict_mode=False)(fn)
 
-    # Called as @skill
+        setattr(adk_tool_instance, '_skill_cost', cost)
+
+        _REGISTRY[adk_tool_instance.name] = adk_tool_instance
+        logger.debug(f"Registered skill '{adk_tool_instance.name}' as ADK FunctionTool.")
+
+        # Ensure invoke() can access the wrapped coroutine even if the ADK FunctionTool
+        # implementation does not expose it. The `invoke` helper expects a
+        # `__original_func__` attribute pointing to the underlying async def.
+        # Attach it once here for every tool created so downstream callers
+        # (e.g. planner_agent.determine_session_focus) work reliably.
+        if not hasattr(adk_tool_instance, "__original_func__"):
+            setattr(adk_tool_instance, "__original_func__", fn)
+
+        return adk_tool_instance
+
     if callable(_fn):
-        return _wrap(_fn)
-
-    # Called as @skill(...)
-    return _wrap
+        return decorator(_fn)
+    else:
+        return decorator
 
 
 # --------------------------------------------------------------------------- #
 # 3.  Convenience helper used by Planner / Executor
 # --------------------------------------------------------------------------- #
-def list_tools() -> List[_FT]:
-    """Return every FunctionTool that has been auto-registered."""
-    return [v for v in _REGISTRY.values() if isinstance(v, _FT) or callable(v)]
+def list_tools() -> List[ADKFunctionTool]:
+    """Return all registered ADK FunctionTool skills."""
+    return list(_REGISTRY.values())
 
 
 # --------------------------------------------------------------------------- #
@@ -58,4 +68,24 @@ def list_tools() -> List[_FT]:
 # --------------------------------------------------------------------------- #
 for *_ , module_name, is_pkg in pkgutil.iter_modules(__path__):
     if not is_pkg and module_name != "__init__":
-        importlib.import_module(f".{module_name}", package=__name__) 
+        importlib.import_module(f".{module_name}", package=__name__)
+
+def auto_import_skills():
+    """Dynamically imports skills from modules in the same directory."""
+    logger.debug("Attempting to auto-import skills...")
+    package = __name__.split('.')[0]
+    package_dir = __path__
+
+    for _, module_name, _ in pkgutil.iter_modules(package_dir):
+        full_module_path = f"{package}.skills.{module_name}"
+        if full_module_path != __name__:
+            try:
+                module = importlib.import_module(full_module_path)
+                logger.debug(f"Successfully imported module: {full_module_path}")
+            except ImportError as e:
+                logger.error(f"Failed to import skill module '{full_module_path}': {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error importing '{full_module_path}': {e}", exc_info=True)
+    logger.debug(f"Finished auto-importing skills. Registry size: {len(_REGISTRY)}")
+
+auto_import_skills() 

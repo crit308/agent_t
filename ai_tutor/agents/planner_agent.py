@@ -14,6 +14,7 @@ from ai_tutor.dependencies import get_supabase_client
 from functools import lru_cache, wraps
 import asyncio
 from ai_tutor.skills import skill
+from ai_tutor.utils.tool_helpers import invoke # Import the invoke helper
 
 from ai_tutor.core.schema import PlannerOutput
 
@@ -39,7 +40,7 @@ async def _get_concept_graph_edges(supabase):
 logger = logging.getLogger(__name__)
 
 # --- Define read_knowledge_base tool locally ---
-@skill(cost="low")
+@skill(cost="low") # This now creates a FunctionTool object named read_knowledge_base
 async def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
     """Reads the Knowledge Base content stored in the Supabase 'folders' table associated with the current session's folder_id."""
     folder_id = ctx.context.folder_id
@@ -80,7 +81,7 @@ async def read_knowledge_base(ctx: RunContextWrapper[TutorContext]) -> str:
         logger.error(f"Tool: read_knowledge_base - {error_msg}\n{traceback.format_exc()}", exc_info=True)
         return error_msg
 
-@skill(cost="low")
+@skill(cost="low") # This now creates a FunctionTool object named dag_query
 async def dag_query(ctx: RunContextWrapper[TutorContext], mastered: list[str]) -> list[str]:
     """Returns next learnable concepts based on the concept_graph table and user's mastered concepts."""
     logger.info(f"Tool: dag_query called. Mastered concepts: {mastered}")
@@ -100,18 +101,20 @@ async def dag_query(ctx: RunContextWrapper[TutorContext], mastered: list[str]) -
 async def determine_session_focus(ctx: TutorContext) -> FocusObjective:
     """Analyzes the KB and user state to determine the primary FocusObjective for the session."""
     logger.info(f"determine_session_focus started for session {ctx.session_id}")
-    wrapper = RunContextWrapper(ctx)
     kb_text: Optional[str] = None
     next_concepts: Optional[List[str]] = None
     mastered: List[str] = []
     user_model_state_summary: str = "No user model state available."
 
     try:
-        # 1. Retrieve knowledge base
-        logger.info(f"determine_session_focus: Calling read_knowledge_base for session {ctx.session_id}")
+        # 1. Retrieve knowledge base using invoke
+        logger.info(f"determine_session_focus: Calling read_knowledge_base via invoke for session {ctx.session_id}")
         try:
-            kb_text = await read_knowledge_base(wrapper)
-            logger.info(f"determine_session_focus: read_knowledge_base returned for session {ctx.session_id}. Length: {len(kb_text) if kb_text else 'None'}")
+            # --- FIX: Use invoke --- 
+            # Pass the FunctionTool object and context
+            kb_text = await invoke(read_knowledge_base, ctx=ctx)
+            # --- END FIX ---
+            logger.info(f"determine_session_focus: read_knowledge_base returned. Length: {len(kb_text) if kb_text else 'None'}")
             if kb_text and "Error:" in kb_text: # Check for errors returned by the tool
                  logger.error(f"determine_session_focus: Error from read_knowledge_base: {kb_text}")
                  raise ValueError(f"Failed to read knowledge base: {kb_text}")
@@ -138,17 +141,17 @@ async def determine_session_focus(ctx: TutorContext) -> FocusObjective:
              logger.error(f"determine_session_focus: Error processing user model state for session {ctx.session_id}: {mastery_e}", exc_info=True)
              # Continue, maybe with empty mastered list and default summary
 
-        # 3. Query DAG for next learnable concepts (Optional but helpful)
-        logger.info(f"determine_session_focus: Calling dag_query for session {ctx.session_id}")
+        # 3. Query DAG for next learnable concepts (using invoke)
+        logger.info(f"determine_session_focus: Calling dag_query via invoke for session {ctx.session_id}")
         try:
-            # Ensure get_supabase_client is awaited if it's async, might need adjustment if dag_query handles it internally
-            # supabase_client = await get_supabase_client() # Assuming get_supabase_client is async
-            # next_concepts = await dag_query(wrapper, mastered, supabase_client) # Pass client if needed
-            next_concepts = await dag_query(wrapper, mastered) # Assumes dag_query gets its own client
-            logger.info(f"determine_session_focus: dag_query returned for session {ctx.session_id}: {next_concepts}")
+            # --- FIX: Use invoke --- 
+            # Pass the FunctionTool object, context, and mastered list as kwargs
+            next_concepts = await invoke(dag_query, ctx=ctx, mastered=mastered)
+            # --- END FIX ---
+            logger.info(f"determine_session_focus: dag_query returned: {next_concepts}")
         except Exception as tool_e:
             logger.error(f"determine_session_focus: Exception calling dag_query for session {ctx.session_id}: {tool_e}\n{traceback.format_exc()}", exc_info=True)
-            # Don't raise, planner can still function without DAG info, though less optimally
+            # Don't raise, planner can still function without DAG info
             next_concepts = None # Indicate that DAG info is unavailable
 
         # 4. Call LLM
@@ -266,5 +269,4 @@ async def determine_session_focus(ctx: TutorContext) -> FocusObjective:
          # Catch any exception missed by inner blocks
          logger.critical(f"Unhandled exception within determine_session_focus for session {ctx.session_id}: {type(outer_e).__name__}: {outer_e}\n{traceback.format_exc()}", exc_info=True)
          # Consider returning a default/fallback FocusObjective or re-raise
-         # For now, re-raising to be caught by the endpoint handler
          raise 
