@@ -36,7 +36,7 @@ def extract_edges(kb_text: str) -> list[dict[str, str]]:
         }
     ]
     response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo-0613",
+        model="gpt-4.1-2025-04-14",
         messages=[{"role": "user", "content": kb_text}],
         functions=functions,
         function_call={"name": "extract_edges"}

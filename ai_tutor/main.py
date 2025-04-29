@@ -55,7 +55,7 @@ if __name__ == "__main__":
     # set_tracing_export_api_key("YOUR_TRACING_KEY")
     print("Set default OpenAI API key for SDK and environment.")
     
-    # Ensure we're using the Responses API for o4-mini model
+    # Ensure we're using the Responses API for o3-mini model
     set_default_openai_api("responses")
     # If needed, configure a custom client:
     # from openai import AsyncOpenAI

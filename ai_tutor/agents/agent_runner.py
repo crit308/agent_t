@@ -42,7 +42,7 @@ class AgentRunner:
             name="TempFileSearcher",
             instructions="Use the file_search tool to find relevant document snippets.",
             tools=[file_search_tool],
-            model=provider.get_model("o4-mini"),
+            model=provider.get_model("o3-mini"),
         )
         # Run the temp agent with the raw query
         result = await Runner.run(temp_agent, query, context=self.context)

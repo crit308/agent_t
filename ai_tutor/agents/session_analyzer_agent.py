@@ -51,7 +51,7 @@ def create_session_analyzer_agent(api_key: str = None):
     
     # Instantiate the base model provider and get the base model
     provider: ModelProvider = OpenAIProvider()
-    base_model = provider.get_model("gpt-4o")  # Using gpt-4o which supports structured output
+    base_model = provider.get_model("gpt-4.1-2025-04-14")  # Updated to gpt-4.1-2025-04-14
     
     # Create the session analyzer agent
     session_analyzer_agent = Agent(

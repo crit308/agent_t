@@ -112,7 +112,7 @@ def create_analyzer_agent(vector_store_id: str, api_key: str = None):
     
     # Instantiate the base model provider and get the base model
     provider = OpenAIProvider()
-    base_model = provider.get_model("o4-mini")
+    base_model = provider.get_model("o3-mini")
     
     # Create the analyzer agent with access to the file search tool
     analyzer_agent = Agent(
