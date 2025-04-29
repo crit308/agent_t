@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
 from uuid import UUID
 from pydantic import ValidationError
+from textwrap import shorten
 
 from agents import Agent, Runner, trace, RunConfig, ModelProvider
 from agents.models.openai_provider import OpenAIProvider
@@ -108,6 +109,48 @@ def create_session_analyzer_agent(api_key: str = None):
     return session_analyzer_agent
 
 
+# -------------------------------
+# Helper: Generate plain-text summary from SessionAnalysis object
+# -------------------------------
+def _generate_text_summary_from_analysis(analysis: 'SessionAnalysis') -> str:
+    """Creates a concise text summary string (≤300 words) from a SessionAnalysis object.
+
+    The summary always starts with the required prefix "Session Summary:" so that
+    downstream regex logic and KB conventions remain consistent.
+    """
+    if analysis is None:
+        return "Session Summary: (No structured analysis available.)"
+
+    parts: list[str] = [
+        "Session Summary:",
+        f"Overall Effectiveness: {analysis.overall_effectiveness:.1f}/100."
+    ]
+
+    if analysis.strengths:
+        parts.append("Strengths: " + ", ".join(analysis.strengths))
+    if analysis.improvement_areas:
+        parts.append("Areas for Improvement: " + ", ".join(analysis.improvement_areas))
+
+    # Add up to three learning insights
+    if analysis.learning_insights:
+        parts.append("Key Learning Points:")
+        for insight in analysis.learning_insights[:3]:
+            flag = "Strength" if insight.strength else "Issue"
+            parts.append(f"- {insight.topic} ({flag}): {insight.observation} → {insight.recommendation}")
+
+    if analysis.recommendations:
+        parts.append("Recommendation: " + analysis.recommendations[0])
+
+    summary_text = "\n".join(parts)
+
+    # Ensure word limit (300 words) – truncate gracefully if needed
+    words = summary_text.split()
+    if len(words) > 300:
+        summary_text = " ".join(words[:300]) + " …"
+
+    return summary_text
+
+
 async def analyze_session(session_id: UUID, context: Optional[TutorContext] = None) -> Tuple[Optional[str], Optional[SessionAnalysis]]:
     """Analyzes a session using its ID to fetch logs and KB.
 
@@ -139,60 +182,76 @@ async def analyze_session(session_id: UUID, context: Optional[TutorContext] = No
         agent,
         prompt,
         run_config=run_config,
+        max_turns=20,  # Increase turn limit to avoid premature MaxTurnsExceeded
     )
 
     text_summary: Optional[str] = None
     structured_analysis: Optional[SessionAnalysis] = None
 
-    if result and hasattr(result, 'final_output') and isinstance(result.final_output, str):
-        final_text = result.final_output
-        logger.debug(f"Session Analyzer raw output for {session_id}:{final_text}")
+    # ---------------------------------------------
+    # Handle RunResult output (string or object)
+    # ---------------------------------------------
+    if result and hasattr(result, 'final_output'):
+        final_output = result.final_output
 
-        # Extract Text Summary (Must start with "Session Summary:")
-        # Use regex that finds "Session Summary:" and captures everything after it
-        # until the end of the string OR the start of the json block
-        summary_match = re.search(r"Session Summary:(.*?)(?:$|```json)", final_text, re.DOTALL | re.IGNORECASE)
-        if summary_match:
-            text_summary = summary_match.group(1).strip()
-            logger.info(f"Extracted text summary for session {session_id}. Length: {len(text_summary)}")
-        else:
-            logger.warning(f"Could not find 'Session Summary:' prefix in analyzer output for {session_id}.")
-            # Fallback: If no prefix, but JSON is missing, maybe the whole output IS the summary?
-            if "```json" not in final_text:
-                logger.warning(f"Assuming entire output is the summary for {session_id} due to missing prefix and JSON.")
-                text_summary = final_text.strip()
+        # --- Case 1: Agent returned structured object directly ---
+        if isinstance(final_output, SessionAnalysis):
+            logger.info("Analyzer returned SessionAnalysis object directly. Generating summary.")
+            structured_analysis = final_output
+            # Ensure essential identifiers are filled
+            if not structured_analysis.session_id:
+                structured_analysis.session_id = str(session_id)
 
-        # Extract JSON part
-        json_match = re.search(r"```json\s*(\{.*?\})\s*```", final_text, re.DOTALL)
-        if json_match:
-            json_str = json_match.group(1).strip()
-            logger.info(f"Found JSON block for session {session_id}. Attempting parse.")
-            try:
-                analysis_data = json.loads(json_str)
-                # Add session_id if missing from LLM output (best practice)
-                analysis_data.setdefault('session_id', str(session_id))
-                # Add timestamp if missing
-                analysis_data.setdefault('analysis_timestamp', datetime.utcnow().isoformat() + 'Z')
-                # TODO: Add duration calculation if needed and not in JSON - requires session start/end times
-                structured_analysis = SessionAnalysis.model_validate(analysis_data)
-                logger.info(f"Successfully parsed and validated SessionAnalysis JSON for {session_id}.")
-            except json.JSONDecodeError as json_err:
-                logger.error(f"Failed to parse SessionAnalysis JSON for {session_id}: {json_err}. JSON string: {json_str}")
-                # Keep text_summary even if JSON fails
-            except ValidationError as val_err:
-                logger.error(f"Failed to validate SessionAnalysis JSON for {session_id}: {val_err}. Parsed data: {analysis_data}")
-                # Keep text_summary even if JSON fails
-        else:
-            logger.info(f"No valid SessionAnalysis JSON found in ```json ... ``` block for session {session_id}.")
+            text_summary = _generate_text_summary_from_analysis(structured_analysis)
 
-        # Handle case where only summary was expected/provided
-        if text_summary and not structured_analysis and not json_match:
-            logger.info(f"Analyzer provided only text summary for session {session_id}, as expected.")
-        elif not text_summary and not structured_analysis:
-            logger.error(f"Session Analyzer for {session_id} failed to produce usable output (no summary prefix, no JSON). Raw output: {final_text}")
+        # --- Case 2: Agent returned string (legacy behaviour) ---
+        elif isinstance(final_output, str):
+            final_text: str = final_output
+            logger.debug(f"Session Analyzer raw output for {session_id}:{final_text}")
+
+            # Extract Text Summary (Must start with "Session Summary:")
+            # Use regex that finds "Session Summary:" and captures everything after it
+            # until the end of the string OR the start of the json block
+            summary_match = re.search(r"Session Summary:(.*?)(?:$|```json)", final_text, re.DOTALL | re.IGNORECASE)
+            if summary_match:
+                text_summary = summary_match.group(1).strip()
+                logger.info(f"Extracted text summary for session {session_id}. Length: {len(text_summary)}")
+            else:
+                logger.warning(f"Could not find 'Session Summary:' prefix in analyzer output for {session_id}.")
+                # Fallback: If no prefix, but JSON is missing, maybe the whole output IS the summary?
+                if "```json" not in final_text:
+                    logger.warning(f"Assuming entire output is the summary for {session_id} due to missing prefix and JSON.")
+                    text_summary = final_text.strip()
+
+            # Extract JSON part
+            json_match = re.search(r"```json\s*(\{.*?\})\s*```", final_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1).strip()
+                logger.info(f"Found JSON block for session {session_id}. Attempting parse.")
+                try:
+                    analysis_data = json.loads(json_str)
+                    # Add session_id if missing from LLM output (best practice)
+                    analysis_data.setdefault('session_id', str(session_id))
+                    # TODO: Add duration calculation if needed and not in JSON - requires session start/end times
+                    structured_analysis = SessionAnalysis.model_validate(analysis_data)
+                    logger.info(f"Successfully parsed and validated SessionAnalysis JSON for {session_id}.")
+                except json.JSONDecodeError as json_err:
+                    logger.error(f"Failed to parse SessionAnalysis JSON for {session_id}: {json_err}. JSON string: {json_str}")
+                    # Keep text_summary even if JSON fails
+                except ValidationError as val_err:
+                    logger.error(f"Failed to validate SessionAnalysis JSON for {session_id}: {val_err}. Parsed data: {analysis_data}")
+                    # Keep text_summary even if JSON fails
+            else:
+                logger.info(f"No valid SessionAnalysis JSON found in ```json ... ``` block for session {session_id}.")
+
+            # Handle case where only summary was expected/provided
+            if text_summary and not structured_analysis and not json_match:
+                logger.info(f"Analyzer provided only text summary for session {session_id}, as expected.")
+            elif not text_summary and not structured_analysis:
+                logger.error(f"Session Analyzer for {session_id} failed to produce usable output (no summary prefix, no JSON). Raw output: {final_text}")
 
     else:
-        logger.error(f"Session Analyzer for {session_id} did not return a valid string output. Result: {result}")
+        logger.error(f"Session Analyzer for {session_id} did not return usable output. Result: {result}")
 
     return text_summary, structured_analysis
 

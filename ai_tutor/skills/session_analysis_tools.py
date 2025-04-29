@@ -28,7 +28,11 @@ async def read_interaction_logs(session_id: UUID, max_tokens: int = 1500) -> str
     logger.info(f"Reading interaction logs for session: {session_id}")
     supabase = await get_supabase_client()
     # Fetch logs ordered by time
-    response = await supabase.table("interaction_logs").select("role, content_type, content").eq("session_id", str(session_id)).order("created_at", desc=False).execute()
+    response = supabase.table("interaction_logs") \
+        .select("role, content_type, content") \
+        .eq("session_id", str(session_id)) \
+        .order("created_at", desc=False) \
+        .execute()
 
     if not response.data:
         logger.warning(f"No interaction logs found for session {session_id}")
@@ -36,7 +40,7 @@ async def read_interaction_logs(session_id: UUID, max_tokens: int = 1500) -> str
 
     # Initialize LLM client once
     try:
-        llm_client = LLMClient(model="o4-mini") # Using o4-mini as per plan
+        llm_client = LLMClient(model_name="o4-mini") # Use correct argument name 'model_name'
     except Exception as e:
         logger.error(f"Failed to initialize LLMClient: {e}. Cannot perform summarization.")
         return "Error: Could not initialize summarization service."
