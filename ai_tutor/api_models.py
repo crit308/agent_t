@@ -8,6 +8,9 @@ from ai_tutor.agents.models import (
 from ai_tutor.agents.analyzer_agent import AnalysisResult # Import the specific model
 from ai_tutor.context import UserModelState # Import UserModelState
 
+# Placeholder type for backend model
+WhiteboardAction = Dict[str, Any]
+
 # --- Request Models ---
 # (QuizUserAnswers is already defined and can be reused)
 
@@ -98,6 +101,7 @@ class InteractionResponseData(BaseModel):
     content_type: str # Matches InteractionContentType in frontend (e.g., 'explanation', 'question')
     data: Union[ExplanationResponse, QuestionResponse, FeedbackResponse, MessageResponse, ErrorResponse, Dict[str, Any]] # Explicitly allow Dict for fallbacks
     user_model_state: UserModelState # Include the updated user model state
+    whiteboard_actions: Optional[List[WhiteboardAction]] = Field(None, description="Optional list of actions for the whiteboard.")
 
 TutorInteractionResponse = Union[
     ExplanationResponse,
