@@ -284,32 +284,35 @@ async def run_executor(ctx: TutorContext, user_input: Optional[str], event_type:
         # Simplified initial logic for user messages
         # TODO: Add more sophisticated analysis (LLM call? Keywords?) to determine intent
         logger.info(f"Executor handling 'user_message': '{user_input}'")
-        # If user asks a question or makes a statement, maybe explain the current/first segment?
-        # Or perhaps call a dialogue skill? For now, re-explain first segment.
-        current_segment_index = 0 # Or ctx.user_model_state.current_topic_segment_index if we want clarification on current
-        logger.info(f"Executor: Calling explain_concept for segment {current_segment_index} in response to user message.")
-        explanation_string = await invoke(
-            explain_concept,
+        # TODO: Determine if calling explain_concept is always the right action here.
+        # Maybe a different skill (e.g., handle_user_query) or direct LLM call is needed.
+        # For now, we get a text response (as an explanation) but wrap it as a 'message'.
+        # Decide on the topic - maybe use the current focus or a default?
+        topic = ctx.current_focus_objective.topic if ctx.current_focus_objective else "General Chat"
+        # If we still call explain_concept, get the response string:
+        logger.info(f"Executor: Generating response text for user message about topic '{topic}'.")
+        response_text = await invoke(
+            explain_concept, # Or potentially a different skill for chat-like responses
             ctx,
             topic=topic,
-            details=f"Explain segment {current_segment_index} for {topic} (in response to user message: '{user_input}')."
+            details=f"Respond conversationally to the user message: '{user_input}' regarding {topic}."
         )
         # Update context segment index if needed, or maybe not for general messages?
         # ctx.user_model_state.current_topic_segment_index = current_segment_index # Let's keep it simple for now
 
-        explanation_payload = ExplanationResponse(
-            response_type="explanation",
-            text=explanation_string,
-            topic=topic,
-            segment_index=current_segment_index, # Reflects the segment explained
-            is_last_segment=(current_segment_index >= (3 - 1)) # Use hardcoded max_segments=3
+        # --- Create MessageResponse Payload ---
+        message_payload = MessageResponse(
+            response_type="message",
+            text=response_text if response_text else "Got it.", # Fallback text
+            # message_type="info" # Optional: Add message_type if needed by frontend
         )
+        # --- Wrap in InteractionResponseData with content_type='message' ---
         response_to_send = InteractionResponseData(
-            content_type="explanation",
-            data=explanation_payload,
+            content_type="message", # Changed from 'explanation'
+            data=message_payload,  # Use the MessageResponse payload
             user_model_state=ctx.user_model_state # State might not change here unless we add update_user_model
         )
-        logger.info(f"Executor generated explanation response for user message. Status: {STATUS_AWAITING_INPUT}")
+        logger.info(f"Executor generated message response for user message. Status: {STATUS_AWAITING_INPUT}")
         status = STATUS_AWAITING_INPUT
 
     else:
