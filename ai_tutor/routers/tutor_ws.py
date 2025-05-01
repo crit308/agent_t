@@ -220,6 +220,23 @@ async def tutor_stream(
         await ws.accept()
         log.info(f"WebSocket: Connection accepted for session {session_id}")
 
+        # --- NEW: Send Whiteboard State on Reconnect ---
+        if ctx and ctx.whiteboard_history:
+            log.info(f"WebSocket: Found whiteboard history for session {session_id}. Sending state.")
+            # Flatten the list of lists into a single list of actions
+            all_actions = [action for action_list in ctx.whiteboard_history for action in action_list]
+            log.debug(f"WebSocket: Sending {len(all_actions)} total whiteboard actions for hydration.")
+            try:
+                await safe_send_json(ws, {
+                    "content_type": "whiteboard_state",
+                    "data": {"actions": all_actions}
+                }, "Whiteboard State Hydration")
+                log.info(f"WebSocket: Whiteboard state sent successfully for session {session_id}.")
+            except Exception as send_exc:
+                log.error(f"WebSocket: Failed to send whiteboard state for session {session_id}: {send_exc}")
+                # Decide if this is critical - maybe close connection?
+                # For now, log and continue, FE might be partially broken.
+
         if not ctx:
              log.error(f"WebSocket: CRITICAL - Context object is None after loading/initialization for session {session_id}.")
              await send_error_response(ws, "Internal server error: context unavailable.", "CONTEXT_NULL_ERROR", state=ctx.user_model_state if ctx else None)
@@ -241,6 +258,11 @@ async def tutor_stream(
                  "data": pending_question_payload,
                  "user_model_state": ctx.user_model_state.model_dump(mode='json')
             }, "Pending Question Send")
+            # --- FIX: Ensure whiteboard state is included if question had actions ---
+            # Currently, `draw_mcq_actions` adds actions to the response, which are saved.
+            # The `whiteboard_state` message above handles the full history replay.
+            # However, if we *only* send the pending question, it won't have its original actions.
+            # Let's assume the `whiteboard_state` replay is sufficient for now.
             log.info(f"WebSocket: Pending question sent for session {session_id}.")
         else:
              log.info(f"WebSocket: No pending question found in context for session {session_id}.")

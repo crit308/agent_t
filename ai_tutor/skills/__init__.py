@@ -90,5 +90,12 @@ def auto_import_skills():
 
 auto_import_skills()
 
+# Export commonly used skills for convenience
 from .draw_diagram import draw_diagram_actions
-from .draw_mcq import draw_mcq_actions 
+from .draw_mcq import draw_mcq_actions
+from .draw_mcq_feedback import draw_mcq_feedback
+from .clear_whiteboard import clear_whiteboard
+from .draw_table import draw_table_actions
+from .draw_flowchart import draw_flowchart_actions
+from .draw_axis import draw_axis_actions
+from .explain_diagram_part import explain_diagram_part 

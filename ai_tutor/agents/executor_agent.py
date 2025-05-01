@@ -1,6 +1,6 @@
 from __future__ import annotations
 import logging
-from typing import Optional, Union, Dict, Tuple, List
+from typing import Optional, Union, Dict, Tuple, List, Any
 
 from ai_tutor.exceptions import ExecutorError # Import from new file
 
@@ -28,6 +28,9 @@ from ai_tutor.skills.create_quiz import create_quiz
 from ai_tutor.skills.evaluate_quiz import evaluate_quiz
 from ai_tutor.skills.update_user_model import update_user_model
 from ai_tutor.skills.draw_mcq import draw_mcq_actions
+from ai_tutor.skills.draw_mcq_feedback import draw_mcq_feedback
+from ai_tutor.skills.draw_diagram import draw_diagram_actions # Import diagram skill
+from ai_tutor.skills.clear_whiteboard import clear_whiteboard # Import clear skill
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +84,11 @@ Target Mastery: {objective_mastery}
     *   `evaluate_quiz(user_answer_index: int)`: To evaluate the user's answer to the *most recently asked question*.
     *   `remediate_concept(topic: str, remediation_details: str)`: To provide targeted help if the user is struggling.
     *   `update_user_model(topic: str, outcome: str, details: Optional[str] = None)`: Call this *after* evaluating an answer or determining understanding/struggle. Use outcomes like 'correct', 'incorrect', 'unsure', 'clarification_needed'.
+    *   `draw_diagram_actions(topic: str, description: str)`: Use to produce a simple diagram when a visual will help (e.g., *first* explanation segment as a title slide).
+    *   `clear_whiteboard()`: Emit a reset action list to clear old visuals before a new diagram or layout-heavy drawing.
+    *   `draw_mcq_feedback(question_id: str, option_id: int, is_correct: bool)`: After evaluating an MCQ answer, draw ✓/✗ and recolour the selected option. Also locks further clicks.
+    *   `draw_table_actions(headers: List[str], rows: List[List[str]])`: Render small comparison or summary tables when tabular presentation aids understanding.
+    *   `draw_flowchart_actions(steps: List[str])`: Render a simple left-to-right flowchart to outline processes.
     *   (If the user asks a direct question, prioritize answering it.)
 4.  Execute the chosen skill (internally). YOU DO NOT SHOW THE SKILL CALL ITSELF.
 5.  Format your final response as a single JSON object conforming EXACTLY to the `InteractionResponseData` schema below. Do NOT add any text before or after the JSON.
@@ -176,22 +184,51 @@ Target Mastery: {objective_mastery}
 }
 ```
 
-**Workflow Logic:**
-*   If explaining, use `explain_concept`. Generate `ExplanationResponse` in `data`. You *might* include `whiteboard_actions` if a visual helps. Increment `current_topic_segment_index` in `user_model_state`.
-*   **Handling 'Next':** If user wants to proceed, check `current_topic_segment_index`. If more segments exist, call `explain_concept`. Otherwise, call `create_quiz`.
-*   If asking a question, use `create_quiz`. Generate `QuestionResponse` in `data`. Store the question in `TutorContext.current_quiz_question`. Reset `current_topic_segment_index` in `user_model_state`. You *might* include `whiteboard_actions` if it helps illustrate the question.
-*   If evaluating an answer, use `evaluate_quiz`, then `update_user_model`. Generate `FeedbackResponse` (containing `QuizFeedbackItem`) in `data`. Generally, no whiteboard actions needed here.
-*   If user asks a question/clarification, use `explain_concept` or generate `MessageResponse` in `data`. Use `update_user_model` if appropriate. You *might* include `whiteboard_actions` for the explanation.
-*   Check for `objective_complete` after `update_user_model`. If met, you might inform the user with a `MessageResponse`.
+**Additional Examples (new skills)**
 
-**Example Response with Whiteboard Actions:**
+*Table Example* – using `draw_table_actions`:
 ```json
-{EXAMPLE_RESPONSE_WITH_WHITEBOARD}
+{
+  "content_type": "explanation",
+  "data": {
+    "response_type": "explanation",
+    "text": "Here's a quick comparison of prokaryotic vs eukaryotic cells.",
+    "topic": "Cell Types",
+    "segment_index": 1,
+    "is_last_segment": false
+  },
+  "user_model_state": { ... },
+  "whiteboard_actions": [
+    { "id": "table-1-header-0", "kind": "rect", "x": 50, "y": 50, "width": 140, "height": 40, "fill": "#BBDEFB", "stroke": "#0D47A1", "strokeWidth": 1, "metadata": {"source":"assistant","role":"table_header","table_id":"table-1","col":0}},
+    { "id": "table-1-header-0-text", "kind": "text", "x": 60, "y": 70, "text": "Feature", "fontSize": 14, "fill": "#0D47A1", "metadata": {"source":"assistant","role":"table_header_text","table_id":"table-1","col":0}},
+    { "id": "table-1-header-1", "kind": "rect", "x": 200, "y": 50, "width": 140, "height": 40, "fill": "#BBDEFB", "stroke": "#0D47A1", "strokeWidth": 1, "metadata": {"source":"assistant","role":"table_header","table_id":"table-1","col":1}},
+    { "id": "table-1-header-1-text", "kind": "text", "x": 210, "y": 70, "text": "Prokaryotic", "fontSize": 14, "fill": "#0D47A1", "metadata": {"source":"assistant","role":"table_header_text","table_id":"table-1","col":1}},
+    { "id": "table-1-header-2", "kind": "rect", "x": 350, "y": 50, "width": 140, "height": 40, "fill": "#BBDEFB", "stroke": "#0D47A1", "strokeWidth": 1, "metadata": {"source":"assistant","role":"table_header","table_id":"table-1","col":2}},
+    { "id": "table-1-header-2-text", "kind": "text", "x": 360, "y": 70, "text": "Eukaryotic", "fontSize": 14, "fill": "#0D47A1", "metadata": {"source":"assistant","role":"table_header_text","table_id":"table-1","col":2}},
+    // ... additional body cells ...
+  ]
+}
 ```
 
-**Example Response without Whiteboard Actions:**
+*Flowchart Example* – using `draw_flowchart_actions`:
 ```json
-{EXAMPLE_RESPONSE_WITHOUT_WHITEBOARD}
+{
+  "content_type": "explanation",
+  "data": {
+    "response_type": "explanation",
+    "text": "Follow these steps for the water cycle.",
+    "topic": "Water Cycle",
+    "segment_index": 2,
+    "is_last_segment": false
+  },
+  "user_model_state": { ... },
+  "whiteboard_actions": [
+    { "id": "flow-1-box-0", "kind": "rect", "x": 50, "y": 50, "width": 140, "height": 60, "fill": "#E8F5E9", "stroke": "#1B5E20", "strokeWidth": 1, "metadata": {"source":"assistant","role":"flow_box","chart_id":"flow-1","step":0}},
+    { "id": "flow-1-box-0-text", "kind": "text", "x": 120, "y": 80, "text": "Evaporation", "fontSize": 14, "fill": "#1B5E20", "textAnchor":"middle", "metadata": {"source":"assistant","role":"flow_box_text","chart_id":"flow-1","step":0}},
+    { "id": "flow-1-arrow-0-1", "kind": "line", "points": [190, 80, 260, 80], "stroke": "#000000", "strokeWidth": 2, "metadata": {"source":"assistant","role":"flow_arrow","chart_id":"flow-1","from":0,"to":1}},
+    // ... next boxes & arrows ...
+  ]
+}
 ```
 
 **Important:** Think step-by-step. Ensure the final output is ONLY the valid `InteractionResponseData` JSON. **Always include the complete, updated `user_model_state`.** Only include `whiteboard_actions` when you intend to draw.
@@ -251,6 +288,17 @@ async def run_executor(ctx: TutorContext, user_input: Optional[str], event_type:
         # TODO: Make max_segments configurable, perhaps from focus objective or KB analysis?
         max_segments = 3 # Hardcoded segment limit as per plan
 
+        # Initialize whiteboard actions list
+        wb_actions: List[Dict[str, Any]] = []
+
+        # --- Clear previous drawings before adding new ones --- 
+        try:
+            clear_actions = await invoke(clear_whiteboard, ctx)
+            wb_actions.extend(clear_actions)
+        except Exception as clear_exc:
+            logger.error(f"Executor: Failed to generate clear whiteboard actions: {clear_exc}")
+            # Continue without clearing if it fails
+
         logger.info(f"Executor handling 'next': Current Segment Index = {current_segment_index}, Max Segments = {max_segments}, Topic = {topic}")
 
         if current_segment_index < max_segments - 1: # More segments to explain
@@ -265,6 +313,21 @@ async def run_executor(ctx: TutorContext, user_input: Optional[str], event_type:
             ctx.user_model_state.current_topic_segment_index = next_segment_index
             is_last = (next_segment_index >= max_segments - 1)
 
+            # --- NEW: Add diagram for the first segment ---
+            if next_segment_index == 0:
+                try:
+                    logger.info(f"Executor: Generating title diagram for topic '{topic}' (segment 0)")
+                    diagram_actions = await invoke(
+                        draw_diagram_actions,
+                        ctx,
+                        topic=topic,
+                        description=f"Introduction diagram for {topic}"
+                    )
+                    wb_actions.extend(diagram_actions) # Append diagram actions
+                except Exception as diag_exc:
+                    logger.error(f"Executor: Failed to generate diagram actions for segment 0: {diag_exc}")
+                    # Do not add actions if diagram generation fails
+
             explanation_payload = ExplanationResponse(
                 response_type="explanation",
                 text=explanation_string,
@@ -275,7 +338,8 @@ async def run_executor(ctx: TutorContext, user_input: Optional[str], event_type:
             response_to_send = InteractionResponseData(
                 content_type="explanation",
                 data=explanation_payload,
-                user_model_state=ctx.user_model_state
+                user_model_state=ctx.user_model_state,
+                whiteboard_actions=wb_actions
             )
             logger.info(f"Executor generated explanation response. Segment {next_segment_index}/{max_segments-1}. Is Last: {is_last}. Status: {STATUS_AWAITING_INPUT}")
             status = STATUS_AWAITING_INPUT
@@ -339,10 +403,24 @@ async def run_executor(ctx: TutorContext, user_input: Optional[str], event_type:
                 # evaluate_quiz should internally get the question from ctx.current_quiz_question
             )
 
+            # --- NEW: Prepare whiteboard feedback actions regardless of later outcomes ---
+            wb_actions: List[Dict[str, Any]] | None = None
+            try:
+                wb_actions = await invoke(
+                    draw_mcq_feedback,
+                    ctx,
+                    question_id="q1",  # Default ID; sync with draw_mcq_actions
+                    option_id=answer_index,
+                    is_correct=feedback.is_correct if feedback else False,
+                )
+            except Exception as wb_exc:
+                logger.error(f"Executor: Error generating whiteboard feedback actions: {wb_exc}")
+                wb_actions = None
+
             if not feedback:
                  logger.error("Executor: evaluate_quiz did not return feedback.")
                  error_payload = ErrorResponse(response_type="error", message="Sorry, I couldn't evaluate your answer.")
-                 response_to_send = InteractionResponseData(content_type="error", data=error_payload, user_model_state=ctx.user_model_state)
+                 response_to_send = InteractionResponseData(content_type="error", data=error_payload, user_model_state=ctx.user_model_state, whiteboard_actions=wb_actions)
                  logger.error(f"Executor evaluate_quiz failed. Status: {STATUS_AWAITING_INPUT}")
                  status = STATUS_AWAITING_INPUT
             else:
@@ -371,18 +449,21 @@ async def run_executor(ctx: TutorContext, user_input: Optional[str], event_type:
                     # Proceed with feedback but log error
                     response_to_send = InteractionResponseData(
                         content_type="feedback",
-                        data=feedback_payload, # Pass the wrapped payload
-                        user_model_state=ctx.user_model_state # Return old state
+                        data=feedback_payload,  # Pass the wrapped payload
+                        user_model_state=ctx.user_model_state,  # Return old state
+                        whiteboard_actions=wb_actions,
                     )
                     logger.error(f"Executor update_user_model failed. Proceeding with feedback. Status: {status}")
                 else:
                      # Ensure the context reflects the updated state returned by the skill
                      ctx.user_model_state = updated_model_state
                      logger.info(f"Executor: User model updated. New mastery for {topic}: {ctx.user_model_state.concepts.get(topic).mastery if ctx.user_model_state.concepts.get(topic) else 'N/A'}")
+                     # --- NEW: Generate whiteboard feedback actions ---
                      response_to_send = InteractionResponseData(
                         content_type="feedback",
-                        data=feedback_payload, # Pass the wrapped payload
-                        user_model_state=ctx.user_model_state # Use updated state
+                        data=feedback_payload,  # Pass the wrapped payload
+                        user_model_state=ctx.user_model_state,  # Use updated state
+                        whiteboard_actions=wb_actions,
                     )
 
                 # Clear the question now that it's answered and evaluated
@@ -464,6 +545,14 @@ async def run_executor(ctx: TutorContext, user_input: Optional[str], event_type:
         logger.error(f"Executor unknown event type. Status: {STATUS_AWAITING_INPUT}")
         status = STATUS_AWAITING_INPUT
 
+    # --- Persist whiteboard actions before returning --- 
+    if hasattr(response_to_send, 'whiteboard_actions') and response_to_send.whiteboard_actions:
+        # Ensure history doesn't grow indefinitely (keep last 50 sets of actions)
+        MAX_HISTORY_LENGTH = 50 
+        ctx.whiteboard_history.append(response_to_send.whiteboard_actions)
+        if len(ctx.whiteboard_history) > MAX_HISTORY_LENGTH:
+            ctx.whiteboard_history = ctx.whiteboard_history[-MAX_HISTORY_LENGTH:]
+            logger.debug(f"Executor: Whiteboard history truncated to last {MAX_HISTORY_LENGTH} entries.")
 
     # Log final decision before returning
     logger.info(f"Executor finished turn. Response Type: {response_to_send.content_type}, Status: {status}")
