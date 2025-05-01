@@ -27,6 +27,7 @@ from ai_tutor.skills.create_quiz import create_quiz
 # Need imports for evaluate_quiz and update_user_model if they exist
 from ai_tutor.skills.evaluate_quiz import evaluate_quiz
 from ai_tutor.skills.update_user_model import update_user_model
+from ai_tutor.skills.draw_mcq import draw_mcq_actions
 
 logger = logging.getLogger(__name__)
 
@@ -90,17 +91,28 @@ Target Mastery: {objective_mastery}
   "content_type": "<type_string>", // E.g., explanation, question, feedback, message, error
   "data": {{ "response_type": "<type_string>", ... }}, // The specific Pydantic model matching content_type. MUST include 'response_type' field inside 'data'.
   "user_model_state": {{ ... }}, // The FULL, LATEST UserModelState object AFTER any updates.
-  "whiteboard_actions": Optional[List[CanvasObjectSpec]] // Optional: Only include if drawing.
+  "whiteboard_actions": Optional[List[CanvasObjectSpec]] // Optional: Only include if you need to draw on the whiteboard.
 }}
 ```
 
-**Whiteboard Actions (Optional):**
-*   If you want to illustrate something visually, include the `whiteboard_actions` key in your JSON response. Otherwise, omit it completely.
-*   The `whiteboard_actions` value MUST be a list of `CanvasObjectSpec` objects.
+**Whiteboard Actions (Optional, but Strongly Encouraged When Helpful):**
+*   If a visual explanation, diagram, or multiple-choice question (MCQ) presentation would help the user, you MUST include the `whiteboard_actions` key in your JSON response. Otherwise, omit this key entirely.
+*   The `whiteboard_actions` value MUST be a list of `CanvasObjectSpec` objects, each describing a shape, text, or group to be drawn.
+*   Use whiteboard actions for:
+    *   Visual explanations (e.g., diagrams of cycles, labeled parts, arrows showing processes)
+    *   MCQ presentations (draw the question, each option as a group with a radio button and label)
+    *   Any time a drawing would clarify or reinforce the concept
+*   Omit `whiteboard_actions` if a drawing would not add value.
+*   **Constraints:**
+    *   Keep drawings simple and clear. Avoid clutter.
+    *   Use unique, descriptive IDs for each object (e.g., "mcq-q1-opt-0-radio").
+    *   Always include correct metadata: `{ "source": "assistant" }` and, for MCQs, add `role`, `question_id`, and `option_id` as appropriate.
+    *   Strictly follow the CanvasObjectSpec format below.
+
 *   `CanvasObjectSpec` Schema (Example):
     ```json
     {{
-      "id": "string", // Required. Unique, simple ID (e.g., "text-1", "rect-0")
+      "id": "string", // Required. Unique, simple ID (e.g., "text-1", "rect-0", "mcq-q1-opt-0-radio")
       "kind": "string", // Required. Type of object (text, rect, circle, line, path, image)
       "x": number, // Required. X coordinate (top-left for rect/text, center for circle)
       "y": number, // Required. Y coordinate
@@ -113,22 +125,63 @@ Target Mastery: {objective_mastery}
       "radius": Optional[number], // For kind='circle'
       "points": Optional[List[number]], // For kind='line' or 'path' (e.g., [x1, y1, x2, y2, ...])
       "fontSize": Optional[number], // For kind='text'
-      "metadata": {{ "source": "assistant" }} // Required metadata
+      "metadata": { "source": "assistant", ... } // Required metadata. For MCQs, add role, question_id, option_id.
     }}
     ```
-*   Instructions for Generating Actions:
-    *   Use whiteboard actions when explaining a concept visually (e.g., the water cycle, components of a cell). Add shapes (circles, rectangles), text labels, and arrows (lines) to illustrate.
-    *   When asking a question, you can optionally add the question text or relevant diagrams to the whiteboard.
-    *   Keep drawings simple and clear. Position elements thoughtfully, avoiding excessive overlap.
-    *   Use unique, simple IDs (e.g., "text-1", "rect-0").
-    *   Always include `metadata: {{ source: 'assistant' }}`.
+
+**Detailed Example: Visual Diagram (Water Cycle)**
+```json
+{
+  "content_type": "explanation",
+  "data": {
+    "response_type": "explanation",
+    "text": "Evaporation is when water turns to vapor and rises.",
+    "topic": "Evaporation",
+    "segment_index": 0,
+    "is_last_segment": false
+  },
+  "user_model_state": { ... },
+  "whiteboard_actions": [
+    { "id": "evap-label-1", "kind": "text", "x": 600, "y": 100, "text": "Evaporation", "fontSize": 18, "metadata": {"source": "assistant", "role": "label"} },
+    { "id": "arrow-up-1", "kind": "line", "points": [650, 150, 650, 130], "stroke": "#000000", "strokeWidth": 2, "metadata": {"source": "assistant", "role": "arrow"} }
+  ]
+}
+```
+
+**Detailed Example: MCQ Presentation**
+```json
+{
+  "content_type": "question",
+  "data": {
+    "response_type": "question",
+    "question": {
+      "question": "What is the primary mechanism by which water returns to the atmosphere in the water cycle?",
+      "options": ["Condensation", "Evaporation", "Precipitation", "Transpiration"],
+      "correct_index": 1
+    },
+    "topic": "Water Cycle"
+  },
+  "user_model_state": { ... },
+  "whiteboard_actions": [
+    { "id": "mcq-q1-text", "kind": "text", "x": 50, "y": 50, "text": "What is the primary mechanism by which water returns to the atmosphere in the water cycle?", "fontSize": 18, "width": 700, "metadata": {"source": "assistant", "role": "question", "question_id": "q1"} },
+    { "id": "mcq-q1-opt-0-radio", "kind": "circle", "x": 70, "y": 108, "radius": 8, "stroke": "#555555", "strokeWidth": 1, "fill": "#FFFFFF", "metadata": {"source": "assistant", "role": "option_selector", "question_id": "q1", "option_id": 0} },
+    { "id": "mcq-q1-opt-0-text", "kind": "text", "x": 95, "y": 108, "text": "A. Condensation", "fontSize": 16, "fill": "#333333", "metadata": {"source": "assistant", "role": "option_label", "question_id": "q1", "option_id": 0} },
+    { "id": "mcq-q1-opt-1-radio", "kind": "circle", "x": 70, "y": 148, "radius": 8, "stroke": "#555555", "strokeWidth": 1, "fill": "#FFFFFF", "metadata": {"source": "assistant", "role": "option_selector", "question_id": "q1", "option_id": 1} },
+    { "id": "mcq-q1-opt-1-text", "kind": "text", "x": 95, "y": 148, "text": "B. Evaporation", "fontSize": 16, "fill": "#333333", "metadata": {"source": "assistant", "role": "option_label", "question_id": "q1", "option_id": 1} },
+    { "id": "mcq-q1-opt-2-radio", "kind": "circle", "x": 70, "y": 188, "radius": 8, "stroke": "#555555", "strokeWidth": 1, "fill": "#FFFFFF", "metadata": {"source": "assistant", "role": "option_selector", "question_id": "q1", "option_id": 2} },
+    { "id": "mcq-q1-opt-2-text", "kind": "text", "x": 95, "y": 188, "text": "C. Precipitation", "fontSize": 16, "fill": "#333333", "metadata": {"source": "assistant", "role": "option_label", "question_id": "q1", "option_id": 2} },
+    { "id": "mcq-q1-opt-3-radio", "kind": "circle", "x": 70, "y": 228, "radius": 8, "stroke": "#555555", "strokeWidth": 1, "fill": "#FFFFFF", "metadata": {"source": "assistant", "role": "option_selector", "question_id": "q1", "option_id": 3} },
+    { "id": "mcq-q1-opt-3-text", "kind": "text", "x": 95, "y": 228, "text": "D. Transpiration", "fontSize": 16, "fill": "#333333", "metadata": {"source": "assistant", "role": "option_label", "question_id": "q1", "option_id": 3} }
+  ]
+}
+```
 
 **Workflow Logic:**
-*   If explaining, use `explain_concept`. Generate `ExplanationResponse` in `data`. Maybe include `whiteboard_actions`. Increment `current_topic_segment_index` in `user_model_state`.
+*   If explaining, use `explain_concept`. Generate `ExplanationResponse` in `data`. You *might* include `whiteboard_actions` if a visual helps. Increment `current_topic_segment_index` in `user_model_state`.
 *   **Handling 'Next':** If user wants to proceed, check `current_topic_segment_index`. If more segments exist, call `explain_concept`. Otherwise, call `create_quiz`.
-*   If asking a question, use `create_quiz`. Generate `QuestionResponse` in `data`. Store the question in `TutorContext.current_quiz_question`. Reset `current_topic_segment_index` in `user_model_state`. Maybe include `whiteboard_actions`.
-*   If evaluating an answer, use `evaluate_quiz`, then `update_user_model`. Generate `FeedbackResponse` (containing `QuizFeedbackItem`) in `data`.
-*   If user asks a question/clarification, use `explain_concept` or generate `MessageResponse` in `data`. Use `update_user_model` if appropriate.
+*   If asking a question, use `create_quiz`. Generate `QuestionResponse` in `data`. Store the question in `TutorContext.current_quiz_question`. Reset `current_topic_segment_index` in `user_model_state`. You *might* include `whiteboard_actions` if it helps illustrate the question.
+*   If evaluating an answer, use `evaluate_quiz`, then `update_user_model`. Generate `FeedbackResponse` (containing `QuizFeedbackItem`) in `data`. Generally, no whiteboard actions needed here.
+*   If user asks a question/clarification, use `explain_concept` or generate `MessageResponse` in `data`. Use `update_user_model` if appropriate. You *might* include `whiteboard_actions` for the explanation.
 *   Check for `objective_complete` after `update_user_model`. If met, you might inform the user with a `MessageResponse`.
 
 **Example Response with Whiteboard Actions:**
@@ -245,9 +298,8 @@ async def run_executor(ctx: TutorContext, user_input: Optional[str], event_type:
             else:
                 logger.info(f"Executor: Storing quiz question in context: {quiz_question.question[:50]}...")
                 ctx.current_quiz_question = quiz_question
-                # Reset segment index as we are moving to quiz phase for this topic part
-                # ctx.user_model_state.current_topic_segment_index = 0  # Resetting here might be premature; revisit later
-
+                # Draw MCQ actions
+                actions = await invoke(draw_mcq_actions, ctx, question=quiz_question)
                 question_payload = QuestionResponse(
                     response_type="question",
                     question=quiz_question,
@@ -256,7 +308,8 @@ async def run_executor(ctx: TutorContext, user_input: Optional[str], event_type:
                 response_to_send = InteractionResponseData(
                     content_type="question",
                     data=question_payload,
-                    user_model_state=ctx.user_model_state
+                    user_model_state=ctx.user_model_state,
+                    whiteboard_actions=actions
                 )
                 logger.info(f"Executor generated question response. Status: {STATUS_AWAITING_INPUT}")
                 status = STATUS_AWAITING_INPUT
@@ -352,39 +405,57 @@ async def run_executor(ctx: TutorContext, user_input: Optional[str], event_type:
 
 
     elif event_type == 'user_message':
-        # Simplified initial logic for user messages
-        # TODO: Add more sophisticated analysis (LLM call? Keywords?) to determine intent
         logger.info(f"Executor handling 'user_message': '{user_input}'")
-        # TODO: Determine if calling explain_concept is always the right action here.
-        # Maybe a different skill (e.g., handle_user_query) or direct LLM call is needed.
-        # For now, we get a text response (as an explanation) but wrap it as a 'message'.
-        # Decide on the topic - maybe use the current focus or a default?
+        # Determine topic reference (fallback if no focus)
         topic = ctx.current_focus_objective.topic if ctx.current_focus_objective else "General Chat"
-        # If we still call explain_concept, get the response string:
-        logger.info(f"Executor: Generating response text for user message about topic '{topic}'.")
-        response_text = await invoke(
-            explain_concept, # Or potentially a different skill for chat-like responses
-            ctx,
-            topic=topic,
-            details=f"Respond conversationally to the user message: '{user_input}' regarding {topic}."
-        )
-        # Update context segment index if needed, or maybe not for general messages?
-        # ctx.user_model_state.current_topic_segment_index = current_segment_index # Let's keep it simple for now
+        user_lower = (user_input or "").lower()
+        wants_quiz = any(k in user_lower for k in ["quiz", "question", "test", "mcq"])
+        wants_explain = any(k in user_lower for k in ["explain", "clarify", "help"])
 
-        # --- Create MessageResponse Payload ---
-        message_payload = MessageResponse(
-            response_type="message",
-            text=response_text if response_text else "Got it.", # Fallback text
-            # message_type="info" # Optional: Add message_type if needed by frontend
-        )
-        # --- Wrap in InteractionResponseData with content_type='message' ---
-        response_to_send = InteractionResponseData(
-            content_type="message", # Changed from 'explanation'
-            data=message_payload,  # Use the MessageResponse payload
-            user_model_state=ctx.user_model_state # State might not change here unless we add update_user_model
-        )
-        logger.info(f"Executor generated message response for user message. Status: {STATUS_AWAITING_INPUT}")
-        status = STATUS_AWAITING_INPUT
+        if wants_quiz:
+            # --- User explicitly asked for a question --- #
+            logger.info("Executor: Detected request for quiz question. Calling create_quiz.")
+            quiz_question = await invoke(
+                create_quiz,
+                ctx,
+                topic=topic,
+                instructions=f"Generate a short multiple-choice question about {topic} that checks understanding of the main idea."
+            )
+            if not isinstance(quiz_question, QuizQuestion):
+                logger.error("Executor: create_quiz did NOT return a valid QuizQuestion object when requested by user.")
+                error_payload = ErrorResponse(response_type="error", message="Failed to create a quiz question.")
+                response_to_send = InteractionResponseData(content_type="error", data=error_payload, user_model_state=ctx.user_model_state)
+                status = STATUS_AWAITING_INPUT
+            else:
+                logger.info("Executor: Successfully generated quiz via user request. Creating whiteboard actions.")
+                actions = await invoke(draw_mcq_actions, ctx, question=quiz_question)
+                ctx.current_quiz_question = quiz_question
+                question_payload = QuestionResponse(response_type="question", question=quiz_question, topic=topic)
+                response_to_send = InteractionResponseData(
+                    content_type="question",
+                    data=question_payload,
+                    user_model_state=ctx.user_model_state,
+                    whiteboard_actions=actions
+                )
+                status = STATUS_AWAITING_INPUT
+        else:
+            # Existing behaviour: explanation or dialogue
+            if wants_explain:
+                logger.info("Executor: Detected clarification request. Using explain_concept.")
+                skill_details = f"Provide a concise clarification regarding: '{user_input}'."
+            else:
+                logger.info("Executor: Treating as general dialogue/explanation.")
+                skill_details = f"Respond conversationally to the user message: '{user_input}' regarding {topic}."
+
+            response_text = await invoke(
+                explain_concept,
+                ctx,
+                topic=topic,
+                details=skill_details
+            )
+            message_payload = MessageResponse(response_type="message", text=response_text or "Got it.")
+            response_to_send = InteractionResponseData(content_type="message", data=message_payload, user_model_state=ctx.user_model_state)
+            status = STATUS_AWAITING_INPUT
 
     else:
         logger.error(f"Executor received unknown event_type: '{event_type}'")

@@ -355,46 +355,49 @@ async def tutor_stream(
 
                     # --- Planner Logic --- #
                     if not planner_run_complete and (event_type == 'start' or event_type == 'user_message'):
-                        log.info("WebSocket: First interaction or new message before objective, running Planner.")
-                        try:
-                            planner_objective = await determine_session_focus(ctx)
-                            ctx.current_focus_objective = planner_objective
-                            log.info("WebSocket: Planner successful, objective stored in context.")
-                            save_context_needed = True # Save context after planner
-                            planner_run_complete = True
+                        log.info(f"WebSocket: Planning needed. Checking focus objective: {ctx.current_focus_objective}")
+                        if not ctx.current_focus_objective:
+                            log.info("WebSocket: No focus objective found, proceeding to call determine_session_focus.")
+                            try:
+                                log.info("WebSocket: >>> Calling determine_session_focus...")
+                                planner_objective = await determine_session_focus(ctx)
+                                log.info(f"WebSocket: <<< determine_session_focus returned: {planner_objective}")
+                                ctx.current_focus_objective = planner_objective
+                                log.info("WebSocket: Planner successful, objective stored in context.")
+                                save_context_needed = True # Save context after planner
+                                planner_run_complete = True
 
-                            # --- Send Initial Message (if it was a user message triggering the planner) ---
-                            # If the planner was triggered by 'start', we might wait for the first user message
-                            # If triggered by user message, we might respond immediately or let executor handle it
-                            if event_type == 'user_message':
-                                log.info("Planner ran due to user message. Letting Executor handle the first response.")
-                                # Let the flow continue to the executor block below
-                            elif event_type == 'start':
-                                 # Maybe send a generic greeting after planner?
-                                 initial_msg_payload = MessageResponse(
-                                     response_type="message",
-                                     text="Okay, I've analyzed the materials and have a focus in mind. Let me know when you're ready to begin!"
-                                 )
+                                # --- Send Initial Message (if it was a user message triggering the planner) ---
+                                if event_type == 'user_message':
+                                    log.info("Planner ran due to user message. Invoking Executor immediately for first response.")
+                                    try:
+                                        executor_result_data, status_from_executor = await run_executor(
+                                            ctx,
+                                            user_input_text,  # Pass along the same user input that triggered planner
+                                            event_type,
+                                            event_data,
+                                        )
+                                        log.info(f"WebSocket: Executor (post-planner) returned -> Response Type='{executor_result_data.content_type}', Status='{status_from_executor}'")
+                                        response_to_send = executor_result_data
+                                        save_context_needed = True  # Context likely updated by executor
+                                    except ExecutorError as executor_custom_err:
+                                        log.error(f"WebSocket: Executor failed with ExecutorError after planner: {executor_custom_err}", exc_info=True)
+                                        await send_error_response(ws, "Failed to process your request after planning.", "EXECUTOR_ERROR", details=f"Executor error: {executor_custom_err}", state=ctx.user_model_state)
+                                    except Exception as executor_err:
+                                        log.error(f"WebSocket: Executor failed with unexpected Exception after planner: {executor_err}", exc_info=True)
+                                        await send_error_response(ws, "Failed to process your request after planning.", "EXECUTOR_ERROR", details=f"Unexpected Executor error: {type(executor_err).__name__}", state=ctx.user_model_state)
+                                    # Continue to normal flow – response will be handled below
 
-                                 response_to_send = InteractionResponseData(
-                                     content_type="message",
-                                     data=initial_msg_payload,
-                                     user_model_state=ctx.user_model_state,
-                                 )
-                                 status_from_executor = "awaiting_user_input"  # Set status explicitly
-                                 log.info("WebSocket: Sending initial message after planner (start event).")
-                                 # Response will be sent later
-
-                        except Exception as planner_err:
-                             log.error(f"WebSocket: Planner failed: {planner_err}", exc_info=True)
-                             await send_error_response(ws, "Failed to plan the session.", "PLANNER_ERROR", details=f"Planner error: {type(planner_err).__name__}: {planner_err}", state=ctx.user_model_state)
-                             continue # Skip to next message if planner fails
+                            except Exception as planner_err:
+                                 log.error(f"WebSocket: Planner failed: {planner_err}", exc_info=True)
+                                 await send_error_response(ws, "Failed to plan the session.", "PLANNER_ERROR", details=f"Planner error: {type(planner_err).__name__}: {planner_err}", state=ctx.user_model_state)
+                                 continue # Skip to next message if planner fails
+                        else:
+                             log.info("WebSocket: Planner NOT run because context already has a focus objective.")
+                             planner_run_complete = True # Ensure flag is set if objective exists
 
                     # --- Executor Logic --- # 
-                    # This block runs if:
-                    # 1. Planner just completed (and didn't set a response_to_send for 'start' event)
-                    # 2. Planner was already complete and we received 'user_message', 'next', or 'answer'
-                    if not response_to_send: # Only run executor if planner didn't already prepare a response
+                    elif not response_to_send: # Only run executor if planner didn't already prepare a response
                         if not planner_run_complete:
                             log.warning(f"WebSocket: Executor logic reached but planner hasn't run. Event: {event_type}. This shouldn't happen if planner handles 'start'/'user_message' first.")
                             await send_error_response(ws, "Cannot process yet, session not initialized.", "STATE_ERROR", state=ctx.user_model_state if ctx else None)
@@ -441,9 +444,116 @@ async def tutor_stream(
                              await send_error_response(ws, f"Failed to process your request ('{event_type}').", "EXECUTOR_ERROR", details=f"Unexpected Executor error: {type(executor_err).__name__}", state=current_state)
                              continue # Continue loop
 
-                    # --- Save Context (Always save after successful processing leading to a response) --- #
-                    # Note: Markdown says "Save context after EVERY executor turn". Let's ensure it runs if response_to_send exists.
-                    if save_context_needed and response_to_send: # Ensure we only save if processing was potentially successful 
+                    # --- Whiteboard Event Logic --- #
+                    elif event_type == 'whiteboard_event':
+                        event_data = payload.get('data', {})
+                        if event_data.get('event_type') == 'option_selected':
+                            question_id = event_data.get('question_id')
+                            option_id = event_data.get('option_id')
+                            # For now, assume option_id is an integer index (or extract index from id like 'q1-opt2')
+                            try:
+                                # Try to parse option_id as int, else extract trailing digits
+                                if isinstance(option_id, int):
+                                    answer_index = option_id
+                                else:
+                                    # e.g., 'q1-opt2' -> 2
+                                    import re
+                                    match = re.search(r'(\d+)$', str(option_id))
+                                    answer_index = int(match.group(1)) if match else None
+                                if answer_index is None:
+                                    raise ValueError(f"Could not determine answer_index from option_id: {option_id}")
+                            except Exception as e:
+                                log.error(f"Failed to extract answer_index from option_id '{option_id}': {e}")
+                                await send_error_response(ws, "Invalid option selected.", "INVALID_OPTION_ID", state=ctx.user_model_state)
+                                continue
+
+                            # Retrieve the relevant QuizQuestion (assume only one active for now)
+                            quiz_question = getattr(ctx, 'current_quiz_question', None)
+                            if not quiz_question:
+                                log.error("No current_quiz_question in context for whiteboard option selection.")
+                                await send_error_response(ws, "No active question to answer.", "NO_ACTIVE_QUESTION", state=ctx.user_model_state)
+                                continue
+
+                            # Evaluate the answer
+                            try:
+                                # Import the skill here or ensure it's imported at the top
+                                from ai_tutor.skills.evaluate_quiz import evaluate_quiz
+                                from ai_tutor.skills.update_user_model import update_user_model
+                                from ai_tutor.utils.tool_helpers import invoke # Ensure invoke is available
+
+                                feedback = await invoke(
+                                    evaluate_quiz,
+                                    ctx,
+                                    user_answer_index=answer_index
+                                )
+                            except Exception as eval_err:
+                                log.error(f"Error during evaluate_quiz: {eval_err}")
+                                await send_error_response(ws, "Failed to evaluate answer.", "EVAL_ERROR", state=ctx.user_model_state)
+                                continue
+
+                            # Update user model
+                            try:
+                                outcome = 'correct' if getattr(feedback, 'is_correct', False) else 'incorrect'
+                                updated_model_state = await invoke(
+                                    update_user_model,
+                                    ctx,
+                                    topic=quiz_question.topic if hasattr(quiz_question, 'topic') else "",
+                                    outcome=outcome,
+                                    details=f"Answered question via whiteboard. Correct: {getattr(feedback, 'is_correct', False)}."
+                                )
+                                if updated_model_state:
+                                    ctx.user_model_state = updated_model_state
+                            except Exception as upd_err:
+                                log.error(f"Error during update_user_model: {upd_err}")
+                                await send_error_response(ws, "Failed to update user model.", "USER_MODEL_UPDATE_ERROR", state=ctx.user_model_state)
+                                continue
+
+                            # Build FeedbackResponse
+                            from ai_tutor.api_models import FeedbackResponse, InteractionResponseData
+                            feedback_payload = FeedbackResponse(
+                                response_type="feedback",
+                                item=feedback
+                            )
+
+                            # --- Whiteboard Action: Visually update selected option --- #
+                            radio_id = f"mcq-{question_id}-opt-{answer_index}-radio"
+                            whiteboard_actions = [
+                                {
+                                    "id": radio_id,
+                                    "kind": "circle",
+                                    "fill": "#4CAF50" if getattr(feedback, 'is_correct', False) else "#F44336",
+                                    "stroke": "#222222",
+                                    "strokeWidth": 2,
+                                    "metadata": {
+                                        "source": "assistant",
+                                        "role": "option_selector_feedback",
+                                        "question_id": question_id,
+                                        "option_id": answer_index
+                                    }
+                                }
+                            ]
+
+                            # Build and send the response
+                            response = InteractionResponseData(
+                                content_type="feedback",
+                                data=feedback_payload,
+                                user_model_state=ctx.user_model_state,
+                            )
+                            response_dict = response.model_dump(mode='json')
+                            response_dict["whiteboard_actions"] = whiteboard_actions
+                            await safe_send_json(ws, response_dict, "Whiteboard Option Feedback")
+
+                            # Clear the current_quiz_question after answer
+                            ctx.current_quiz_question = None
+                            # Save context
+                            try:
+                                await session_manager.update_session_context(supabase, session_id, user.id, ctx)
+                            except Exception as save_err:
+                                log.error(f"Error saving context after whiteboard_event: {save_err}")
+                            continue # Continue to next message after handling whiteboard event
+
+                    # --- Save Context (If needed and response generated outside whiteboard event) --- #
+                    if save_context_needed and response_to_send:
                         try:
                             log.info("WebSocket: Attempting to save context after processing.")
                             # Ensure we pass the *potentially modified* ctx from executor
@@ -459,8 +569,7 @@ async def tutor_stream(
                              # Let's log for now, as the main response might still be useful.
                              # await send_error_response(ws, "Failed to save session progress.", "CONTEXT_SAVE_FAILED", details=f"Database error: {type(save_err).__name__}", state=ctx.user_model_state)
 
-                    # --- Send Response & Handle Status --- #
-                    # Moved agent logging to *after* successful execution
+                    # --- Send Response & Handle Status (If response generated outside whiteboard event) --- #
                     if response_to_send and status_from_executor:
                         log.info(f"WebSocket: Sending {response_to_send.content_type} response... Status: {status_from_executor}")
                         response_dict = response_to_send.model_dump(mode='json')

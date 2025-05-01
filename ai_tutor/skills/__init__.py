@@ -88,4 +88,7 @@ def auto_import_skills():
                 logger.error(f"Unexpected error importing '{full_module_path}': {e}", exc_info=True)
     logger.debug(f"Finished auto-importing skills. Registry size: {len(_REGISTRY)}")
 
-auto_import_skills() 
+auto_import_skills()
+
+from .draw_diagram import draw_diagram_actions
+from .draw_mcq import draw_mcq_actions 
