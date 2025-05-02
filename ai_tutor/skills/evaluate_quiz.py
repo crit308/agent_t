@@ -4,19 +4,15 @@ from ai_tutor.skills import skill # Import correct decorator
 from ai_tutor.context import TutorContext
 from agents.run_context import RunContextWrapper
 from ai_tutor.agents.models import QuizQuestion, QuizFeedbackItem # Import models
+from ai_tutor.api_models import FeedbackResponse # Import FeedbackResponse
 from ai_tutor.errors import ToolExecutionError # Import custom error
 import logging
 
 logger = logging.getLogger(__name__)
 
 @skill
-async def evaluate_quiz(ctx: RunContextWrapper[TutorContext], user_answer_index: int) -> QuizFeedbackItem:
-    """Evaluates the user's answer against the current QuizQuestion stored in context.
-    
-    Reads `ctx.current_quiz_question`, compares the answer, constructs
-    a QuizFeedbackItem, clears `ctx.current_quiz_question`, and returns
-    the feedback item.
-    """
+async def evaluate_quiz(ctx: RunContextWrapper[TutorContext], user_answer_index: int) -> FeedbackResponse:
+    """Evaluates the user's answer against the current QuizQuestion stored in context and generates whiteboard actions for feedback."""
     logger.info(f"Evaluating quiz answer. User selected index: {user_answer_index}")
     
     # Access the underlying TutorContext via the .context attribute of the wrapper
@@ -49,6 +45,40 @@ async def evaluate_quiz(ctx: RunContextWrapper[TutorContext], user_answer_index:
             improvement_suggestion="Consider reviewing the explanation and related concepts." if not is_correct else "Great job!"
         )
         
+        # Generate whiteboard actions for feedback
+        radio_id = f"mcq-q1-opt-{user_answer_index}-radio"
+        check_id = f"mcq-q1-opt-{user_answer_index}-check"
+        whiteboard_actions = [
+            {
+                "id": radio_id,
+                "kind": "circle",
+                "fill": "#4CAF50" if is_correct else "#F44336",
+                "stroke": "#222222",
+                "strokeWidth": 2,
+                "metadata": {
+                    "source": "assistant",
+                    "role": "option_selector_feedback",
+                    "question_id": "q1",
+                    "option_id": user_answer_index
+                }
+            },
+            {
+                "id": check_id,
+                "kind": "text",
+                "x": 0,  # Let FE auto-layout or you can set coordinates if you have them
+                "y": 0,
+                "text": "✓" if is_correct else "✗",
+                "fontSize": 18,
+                "fill": "#4CAF50" if is_correct else "#F44336",
+                "metadata": {
+                    "source": "assistant",
+                    "role": "option_feedback_mark",
+                    "question_id": "q1",
+                    "option_id": user_answer_index
+                }
+            }
+        ]
+        
         # Clear the question from context *after* successful evaluation
         if ctx.context.user_model_state:
             # Access the underlying context via the .context attribute
@@ -57,7 +87,15 @@ async def evaluate_quiz(ctx: RunContextWrapper[TutorContext], user_answer_index:
         logger.info("Cleared current_quiz_question from context.")
 
         logger.info(f"Quiz evaluation complete. Correct: {feedback.is_correct}")
-        return feedback
+        # Build FeedbackResponse payload
+        payload = FeedbackResponse(
+            feedback_items=[feedback],
+            overall_assessment=None,
+            suggested_next_step=None
+        )
+        # Attach whiteboard_actions as a non-model attribute for the executor to pick up
+        setattr(payload, 'whiteboard_actions', whiteboard_actions)
+        return payload
 
     except Exception as e:
         logger.error(f"Error during quiz evaluation: {e}", exc_info=True)

@@ -32,51 +32,15 @@ def _custom_json_encoder_default(self, obj):
 json.JSONEncoder.default = _custom_json_encoder_default
 
 from pydantic import BaseModel, ConfigDict
-from datetime import datetime # Keep datetime import for conversion if needed
 from pydantic import Field
+
+# Import the moved models
+from ai_tutor.core_models import UserModelState, UserConceptMastery # <--- IMPORT FROM core_models
 
 # Use TYPE_CHECKING to prevent runtime circular imports for type hints
 if TYPE_CHECKING:
     from ai_tutor.agents.models import LessonPlan, QuizQuestion, LearningObjective, FocusObjective
     from ai_tutor.agents.analyzer_agent import AnalysisResult
-
-class UserConceptMastery(BaseModel):
-    """Tracks user's mastery of a specific concept using a Bayesian alpha/beta model."""
-    alpha: int = 1
-    beta: int = 1
-    # Add more detail on outcomes
-    last_interaction_outcome: Optional[str] = None # e.g., 'correct', 'incorrect', 'asked_question'
-    attempts: int = 0
-    # Add tracking for specific struggles
-    confusion_points: List[str] = Field(default_factory=list, description="Specific points user struggled with on this topic")
-    # Change datetime to string to avoid schema validation issues with optional format
-    last_accessed: Optional[str] = Field(None, description="ISO 8601 timestamp of when the concept was last accessed")
-
-    @property
-    def mastery(self) -> float:
-        """Posterior mean mastery probability."""
-        return self.alpha / (self.alpha + self.beta)
-
-    @property
-    def confidence(self) -> int:
-        """Total number of observations (alpha+beta)."""
-        return self.alpha + self.beta
-
-class UserModelState(BaseModel):
-    """Represents the AI's understanding of the user's knowledge state and preferences."""
-    concepts: Dict[str, UserConceptMastery] = Field(default_factory=dict)
-    overall_progress: float = 0.0 # e.g., percentage of lesson plan covered
-    current_topic: Optional[str] = None
-    current_topic_segment_index: int = 0 # Tracks progress within the *current topic's* explanation
-    # Add fields for personalization
-    learning_pace_factor: float = 1.0 # Controls pacing adjustment (e.g., >1 faster, <1 slower)
-    preferred_interaction_style: Optional[Literal['explanatory', 'quiz_heavy', 'socratic']] = None # Can be set or inferred
-    session_summary_notes: List[str] = Field(default_factory=list) # High-level notes about session progress/user behavior
-    # Add fields for tracking interaction state
-    current_section_objectives: List['LearningObjective'] = Field(default_factory=list, description="Learning objectives for the currently active section.") # Use forward reference
-    mastered_objectives_current_section: List[str] = Field(default_factory=list, description="Titles of objectives mastered in the current section.")
-    pending_interaction_type: Optional[Literal['checking_question', 'summary_prompt']] = None
-    pending_interaction_details: Optional[Dict[str, Any]] = None # e.g., {'question_text': '...', 'interaction_id': 'xyz'}
 
 class TutorContext(BaseModel):
     """Context object for an AI Tutor session."""

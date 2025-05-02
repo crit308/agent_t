@@ -82,13 +82,13 @@ Target Mastery: {objective_mastery}
 1.  Read the User's Last Message (if any): "{user_message}"
 2.  Analyze the current objective, user state, and user message.
 3.  Decide the best next pedagogical step. Choose ONE appropriate skill to call (or respond directly if needed):
-    *   `explain_concept(topic: str, details: str)`: To explain a new part of the topic or clarify something. Break explanations into manageable segments. Use `current_topic_segment_index` from context if continuing an explanation.
-    *   `create_quiz(topic: str, instructions: str)`: To create a single multiple-choice question to check understanding.
-    *   `evaluate_quiz(user_answer_index: int)`: To evaluate the user's answer to the *most recently asked question*.
+    *   `explain_concept(topic: str, details: str)`: To explain a new part of the topic or clarify something. This skill may itself return whiteboard_actions for diagrams or labels.
+    *   `create_quiz(topic: str, instructions: str)`: To create a single multiple-choice question to check understanding. This skill may itself return whiteboard_actions to visually present the MCQ.
+    *   `evaluate_quiz(user_answer_index: int)`: To evaluate the user's answer to the *most recently asked question*. This skill may itself return whiteboard_actions for feedback.
     *   `remediate_concept(topic: str, remediation_details: str)`: To provide targeted help if the user is struggling.
     *   `update_user_model(topic: str, outcome: str, details: Optional[str] = None)`: Call this *after* evaluating an answer or determining understanding/struggle. Use outcomes like 'correct', 'incorrect', 'unsure', 'clarification_needed'.
-    *   `draw_text(id: str, text: str, x?: int, y?: int, fontSize?: int, width?: int, color_token?: str)`: Draw a textbox at (x,y). Coordinates optional – system will auto-layout if omitted.
-    *   `draw_shape(id: str, kind: "rect"|"circle"|"arrow", x?: int, y?: int, w?: int, h?: int, radius?: int, points?: List[Dict], label?: str, color_token?: str)`: Draw a basic shape.
+    *   `draw_text(id: str, text: str, x?: int, y?: int, fontSize?: int, width?: int, color_token?: str)`: Draw a textbox at (x,y). You can call this directly to add a label or annotation.
+    *   `draw_shape(id: str, kind: "rect"|"circle"|"arrow", x?: int, y?: int, w?: int, h?: int, radius?: int, points?: List[Dict], label?: str, color_token?: str)`: Draw a basic shape. You can call this directly for visual emphasis or to illustrate a concept.
     *   `style_token(token: "default"|"primary"|"accent"|"muted"|"success"|"error")`: Resolve a semantic colour token to a hex colour string.
     *   `clear_board()`: Clear previous assistant drawings.
     *   `draw_diagram_actions(topic: str, description: str)`: Produce a simple diagram when helpful.
@@ -121,7 +121,7 @@ Target Mastery: {objective_mastery}
 *   **Constraints:**
     *   Keep drawings simple and clear. Avoid clutter.
     *   Use unique, descriptive IDs for each object (e.g., "mcq-q1-opt-0-radio").
-    *   Always include correct metadata: `{ "source": "assistant" }` and, for MCQs, add `role`, `question_id`, and `option_id` as appropriate.
+    *   Always include correct metadata: `{ "source": "assistant" }` and, for MCQs, add role, question_id, and option_id as appropriate.
     *   Strictly follow the CanvasObjectSpec format below.
 
 *   `CanvasObjectSpec` Schema (Example):
@@ -259,314 +259,83 @@ def _get_user_model_state_summary(user_model_state: Optional[UserModelState]) ->
 STATUS_AWAITING_INPUT = "awaiting_user_input"
 STATUS_OBJECTIVE_COMPLETE = "objective_complete"
 
-async def run_executor(ctx: TutorContext, user_input: Optional[str], event_type: str, event_data: Optional[Dict] = None) -> Tuple[InteractionResponseData, str]:
+async def run_executor(ctx: TutorContext, user_input: Optional[str], event_type: str, event_data: Optional[Dict] = None) -> Tuple[dict, str]:
     """
-    Runs the Executor Agent logic for one turn based on the event type.
-
-    Args:
-        ctx: The current TutorContext, potentially modified by this function.
-        user_input: The user's message from the frontend (for 'user_message').
-        event_type: The type of event ('user_message', 'next', 'answer').
-        event_data: Additional data associated with the event (e.g., {'answer_index': X} for 'answer').
-
-    Returns:
-        A tuple containing:
-            - An InteractionResponseData object with the AI's response and updated state.
-            - A status string ('awaiting_user_input' or 'objective_complete').
+    Refactored Executor: Uses LLM to select next skill, its parameters, and status.
+    Returns a dict: {"skill_name": ..., "skill_params": {...}, "status": ...}
     """
-    logger.info(f"Executor running for session {ctx.session_id}. Event Type: '{event_type}', User input: '{user_input}', Event Data: {event_data}")
+    logger.info(f"[LLM-Driven Executor] Running for session {ctx.session_id}. Event Type: '{event_type}', User input: '{user_input}', Event Data: {event_data}")
 
     if not ctx.current_focus_objective or not ctx.current_focus_objective.topic:
         logger.error(f"Executor run failed: Missing or invalid focus objective in context for session {ctx.session_id}.")
-        # Return an ErrorResponse and keep awaiting input
-        error_payload = ErrorResponse(response_type="error", message="Cannot proceed without a valid focus objective.")
-        interaction_response = InteractionResponseData(content_type="error", data=error_payload, user_model_state=ctx.user_model_state)
-        logger.info(f"Executor returning early due to missing objective. Status: {STATUS_AWAITING_INPUT}")
-        return interaction_response, STATUS_AWAITING_INPUT # Return status
+        return {"skill_name": None, "skill_params": {}, "status": "awaiting_user_input", "error": "No focus objective."}, "awaiting_user_input"
 
-    topic = ctx.current_focus_objective.topic
-    response_to_send: InteractionResponseData
-    status: str = STATUS_AWAITING_INPUT # Default status
+    # Prepare context for LLM
+    user_model_state_summary = _get_user_model_state_summary(ctx.user_model_state)
+    objective = ctx.current_focus_objective
+    system_prompt = f"""
+You are an AI Tutor Executor. Your job is to decide the next pedagogical action by selecting a skill and its parameters.
 
-    # --- Event Type Handling ---
-    if event_type == 'next':
-        # Logic moved from the old "[NEXT]" handling
-        current_segment_index = ctx.user_model_state.current_topic_segment_index
-        # TODO: Make max_segments configurable, perhaps from focus objective or KB analysis?
-        max_segments = 3 # Hardcoded segment limit as per plan
+Current Focus Objective:
+- Topic: {objective.topic}
+- Learning Goal: {objective.learning_goal}
+- Target Mastery: {objective.target_mastery}
 
-        # Initialize whiteboard actions list
-        wb_actions: List[Dict[str, Any]] = []
+Current User State:
+{user_model_state_summary}
 
-        # --- Clear previous drawings before adding new ones --- 
-        try:
-            clear_actions = await invoke(clear_whiteboard, ctx)
-            wb_actions.extend(clear_actions)
-        except Exception as clear_exc:
-            logger.error(f"Executor: Failed to generate clear whiteboard actions: {clear_exc}")
-            # Continue without clearing if it fails
+User's Last Message: {user_input or ''}
 
-        logger.info(f"Executor handling 'next': Current Segment Index = {current_segment_index}, Max Segments = {max_segments}, Topic = {topic}")
+Event Type: {event_type}
+Event Data: {event_data or {}}
 
-        if current_segment_index < max_segments - 1: # More segments to explain
-            next_segment_index = current_segment_index + 1
-            logger.info(f"Executor: Calling explain_concept for segment {next_segment_index}")
-            explanation_string = await invoke(
-                explain_concept,
-                ctx,
-                topic=topic,
-                details=f"Provide explanation segment {next_segment_index} for {topic} based on learning goal: {ctx.current_focus_objective.learning_goal}."
-            )
-            ctx.user_model_state.current_topic_segment_index = next_segment_index
-            is_last = (next_segment_index >= max_segments - 1)
-
-            # --- NEW: Add diagram for the first segment ---
-            if next_segment_index == 0:
-                try:
-                    logger.info(f"Executor: Generating title diagram for topic '{topic}' (segment 0)")
-                    diagram_actions = await invoke(
-                        draw_diagram_actions,
-                        ctx,
-                        topic=topic,
-                        description=f"Introduction diagram for {topic}"
-                    )
-                    wb_actions.extend(diagram_actions) # Append diagram actions
-                except Exception as diag_exc:
-                    logger.error(f"Executor: Failed to generate diagram actions for segment 0: {diag_exc}")
-                    # Do not add actions if diagram generation fails
-
-            explanation_payload = ExplanationResponse(
-                response_type="explanation",
-                text=explanation_string,
-                topic=topic,
-                segment_index=next_segment_index,
-                is_last_segment=is_last
-            )
-            response_to_send = InteractionResponseData(
-                content_type="explanation",
-                data=explanation_payload,
-                user_model_state=ctx.user_model_state,
-                whiteboard_actions=wb_actions
-            )
-            logger.info(f"Executor generated explanation response. Segment {next_segment_index}/{max_segments-1}. Is Last: {is_last}. Status: {STATUS_AWAITING_INPUT}")
-            status = STATUS_AWAITING_INPUT
-
-        else: # Last segment explained, move to quiz
-            logger.info("Executor: Calling create_quiz")
-            quiz_question = await invoke(
-                create_quiz,
-                ctx,
-                topic=topic,
-                instructions=f"Generate a multiple-choice question about the main concepts of {topic} covered so far."
-            )
-            if not isinstance(quiz_question, QuizQuestion):
-                logger.error("Executor: create_quiz did NOT return a valid QuizQuestion object!")
-                 # Return an ErrorResponse
-                error_payload = ErrorResponse(response_type="error", message="Failed to create a quiz question.")
-                response_to_send = InteractionResponseData(content_type="error", data=error_payload, user_model_state=ctx.user_model_state)
-                logger.warning(f"Executor failed to create quiz. Status: {STATUS_AWAITING_INPUT}")
-                status = STATUS_AWAITING_INPUT # Keep waiting, maybe try again later?
-            else:
-                logger.info(f"Executor: Storing quiz question in context: {quiz_question.question[:50]}...")
-                ctx.current_quiz_question = quiz_question
-                # Draw MCQ actions
-                actions = await invoke(draw_mcq_actions, ctx, question=quiz_question)
-                question_payload = QuestionResponse(
-                    response_type="question",
-                    question=quiz_question,
-                    topic=topic
-                )
-                response_to_send = InteractionResponseData(
-                    content_type="question",
-                    data=question_payload,
-                    user_model_state=ctx.user_model_state,
-                    whiteboard_actions=actions
-                )
-                logger.info(f"Executor generated question response. Status: {STATUS_AWAITING_INPUT}")
-                status = STATUS_AWAITING_INPUT
-
-    elif event_type == 'answer':
-        if not ctx.current_quiz_question:
-            logger.warning("Executor received 'answer' event but no question in context.")
-            error_payload = ErrorResponse(response_type="error", message="I wasn't expecting an answer right now. Did I ask a question?")
-            response_to_send = InteractionResponseData(content_type="error", data=error_payload, user_model_state=ctx.user_model_state)
-            logger.warning(f"Executor received answer when no question active. Status: {STATUS_AWAITING_INPUT}")
-            status = STATUS_AWAITING_INPUT
-        elif not event_data or 'answer_index' not in event_data:
-            logger.error("Executor received 'answer' event but 'answer_index' is missing in event_data.")
-            error_payload = ErrorResponse(response_type="error", message="Something went wrong. I didn't receive your answer index correctly.")
-            response_to_send = InteractionResponseData(content_type="error", data=error_payload, user_model_state=ctx.user_model_state)
-            logger.error(f"Executor missing answer_index. Status: {STATUS_AWAITING_INPUT}")
-            status = STATUS_AWAITING_INPUT
+Choose ONE skill to call next, and provide its parameters. Also, return the interaction status (awaiting_user_input or objective_complete).
+Respond ONLY with a JSON object like:
+{{
+  "skill_name": "...",
+  "skill_params": {{ ... }},
+  "status": "awaiting_user_input" // or "objective_complete"
+}}
+"""
+    llm = LLMClient()
+    messages = [
+        {"role": "system", "content": system_prompt}
+    ]
+    try:
+        llm_response = await llm.chat(messages)
+        logger.info(f"[LLM-Driven Executor] LLM response: {llm_response}")
+        # Parse response
+        import json
+        if isinstance(llm_response, str):
+            # Try to extract JSON
+            start = llm_response.find('{')
+            end = llm_response.rfind('}')
+            if start != -1 and end != -1:
+                llm_response = llm_response[start:end+1]
+            parsed = json.loads(llm_response)
+        elif isinstance(llm_response, dict):
+            parsed = llm_response
         else:
-            answer_index = event_data['answer_index']
-            logger.info(f"Executor handling 'answer': Index = {answer_index}. Evaluating question: {ctx.current_quiz_question.question[:50]}...")
-
-            # Call evaluate_quiz
-            feedback: Optional[QuizFeedbackItem] = await invoke(
-                evaluate_quiz,
-                ctx,
-                user_answer_index=answer_index
-                # evaluate_quiz should internally get the question from ctx.current_quiz_question
-            )
-
-            # --- NEW: Prepare whiteboard feedback actions regardless of later outcomes ---
-            wb_actions: List[Dict[str, Any]] | None = None
-            try:
-                wb_actions = await invoke(
-                    draw_mcq_feedback,
-                    ctx,
-                    question_id="q1",  # Default ID; sync with draw_mcq_actions
-                    option_id=answer_index,
-                    is_correct=feedback.is_correct if feedback else False,
-                )
-            except Exception as wb_exc:
-                logger.error(f"Executor: Error generating whiteboard feedback actions: {wb_exc}")
-                wb_actions = None
-
-            if not feedback:
-                 logger.error("Executor: evaluate_quiz did not return feedback.")
-                 error_payload = ErrorResponse(response_type="error", message="Sorry, I couldn't evaluate your answer.")
-                 response_to_send = InteractionResponseData(content_type="error", data=error_payload, user_model_state=ctx.user_model_state, whiteboard_actions=wb_actions)
-                 logger.error(f"Executor evaluate_quiz failed. Status: {STATUS_AWAITING_INPUT}")
-                 status = STATUS_AWAITING_INPUT
-            else:
-                logger.info(f"Executor: evaluate_quiz returned. Correct: {feedback.is_correct}")
-                # Call update_user_model based on feedback
-                outcome = 'correct' if feedback.is_correct else 'incorrect'
-                logger.info(f"Executor: Calling update_user_model with topic='{topic}', outcome='{outcome}'")
-                updated_model_state: Optional[UserModelState] = await invoke(
-                    update_user_model,
-                    ctx,
-                    topic=topic,
-                    outcome=outcome,
-                    details=f"Answered question on {topic}. Correct: {feedback.is_correct}."
-                    # update_user_model should update ctx.user_model_state internally
-                )
-
-                # --- FIX: Wrap feedback in FeedbackResponse --- 
-                feedback_payload = FeedbackResponse(
-                    response_type="feedback", # Ensure inner type is set
-                    item=feedback # Nest the actual feedback item
-                )
-                # --- END FIX ---
-
-                if not updated_model_state:
-                    logger.error("Executor: update_user_model did not return an updated state.")
-                    # Proceed with feedback but log error
-                    response_to_send = InteractionResponseData(
-                        content_type="feedback",
-                        data=feedback_payload,  # Pass the wrapped payload
-                        user_model_state=ctx.user_model_state,  # Return old state
-                        whiteboard_actions=wb_actions,
-                    )
-                    logger.error(f"Executor update_user_model failed. Proceeding with feedback. Status: {status}")
-                else:
-                     # Ensure the context reflects the updated state returned by the skill
-                     ctx.user_model_state = updated_model_state
-                     logger.info(f"Executor: User model updated. New mastery for {topic}: {ctx.user_model_state.concepts.get(topic).mastery if ctx.user_model_state.concepts.get(topic) else 'N/A'}")
-                     # --- NEW: Generate whiteboard feedback actions ---
-                     response_to_send = InteractionResponseData(
-                        content_type="feedback",
-                        data=feedback_payload,  # Pass the wrapped payload
-                        user_model_state=ctx.user_model_state,  # Use updated state
-                        whiteboard_actions=wb_actions,
-                    )
-
-                # Clear the question now that it's answered and evaluated
-                logger.info("Executor: Clearing current_quiz_question from context.")
-                ctx.current_quiz_question = None
-
-                # Check if objective is complete (Example condition: mastery >= target)
-                target_mastery = ctx.current_focus_objective.target_mastery
-                current_mastery = ctx.user_model_state.concepts.get(topic).mastery if ctx.user_model_state.concepts.get(topic) else 0.0
-                if current_mastery >= target_mastery:
-                    logger.info(f"Executor: Objective '{topic}' complete! Mastery {current_mastery:.2f} >= Target {target_mastery:.2f}")
-                    status = STATUS_OBJECTIVE_COMPLETE
-                    # Optionally, modify the feedback response to indicate completion?
-                    # Or let the WebSocket handler manage the transition message.
-                    logger.info(f"Executor set status: {STATUS_OBJECTIVE_COMPLETE}")
-                else:
-                    logger.info(f"Executor: Objective '{topic}' not yet complete. Mastery {current_mastery:.2f} < Target {target_mastery:.2f}")
-                    logger.info(f"Executor set status: {STATUS_AWAITING_INPUT}")
-                    status = STATUS_AWAITING_INPUT
-
-
-    elif event_type == 'user_message':
-        logger.info(f"Executor handling 'user_message': '{user_input}'")
-        # Determine topic reference (fallback if no focus)
-        topic = ctx.current_focus_objective.topic if ctx.current_focus_objective else "General Chat"
-        user_lower = (user_input or "").lower()
-        wants_quiz = any(k in user_lower for k in ["quiz", "question", "test", "mcq"])
-        wants_explain = any(k in user_lower for k in ["explain", "clarify", "help"])
-
-        if wants_quiz:
-            # --- User explicitly asked for a question --- #
-            logger.info("Executor: Detected request for quiz question. Calling create_quiz.")
-            quiz_question = await invoke(
-                create_quiz,
-                ctx,
-                topic=topic,
-                instructions=f"Generate a short multiple-choice question about {topic} that checks understanding of the main idea."
-            )
-            if not isinstance(quiz_question, QuizQuestion):
-                logger.error("Executor: create_quiz did NOT return a valid QuizQuestion object when requested by user.")
-                error_payload = ErrorResponse(response_type="error", message="Failed to create a quiz question.")
-                response_to_send = InteractionResponseData(content_type="error", data=error_payload, user_model_state=ctx.user_model_state)
-                status = STATUS_AWAITING_INPUT
-            else:
-                logger.info("Executor: Successfully generated quiz via user request. Creating whiteboard actions.")
-                actions = await invoke(draw_mcq_actions, ctx, question=quiz_question)
-                ctx.current_quiz_question = quiz_question
-                question_payload = QuestionResponse(response_type="question", question=quiz_question, topic=topic)
-                response_to_send = InteractionResponseData(
-                    content_type="question",
-                    data=question_payload,
-                    user_model_state=ctx.user_model_state,
-                    whiteboard_actions=actions
-                )
-                status = STATUS_AWAITING_INPUT
-        else:
-            # Existing behaviour: explanation or dialogue
-            if wants_explain:
-                logger.info("Executor: Detected clarification request. Using explain_concept.")
-                skill_details = f"Provide a concise clarification regarding: '{user_input}'."
-            else:
-                logger.info("Executor: Treating as general dialogue/explanation.")
-                skill_details = f"Respond conversationally to the user message: '{user_input}' regarding {topic}."
-
-            response_text = await invoke(
-                explain_concept,
-                ctx,
-                topic=topic,
-                details=skill_details
-            )
-            message_payload = MessageResponse(response_type="message", text=response_text or "Got it.")
-            response_to_send = InteractionResponseData(content_type="message", data=message_payload, user_model_state=ctx.user_model_state)
-            status = STATUS_AWAITING_INPUT
-
-    else:
-        logger.error(f"Executor received unknown event_type: '{event_type}'")
-        error_payload = ErrorResponse(response_type="error", message=f"Received unknown event type '{event_type}'.")
-        response_to_send = InteractionResponseData(content_type="error", data=error_payload, user_model_state=ctx.user_model_state)
-        logger.error(f"Executor unknown event type. Status: {STATUS_AWAITING_INPUT}")
-        status = STATUS_AWAITING_INPUT
-
-    # --- Persist whiteboard actions before returning --- 
-    if hasattr(response_to_send, 'whiteboard_actions') and response_to_send.whiteboard_actions:
-        # Ensure history doesn't grow indefinitely (keep last 50 sets of actions)
-        MAX_HISTORY_LENGTH = 50 
-        ctx.whiteboard_history.append(response_to_send.whiteboard_actions)
-        if len(ctx.whiteboard_history) > MAX_HISTORY_LENGTH:
-            ctx.whiteboard_history = ctx.whiteboard_history[-MAX_HISTORY_LENGTH:]
-            logger.debug(f"Executor: Whiteboard history truncated to last {MAX_HISTORY_LENGTH} entries.")
-
-    # Log final decision before returning
-    logger.info(f"Executor finished turn. Response Type: {response_to_send.content_type}, Status: {status}")
-    # Ensure response includes the latest state AFTER any updates from skills
-    response_to_send.user_model_state = ctx.user_model_state
-    logger.info(f"Executor returning: response_type={response_to_send.content_type}, status={status}")
-    return response_to_send, status
+            raise ValueError("LLM did not return a valid JSON object.")
+        skill_name = parsed.get("skill_name")
+        skill_params = parsed.get("skill_params", {})
+        status = parsed.get("status", "awaiting_user_input")
+        return {"skill_name": skill_name, "skill_params": skill_params, "status": status}, status
+    except Exception as e:
+        from ai_tutor.api_models import InteractionResponseData, ErrorResponse
+        from ai_tutor.core_models import UserModelState
+        logger.error(f"[LLM-Driven Executor] Error in LLM or parsing: {e}")
+        error_data = ErrorResponse(
+            error_message="An unexpected error occurred. Please try again.",
+            error_code="UNEXPECTED_EXECUTOR_ERROR",
+            technical_details=str(e)
+        )
+        user_model_state_dict = ctx.user_model_state if hasattr(ctx, 'user_model_state') and ctx.user_model_state else UserModelState()
+        return InteractionResponseData(
+            content_type="error",
+            data=error_data,
+            user_model_state=user_model_state_dict
+        ), "error"
 
 
 # --- Removed old run_executor implementation ---

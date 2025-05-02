@@ -26,8 +26,10 @@ from ai_tutor.agents.executor_agent import run_executor
 from ai_tutor.exceptions import ExecutorError
 from agents.run_context import RunContextWrapper
 from ai_tutor.interaction_logger import log_interaction
+from ai_tutor.utils.tool_helpers import invoke  # Import invoke globally to avoid local shadowing
 import asyncio
 from ai_tutor.services.session_tasks import queue_session_analysis
+import typing
 
 router = APIRouter()
 
@@ -39,35 +41,39 @@ ALLOW_URL_TOKEN = os.getenv("ENV", "prod") != "prod"
 
 log = logging.getLogger(__name__)
 
-async def _authenticate_ws(ws: WebSocket, supabase: Client) -> Any:
-    """Validate the `Authorization` header for a WebSocket connection.
+# --- Validation Helper --- #
 
-    Returns the Supabase `User` object on success, otherwise raises and closes the socket.
+def validate_interaction_response(data_to_validate: Any, log_context: str = "") -> Optional[InteractionResponseData]:
+    """Validates data against InteractionResponseData Pydantic model.
+
+    Args:
+        data_to_validate: The data object (ideally already InteractionResponseData or dict).
+        log_context: String description for logging (e.g., 'Executor Response').
+
+    Returns:
+        The validated InteractionResponseData object if successful, otherwise None.
+        Logs errors if validation fails.
     """
-    # Try Authorization header first
-    auth_header = ws.headers.get("authorization")  # headers keys are lower‑cased
-    # Fallback: allow token via query param (for browser clients)
-    if not auth_header and ALLOW_URL_TOKEN:
-        token = ws.query_params.get("token")
-        if token:
-            auth_header = f"Bearer {token}"
-    if not auth_header or not auth_header.startswith("Bearer "):
-        # 1008 – policy violation (invalid or missing credentials)
-        await ws.close(code=1008, reason="Missing or invalid Authorization header or token")
-        raise RuntimeError("Unauthorized")
-    # Extract JWT
-    jwt = auth_header.split(" ", 1)[1]
     try:
-        user_response = supabase.auth.get_user(jwt)
-        user = user_response.user
-        if user is None:
-            await ws.close(code=1008, reason="Invalid or expired token")
-            raise RuntimeError("Unauthorized")
-        return user
-    except Exception as exc:  # noqa: BLE001
-        # Close the socket immediately; the caller should handle the RuntimeError
-        await ws.close(code=1008, reason="Could not validate credentials")
-        raise RuntimeError("Unauthorized") from exc
+        if isinstance(data_to_validate, InteractionResponseData):
+            # Already the correct type, re-validate to be sure (optional but safe)
+            validated_data = InteractionResponseData.model_validate(data_to_validate.model_dump())
+            log.debug(f"validate_interaction_response ({log_context}): Data already InteractionResponseData, validation successful.")
+            return validated_data
+        elif isinstance(data_to_validate, dict):
+            validated_data = InteractionResponseData.model_validate(data_to_validate)
+            log.debug(f"validate_interaction_response ({log_context}): Dict validated successfully.")
+            return validated_data
+        else:
+            log.error(f"validate_interaction_response ({log_context}): Input data is not InteractionResponseData or dict, type: {type(data_to_validate)}.")
+            return None
+    except ValidationError as e:
+        log.error(f"validate_interaction_response ({log_context}): Validation failed! Error: {e}. Raw Data: {data_to_validate}", exc_info=True)
+        return None
+    except Exception as e:
+        log.error(f"validate_interaction_response ({log_context}): Unexpected error during validation! Error: {e}. Raw Data: {data_to_validate}", exc_info=True)
+        return None
+# --- End Validation Helper --- #
 
 # Helper function to safely send JSON
 async def safe_send_json(ws: WebSocket, data: Any, log_context: str = ""):
@@ -107,33 +113,49 @@ async def safe_close(ws: WebSocket, code: int = 1000, reason: Optional[str] = No
 # --- Helper function to send standardized error responses --- #
 async def send_error_response(ws: WebSocket, message: str, error_code: str, details: Optional[str] = None, state: Optional[UserModelState] = None):
     log.error(f"Sending error to client: Code={error_code}, Message='{message}', Details='{details}'")
-    # Prepare details as a dict if provided, otherwise None
-    details_dict = {"raw_message": details} if details else None
     try:
         error_payload = ErrorResponse(
-            response_type="error", # Ensure this mandatory field is set
-            message=message, 
+            error_message=message,  # Use correct field name
             error_code=error_code,
-            details=details_dict # Pass dict or None
+            technical_details=details  # Pass details to technical_details
         )
-        # Ensure user_model_state is valid or default
-        state_obj = state if state else UserModelState() # Use provided or default empty state
-        # Wrap the error payload in InteractionResponseData
+        state_obj = state if state else UserModelState()
         full_response = InteractionResponseData(
             content_type="error",
             data=error_payload,
             user_model_state=state_obj
         )
-        # Send the wrapped response
         await safe_send_json(ws, full_response.model_dump(mode='json'), f"Error Response Send ({error_code})")
     except Exception as send_err:
-        # Log error during error response creation/sending itself
         log.critical(f"Failed to create/send structured error response (Code={error_code}): {send_err}", exc_info=True)
-        # Fallback: try sending a very simple error message if the structured one fails
         try:
-            await safe_send_json(ws, {"content_type": "error", "data": {"message": "An internal error occurred while reporting an error."}}, "Fallback Error Send")
+            await safe_send_json(ws, {"content_type": "error", "data": {"error_message": "An internal error occurred while reporting an error."}}, "Fallback Error Send")
         except Exception as fallback_err:
             log.critical(f"Failed to send fallback error message: {fallback_err}")
+
+# --- WebSocket Authentication Helper ---
+async def _authenticate_ws(ws: WebSocket, supabase: Client) -> typing.Any:
+    """Authenticate a websocket connection using JWT from headers or query params."""
+    # Try to get token from headers
+    token = None
+    auth_header = ws.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1]
+    # Fallback: try to get token from query params
+    if not token:
+        token = ws.query_params.get("token")
+    if not token:
+        raise HTTPException(status_code=403, detail="Missing authentication token for websocket connection.")
+    try:
+        user_response = supabase.auth.get_user(token)
+        user = user_response.user
+        if not user:
+            raise HTTPException(status_code=403, detail="Invalid or expired token for websocket connection.")
+        ws.state.user = user  # Attach user to websocket state for downstream use
+        return user
+    except Exception as e:
+        log.error(f"WebSocket authentication failed: {e}")
+        raise HTTPException(status_code=403, detail="Could not validate websocket credentials.")
 
 @router.websocket("/ws/session/{session_id}")
 async def tutor_stream(
@@ -399,9 +421,67 @@ async def tutor_stream(
                                             event_type,
                                             event_data,
                                         )
-                                        log.info(f"WebSocket: Executor (post-planner) returned -> Response Type='{executor_result_data.content_type}', Status='{status_from_executor}'")
-                                        response_to_send = executor_result_data
-                                        save_context_needed = True  # Context likely updated by executor
+                                        # Handle the two possible return shapes from run_executor
+                                        from ai_tutor.api_models import InteractionResponseData
+                                        if isinstance(executor_result_data, InteractionResponseData):
+                                            # run_executor returned a full response (error path)
+                                            log.info(
+                                                f"WebSocket: Executor (post-planner) returned InteractionResponseData of type '{executor_result_data.content_type}', Status='{status_from_executor}'"
+                                            )
+                                            response_to_send = executor_result_data
+                                            save_context_needed = True
+                                        else:
+                                            # Expected normal path: a dict with skill selection
+                                            log.info(
+                                                f"WebSocket: Executor (post-planner) returned skill selector dict: {executor_result_data}"
+                                            )
+                                            skill_name = executor_result_data.get("skill_name")
+                                            skill_params = executor_result_data.get("skill_params", {})
+
+                                            if not skill_name:
+                                                log.error("Executor LLM did not return a skill_name after planner. Sending error to client.")
+                                                await send_error_response(
+                                                    ws,
+                                                    "Internal error: Executor did not select a skill.",
+                                                    "EXECUTOR_NO_SKILL",
+                                                    details=str(executor_result_data),
+                                                    state=ctx.user_model_state,
+                                                )
+                                            else:
+                                                try:
+                                                    import importlib
+                                                    skills_module = importlib.import_module("ai_tutor.skills." + skill_name)
+                                                    skill_function = getattr(skills_module, skill_name)
+                                                except Exception as import_exc:
+                                                    log.error(f"Could not import skill '{skill_name}': {import_exc}")
+                                                    await send_error_response(
+                                                        ws,
+                                                        f"Skill '{skill_name}' not found.",
+                                                        "SKILL_NOT_FOUND",
+                                                        details=str(import_exc),
+                                                        state=ctx.user_model_state,
+                                                    )
+                                                else:
+                                                    try:
+                                                        skill_result = await invoke(skill_function, ctx, **skill_params)
+                                                    except Exception as skill_exc:
+                                                        log.error(f"Error invoking skill '{skill_name}': {skill_exc}")
+                                                        await send_error_response(
+                                                            ws,
+                                                            f"Error running skill '{skill_name}'.",
+                                                            "SKILL_EXEC_ERROR",
+                                                            details=str(skill_exc),
+                                                            state=ctx.user_model_state,
+                                                        )
+                                                    else:
+                                                        whiteboard_actions = getattr(skill_result, 'whiteboard_actions', None)
+                                                        response_to_send = InteractionResponseData(
+                                                            content_type=skill_result.__class__.__name__.replace('Response', '').lower(),
+                                                            data=skill_result,
+                                                            user_model_state=ctx.user_model_state,
+                                                            whiteboard_actions=whiteboard_actions,
+                                                        )
+                                                        save_context_needed = True
                                     except ExecutorError as executor_custom_err:
                                         log.error(f"WebSocket: Executor failed with ExecutorError after planner: {executor_custom_err}", exc_info=True)
                                         await send_error_response(ws, "Failed to process your request after planning.", "EXECUTOR_ERROR", details=f"Executor error: {executor_custom_err}", state=ctx.user_model_state)
@@ -430,41 +510,60 @@ async def tutor_stream(
                              log.warning(f"Executor called (event: {event_type}) but no focus objective found in context. Skipping.")
                              await send_error_response(ws, f"Cannot process '{event_type}': session goal not set.", "EXECUTOR_ERROR", details="No focus objective available.", state=ctx.user_model_state if ctx else None)
                              continue
-                            
-                        # All event types ('user_message', 'next', 'answer', potentially others) go to the executor
-                        log.info(f"WebSocket: Invoking Executor for event type '{event_type}'")
+
+# --- LLM-driven executor logic ---
+                        log.info(f"WebSocket: Invoking LLM-driven Executor for event type '{event_type}'")
                         try:
-                            # --- FIX: Use await directly, not async for --- #
-                            executor_result_data, status_from_executor = await run_executor(
+                            executor_result, status_from_executor = await run_executor(
                                 ctx,
-                                user_input_text, # Will be None for 'next', 'answer'
-                                event_type,      # Pass the type explicitly
-                                event_data       # Pass the data dict (contains answer_index if type is 'answer')
+                                user_input_text,  # Will be None for 'next', 'answer'
+                                event_type,       # Pass the type explicitly
+                                event_data        # Pass the data dict (contains answer_index if type is 'answer')
                             )
-                            # --- END FIX --- #
+                            log.info(f"WebSocket: LLM-driven Executor returned: {executor_result}")
+                            skill_name = executor_result.get("skill_name")
+                            skill_params = executor_result.get("skill_params", {})
+                            status_from_executor = executor_result.get("status", status_from_executor)
+                            if not skill_name:
+                                log.error("Executor LLM did not return a skill_name. Sending error to client.")
+                                await send_error_response(ws, "Internal error: Executor did not select a skill.", "EXECUTOR_NO_SKILL", details=str(executor_result), state=ctx.user_model_state)
+                                continue
 
-                            log.info(f"WebSocket: Executor returned -> Response Type='{executor_result_data.content_type}', Status='{status_from_executor}'")
-                            response_to_send = executor_result_data # Assign the InteractionResponseData part
-                            save_context_needed = True # Assume executor run might change context
-
-                            # --- Log Agent Response (moved here as we have the full response now) --- #
+                            # Dynamically import the skill function
                             try:
-                                log_content_agent = json.dumps(response_to_send.model_dump(mode='json'))
-                                await log_interaction(ctx, "agent", log_content_agent, response_to_send.content_type, event_type)
-                            except Exception as log_err:
-                                log.error(f"WebSocket ({ctx.session_id}): Failed to log agent response: {log_err}", exc_info=True)
-                            # --- End Log Agent Response --- #
+                                import importlib
+                                skills_module = importlib.import_module("ai_tutor.skills." + skill_name)
+                                skill_function = getattr(skills_module, skill_name)
+                            except Exception as import_exc:
+                                log.error(f"Could not import skill '{skill_name}': {import_exc}")
+                                await send_error_response(ws, f"Skill '{skill_name}' not found.", "SKILL_NOT_FOUND", details=str(import_exc), state=ctx.user_model_state)
+                                continue
 
-                        except ExecutorError as executor_custom_err:
-                             log.error(f"WebSocket: Executor failed with ExecutorError: {executor_custom_err}", exc_info=True)
-                             current_state = ctx.user_model_state if ctx else UserModelState()
-                             await send_error_response(ws, f"Failed to process your request ('{event_type}').", "EXECUTOR_ERROR", details=f"Executor error: {executor_custom_err}", state=current_state)
-                             continue # Continue loop to wait for next message
+                            # Call the skill using invoke
+                            try:
+                                skill_result = await invoke(skill_function, ctx, **skill_params)
+                            except Exception as skill_exc:
+                                log.error(f"Error invoking skill '{skill_name}': {skill_exc}")
+                                await send_error_response(ws, f"Error running skill '{skill_name}'.", "SKILL_EXEC_ERROR", details=str(skill_exc), state=ctx.user_model_state)
+                                continue
+
+                            from ai_tutor.api_models import InteractionResponseData
+                            if isinstance(skill_result, InteractionResponseData):
+                                response_to_send = skill_result
+                            else:
+                                whiteboard_actions = getattr(skill_result, 'whiteboard_actions', None)
+                                response_to_send = InteractionResponseData(
+                                    content_type=skill_result.__class__.__name__.replace('Response', '').lower(),
+                                    data=skill_result,
+                                    user_model_state=ctx.user_model_state,
+                                    whiteboard_actions=whiteboard_actions
+                                )
+                            save_context_needed = True
                         except Exception as executor_err:
-                             log.error(f"WebSocket: Executor failed with unexpected Exception: {executor_err}", exc_info=True)
-                             current_state = ctx.user_model_state if ctx else UserModelState()
-                             await send_error_response(ws, f"Failed to process your request ('{event_type}').", "EXECUTOR_ERROR", details=f"Unexpected Executor error: {type(executor_err).__name__}", state=current_state)
-                             continue # Continue loop
+                            log.error(f"WebSocket: LLM-driven Executor failed: {executor_err}", exc_info=True)
+                            await send_error_response(ws, "Failed to process your request.", "EXECUTOR_ERROR", details=f"Executor error: {executor_err}", state=ctx.user_model_state)
+                            continue
+                        # --- End LLM-driven executor logic ---
 
                     # --- Whiteboard Event Logic --- #
                     elif event_type == 'whiteboard_event':
@@ -501,7 +600,6 @@ async def tutor_stream(
                                 # Import the skill here or ensure it's imported at the top
                                 from ai_tutor.skills.evaluate_quiz import evaluate_quiz
                                 from ai_tutor.skills.update_user_model import update_user_model
-                                from ai_tutor.utils.tool_helpers import invoke # Ensure invoke is available
 
                                 feedback = await invoke(
                                     evaluate_quiz,
