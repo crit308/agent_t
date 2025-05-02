@@ -29,8 +29,11 @@ from ai_tutor.skills.evaluate_quiz import evaluate_quiz
 from ai_tutor.skills.update_user_model import update_user_model
 from ai_tutor.skills.draw_mcq import draw_mcq_actions
 from ai_tutor.skills.draw_mcq_feedback import draw_mcq_feedback
-from ai_tutor.skills.draw_diagram import draw_diagram_actions # Import diagram skill
-from ai_tutor.skills.clear_whiteboard import clear_whiteboard # Import clear skill
+from ai_tutor.skills.draw_diagram import draw_diagram_actions  # Import diagram skill
+from ai_tutor.skills.clear_whiteboard import clear_whiteboard  # Import clear skill
+
+# NEW low-level drawing helpers
+from ai_tutor.skills.drawing_tools import draw_text, draw_shape, style_token, clear_board
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +87,12 @@ Target Mastery: {objective_mastery}
     *   `evaluate_quiz(user_answer_index: int)`: To evaluate the user's answer to the *most recently asked question*.
     *   `remediate_concept(topic: str, remediation_details: str)`: To provide targeted help if the user is struggling.
     *   `update_user_model(topic: str, outcome: str, details: Optional[str] = None)`: Call this *after* evaluating an answer or determining understanding/struggle. Use outcomes like 'correct', 'incorrect', 'unsure', 'clarification_needed'.
-    *   `draw_diagram_actions(topic: str, description: str)`: Use to produce a simple diagram when a visual will help (e.g., *first* explanation segment as a title slide).
-    *   `clear_whiteboard()`: Emit a reset action list to clear old visuals before a new diagram or layout-heavy drawing.
+    *   `draw_text(id: str, text: str, x?: int, y?: int, fontSize?: int, width?: int, color_token?: str)`: Draw a textbox at (x,y). Coordinates optional – system will auto-layout if omitted.
+    *   `draw_shape(id: str, kind: "rect"|"circle"|"arrow", x?: int, y?: int, w?: int, h?: int, radius?: int, points?: List[Dict], label?: str, color_token?: str)`: Draw a basic shape.
+    *   `style_token(token: "default"|"primary"|"accent"|"muted"|"success"|"error")`: Resolve a semantic colour token to a hex colour string.
+    *   `clear_board()`: Clear previous assistant drawings.
+    *   `draw_diagram_actions(topic: str, description: str)`: Produce a simple diagram when helpful.
+    *   `clear_whiteboard()`: (Alias of clear_board) Emit a reset action list to clear old visuals.
     *   `draw_mcq_feedback(question_id: str, option_id: int, is_correct: bool)`: After evaluating an MCQ answer, draw ✓/✗ and recolour the selected option. Also locks further clicks.
     *   `draw_table_actions(headers: List[str], rows: List[List[str]])`: Render small comparison or summary tables when tabular presentation aids understanding.
     *   `draw_flowchart_actions(steps: List[str])`: Render a simple left-to-right flowchart to outline processes.

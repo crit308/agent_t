@@ -98,4 +98,7 @@ from .clear_whiteboard import clear_whiteboard
 from .draw_table import draw_table_actions
 from .draw_flowchart import draw_flowchart_actions
 from .draw_axis import draw_axis_actions
-from .explain_diagram_part import explain_diagram_part 
+from .explain_diagram_part import explain_diagram_part
+
+# --- NEW Primitive Drawing Tools ---
+from .drawing_tools import draw_text, draw_shape, style_token, clear_board 
