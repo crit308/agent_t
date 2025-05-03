@@ -6,6 +6,7 @@ from typing import Any, Dict # Add Any for now
 from fastapi import WebSocket, WebSocketDisconnect # Import WebSocket
 from fastapi.websockets import WebSocketState # Import WebSocketState for error sending
 from pydantic import ValidationError # For LLM response validation
+from src.agents.prompts import LEAN_EXECUTOR_PROMPT_TEMPLATE
 
 from src.models.tool_calls import ToolCall
 from src.llm_client import LLMClient
@@ -208,62 +209,27 @@ async def dispatch(call: ToolCall, ctx: SessionContext, websocket: WebSocket) ->
 
 # --- Prompt Building Function ---
 def build_lean_prompt(objective: ObjectiveType, user_model: UserModelState | None) -> str:
-     # More explicit instructions and better mapping of intent to tools
-     LEAN_EXECUTOR_PROMPT_TEMPLATE = """
-You are the "Executor" of an AI tutor. Your goal is to guide the student towards the current objective by calling ONE of the available TOOLS based on the context.
+    # Serialize user model for prompt
+    user_model_str = "No user model available."  # Default if user_model is None
+    if user_model:
+        try:
+           user_model_str = user_model.model_dump_json(indent=2)
+        except Exception as e:
+            logger.error(f"Failed to serialize user model: {e}")
+            user_model_str = f"Error serializing user model: {e}"
 
-Context:
-*   Objective: {objective_topic} - {objective_goal} (Target Mastery >= {objective_threshold})
-*   User Model State:
-{user_state_json}
-*   (You will also see conversation history when called)
+    # Safely extract objective details
+    objective_topic = getattr(objective, 'objective_topic', 'N/A')
+    objective_goal = getattr(objective, 'learning_goal', 'N/A')
+    objective_threshold = getattr(objective, 'target_mastery', 0.8)
 
-AVAILABLE TOOLS (Choose ONE name from this list):
-1.  `explain`: Use this to provide textual explanations of concepts related to the objective.
-    *   Args: `{{ "text": "...", "markdown": true }}`
-2.  `ask_question`: Use this to ask a multiple-choice question to check understanding AFTER explaining something.
-    *   Args: `{{ "question_id": "unique_id", "question": "...", "options": ["opt1", "opt2", ...] }}`
-3.  `ask_question`: Use this to ask an open-ended (free response) question. 
-    *   Args: `{{ "question_id": "unique_id", "question": "..." }}`
-4.  `draw`: Use this ONLY if a visual diagram (SVG format) is essential to understanding the current explanation. Generate the SVG string.
-    *   Args: `{{ "svg": "<svg>...</svg>" }}`
-5.  `reflect`: Call this *internally* if you need to pause, analyze the user's state, and plan your *next* pedagogical move (like deciding between explaining more or quizzing). This produces no output for the user.
-    *   Args: `{{ "thought": "Your internal reasoning..." }}` # Added thought arg based on previous dispatch logic
-6.  `summarise_context`: Call this *internally* if the conversation history becomes too long. This produces no output for the user.
-    *   Args: `{}`
-7.  `end_session`: Call this ONLY when the learning objective is confirmed as complete OR if you cannot proceed further.
-    *   Args: `{{ "reason": "objective_complete" | "stuck" | "budget_exceeded" | "user_request" }}`
-
-Your Task:
-1.  Analyze the Objective and User Model State.
-2.  Consider the last few turns of the conversation (provided in history).
-3.  Decide the single best *pedagogical action* for this turn.
-4.  Select the ONE tool from the list above that best implements that action.
-5.  Construct the arguments (`args`) for the chosen tool.
-6.  Return ONLY a single JSON object matching: `{{ "name": "<tool_name>", "args": {{...}} }}`. Do not use any tool name not explicitly listed above. Do not add any other text.
-
-Example Decision: If the user is new to the topic 'Evaporation', you should call `explain` with relevant text. If you just explained 'Evaporation', you should call `ask_question` to check understanding. If the user answered a question incorrectly, you might call `explain` again with remediation text, or call `reflect` to decide.
-"""
-
-     user_model_str = "No user model available." # Default if user_model is None
-     if user_model:
-         try:
-            user_model_str = user_model.model_dump_json(indent=2)
-         except Exception as e:
-             logger.error(f"Failed to serialize user model: {e}")
-             user_model_str = f"Error serializing user model: {e}"
-
-     objective_topic = getattr(objective, 'objective_topic', 'N/A')
-     objective_goal = getattr(objective, 'learning_goal', 'N/A')
-     objective_threshold = getattr(objective, 'target_mastery', 0.8)
-
-     prompt = LEAN_EXECUTOR_PROMPT_TEMPLATE.format(
-         objective_topic=objective_topic,
-         objective_goal=objective_goal,
-         objective_threshold=objective_threshold,
-         user_state_json=user_model_str
-     )
-     return prompt
+    # Build and return the prompt using the centralized template
+    return LEAN_EXECUTOR_PROMPT_TEMPLATE.format(
+        objective_topic=objective_topic,
+        objective_goal=objective_goal,
+        objective_threshold=objective_threshold,
+        user_state_json=user_model_str
+    )
 
 # --- Error Sending Function ---
 async def send_error_to_frontend(websocket: WebSocket, title: str, detail: str):

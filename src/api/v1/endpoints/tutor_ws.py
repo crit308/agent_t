@@ -1,6 +1,7 @@
 import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from starlette.websockets import WebSocketState
+from os import getenv
 
 from src.context import SessionContext, session_manager
 from src.agents.planner_agent import run_planner_agent # Assuming planner agent exists
@@ -73,10 +74,26 @@ async def websocket_endpoint(
                     is_first_message = False # Planner has run, subsequent messages go to executor
                 else:
                     logger.info(f"Focus objective exists for session {session_id}. Running executor.")
-                    # Plan exists, run the executor with the user's input
-                    executor_input = data
-                    response_data = await run_executor(context, executor_input)
-                    is_first_message = False # Executor ran
+                    # Plan exists, decide whether to use lean executor loop or legacy executor
+                    use_lean = getenv("EXECUTOR_LEAN", "0") == "1"
+
+                    if use_lean:
+                        # Append the user message to history for the lean loop
+                        if not hasattr(context, "history"):
+                            context.history = []
+                        context.history.append({"role": "user", "content": data})
+
+                        # Store last user message flag (used by run_executor_loop)
+                        context.last_user_message = True  # custom flag consumed inside loop
+
+                        # Call the lean loop – it handles websocket sends internally
+                        await run_executor_loop(context, context.current_focus_objective, websocket)
+                        response_data = None  # Nothing for us to send; loop already did
+                    else:
+                        # Legacy executor path
+                        executor_input = data
+                        response_data = await run_executor(context, executor_input)
+                        is_first_message = False # Executor ran
 
                 # Send the response back to the client
                 if response_data:
