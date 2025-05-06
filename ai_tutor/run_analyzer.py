@@ -11,7 +11,7 @@ import json
 from typing import Optional, Any
 
 from ai_tutor.agents.analyzer_agent import analyze_documents
-from ai_tutor.tools.file_upload import FileUploadManager
+from ai_tutor.utils.file_upload import FileUploadManager
 from ai_tutor.dependencies import SUPABASE_CLIENT
 
 

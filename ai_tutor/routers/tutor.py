@@ -12,7 +12,7 @@ from gotrue.types import User # To type hint the user object
 from uuid import UUID
 
 from ai_tutor.session_manager import SessionManager
-from ai_tutor.tools.file_upload import FileUploadManager
+from ai_tutor.utils.file_upload import FileUploadManager
 from ai_tutor.agents.analyzer_agent import analyze_documents
 from ai_tutor.agents.models import (
     FocusObjective,
