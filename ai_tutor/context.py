@@ -70,6 +70,11 @@ class TutorContext(BaseModel):
     whiteboard_history: List[List[Dict[str, Any]]] = Field(default_factory=list, description="History of whiteboard action lists sent to FE.")
     # Conversation history exchanged with the lean executor LLM
     history: List[Dict[str, Any]] = Field(default_factory=list, description="Conversation history for the LLM (list of {'role', 'content'} dicts)")
+    # Track the last major pedagogical action taken by the tutor (for preventing loops)
+    last_pedagogical_action: Optional[Literal["explained", "asked", "evaluated", "remediated"]] = Field(
+        None,
+        description="Tracks the last major pedagogical action taken by the tutor. Used by the executor to pick the next appropriate action."
+    )
     # Add for session resume:
     last_event: Optional[dict] = None # Store the last event for session resume
     pending_interaction_type: Optional[str] = None # Store pending interaction type for resume

@@ -8,6 +8,7 @@ Context:
 *   Objective: {objective_topic} - {objective_goal} (Target Mastery >= {objective_threshold})
 *   User Model State:
 {user_state_json}
+*   Last Action You Took: {last_action_str}
 *   (You will also see conversation history when called)
 
 AVAILABLE TOOLS (Choose ONE name from this list):
@@ -29,10 +30,11 @@ AVAILABLE TOOLS (Choose ONE name from this list):
 Your Task:
 1.  Analyze the Objective and User Model State.
 2.  Consider the last few turns of the conversation (provided in history).
-3.  Decide the single best pedagogical action for this turn.
-4.  Select the ONE tool from the list above that implements that action.
-5.  Construct the arguments (`args`) for the chosen tool.
-6.  Return ONLY a single JSON object matching: {{ "name": "<tool_name>", "args": {{ ... }} }}. Do not use other tool names. No extra text.
+3.  Note the last action you took and choose the next pedagogical step accordingly. **If you just 'explained', you should probably 'ask_question'. If you just 'asked', wait for the user answer (this loop will handle that). If the user just answered (indicated in history), evaluate using 'reflect' and then decide whether to 'explain' (remediate) or 'ask_question' (next).**
+4.  Decide the single best pedagogical action for this turn.
+5.  Select the ONE tool from the list above that implements that action.
+6.  Construct the arguments (`args`) for the chosen tool.
+7.  Return ONLY a single JSON object matching: {{ "name": "<tool_name>", "args": {{ ... }} }}. Do not use other tool names. No extra text.
 
 Example:
 {{ "name": "explain", "args": {{ "text": "Evaporation is...", "markdown": true }} }}

@@ -494,8 +494,18 @@ async def tutor_stream(
 # Lean Executor Helper Functions
 # ===============================
 
-def _build_lean_prompt(objective: "FocusObjective", user_model_state: UserModelState | None) -> str:
-    """Builds the system prompt for the lean executor turn."""
+def _build_lean_prompt(
+    objective: "FocusObjective",
+    user_model_state: UserModelState | None,
+    last_action: Optional[str] | None = None,
+) -> str:
+    """Builds the system prompt for the lean executor turn.
+
+    Args:
+        objective: Current focus objective.
+        user_model_state: Snapshot of the user's model.
+        last_action: The last pedagogical action the tutor took (e.g. "explained", "asked").
+    """
     user_state_json = "No user model available."
     if user_model_state:
         try:
@@ -509,6 +519,7 @@ def _build_lean_prompt(objective: "FocusObjective", user_model_state: UserModelS
         objective_goal=getattr(objective, "learning_goal", "N/A"),
         objective_threshold=getattr(objective, "target_mastery", 0.8),
         user_state_json=user_state_json,
+        last_action_str=last_action or "None (start of objective)",
     )
 
 
@@ -540,6 +551,7 @@ async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
                     user_model_state=ctx.user_model_state,
                 )
                 await ws.send_json(response.model_dump(mode="json"))
+                ctx.last_pedagogical_action = "explained"
             case "ask_question":
                 from ai_tutor.agents.models import QuizQuestion
                 options: list[str] | None = call.args.get("options")
@@ -564,6 +576,7 @@ async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
                         user_model_state=ctx.user_model_state,
                     ).model_dump(mode="json")
                 )
+                ctx.last_pedagogical_action = "asked"
             case "draw":
                 svg = call.args.get("svg", "[no svg]")
                 msg = MessageResponse(
@@ -592,6 +605,7 @@ async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
                         user_model_state=ctx.user_model_state,
                     ).model_dump(mode="json")
                 )
+                # 'end_session' does not count as pedagogical action
             case _:
                 await _send_ws_error(ws, "Unknown Action", f"Tool '{call.name}' is not recognised.")
     except WebSocketDisconnect:
@@ -606,7 +620,7 @@ async def _run_executor_turn(ctx: TutorContext, objective: "FocusObjective", ws:
     llm = LLMClient()
 
     # Build prompt
-    system_prompt = _build_lean_prompt(objective, ctx.user_model_state)
+    system_prompt = _build_lean_prompt(objective, ctx.user_model_state, ctx.last_pedagogical_action)
 
     # Prepare messages
     history = ctx.history or []
