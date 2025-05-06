@@ -19,9 +19,6 @@ import json
 from ai_tutor.telemetry import log_tool
 from pydantic import BaseModel
 from ai_tutor.skills import skill
-from ai_tutor.core.llm import LLMClient
-from ai_tutor.utils.tool_helpers import invoke
-from agents import Runner
 
 _exports: List[str] = []
 def _export(obj):

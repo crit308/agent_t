@@ -28,8 +28,8 @@ import asyncio
 from ai_tutor.services.session_tasks import queue_session_analysis
 import typing
 
-# Import prompt template and core helpers
-from src.agents.prompts import LEAN_EXECUTOR_PROMPT_TEMPLATE
+# Import prompt template (moved to ai_tutor.prompts)
+from ai_tutor.prompts import LEAN_EXECUTOR_PROMPT_TEMPLATE
 from ai_tutor.models.tool_calls import ToolCall
 from ai_tutor.core.llm import LLMClient
 

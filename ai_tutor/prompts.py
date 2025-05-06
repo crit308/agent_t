@@ -1,7 +1,4 @@
-# src/agents/prompts.py
-"""
-Centralized prompt definitions for the lean executor loop.
-"""
+"""Centralised prompt definitions for lean executor."""
 
 # The slimmed-down lean executor prompt, listing only the allowed tools and the context placeholders.
 LEAN_EXECUTOR_PROMPT_TEMPLATE = """
@@ -37,6 +34,6 @@ Your Task:
 5.  Construct the arguments (`args`) for the chosen tool.
 6.  Return ONLY a single JSON object matching: {{ "name": "<tool_name>", "args": {{ ... }} }}. Do not use other tool names. No extra text.
 
-Example: 
+Example:
 {{ "name": "explain", "args": {{ "text": "Evaporation is...", "markdown": true }} }}
 """ 
