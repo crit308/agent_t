@@ -1,6 +1,5 @@
-from src.llm_client import LLMClient
-from src.context import SessionContext
-from src.config import Config
+from ai_tutor.core.llm import LLMClient
+from ai_tutor.context import TutorContext as SessionContext
 from loguru import logger
 
 async def explain_concept(context: SessionContext, topic: str, detail_level: str = "beginner") -> str:

@@ -35,8 +35,8 @@ Your Task:
 3.  Decide the single best pedagogical action for this turn.
 4.  Select the ONE tool from the list above that implements that action.
 5.  Construct the arguments (`args`) for the chosen tool.
-6.  Return ONLY a single JSON object matching: { "name": "<tool_name>", "args": { ... } }. Do not use other tool names. No extra text.
+6.  Return ONLY a single JSON object matching: {{ "name": "<tool_name>", "args": {{ ... }} }}. Do not use other tool names. No extra text.
 
 Example: 
-{ "name": "explain", "args": { "text": "Evaporation is...", "markdown": true } }
+{{ "name": "explain", "args": {{ "text": "Evaporation is...", "markdown": true }} }}
 """ 

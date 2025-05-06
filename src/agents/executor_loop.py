@@ -8,12 +8,20 @@ from fastapi.websockets import WebSocketState # Import WebSocketState for error 
 from pydantic import ValidationError # For LLM response validation
 from src.agents.prompts import LEAN_EXECUTOR_PROMPT_TEMPLATE
 
-from src.models.tool_calls import ToolCall
-from src.llm_client import LLMClient
-from src.context import SessionContext
-# TODO: Check if these are the correct imports based on project structure
-from src.models.api_models import InteractionResponseData # To construct FE responses
-from src.models.user_model import UserModelState # To send state
+# Canonical models & helpers
+from ai_tutor.models.tool_calls import ToolCall
+from ai_tutor.core.llm import LLMClient
+from ai_tutor.context import TutorContext as SessionContext
+from ai_tutor.api_models import (
+    InteractionResponseData,
+    ExplanationResponse,
+    QuestionResponse,
+    FeedbackResponse,
+    MessageResponse,
+    ErrorResponse,
+)
+from ai_tutor.core_models import UserModelState
+from ai_tutor.agents.models import QuizQuestion
 
 # Placeholder - Define or import the actual objective type later
 ObjectiveType = Any
@@ -44,7 +52,7 @@ async def run_executor_loop(context: SessionContext, objective: ObjectiveType, w
     #    return # End the turn
 
     # --- 2. Build Prompt & Call LLM ---
-    system_prompt = build_lean_prompt(objective, context.user_model)
+    system_prompt = build_lean_prompt(objective, context.user_model_state)
 
     # Caller (tutor_ws.py) should have already added the user message to history
     turn_history = history
@@ -118,7 +126,7 @@ async def dispatch(call: ToolCall, ctx: SessionContext, websocket: WebSocket) ->
 
     # --- CONSTRUCT RESPONSE for Frontend ---
     response_for_fe: Dict[str, Any] = {
-        "user_model_state": ctx.user_model.model_dump(mode='json') if ctx.user_model else {},
+        "user_model_state": ctx.user_model_state.model_dump(mode='json') if ctx.user_model_state else {},
         "whiteboard_actions": None,
         "content_type": "unknown",
         "data": {},
@@ -128,9 +136,13 @@ async def dispatch(call: ToolCall, ctx: SessionContext, websocket: WebSocket) ->
         match call.name:
             case "explain":
                 text = call.args.get("text", "...")
-                response_for_fe["content_type"] = "explanation"
-                response_for_fe["data"] = {"response_type": "explanation", "explanation_text": text}
-                await websocket.send_json(response_for_fe)
+                explanation_payload = ExplanationResponse(explanation_text=text)
+                interaction = InteractionResponseData(
+                    content_type="explanation",
+                    data=explanation_payload,
+                    user_model_state=ctx.user_model_state,
+                )
+                await websocket.send_json(interaction.model_dump(mode="json"))
                 needs_reply = True
             case "ask_question":
                 question_text = call.args.get("question", "Missing question")
@@ -138,32 +150,62 @@ async def dispatch(call: ToolCall, ctx: SessionContext, websocket: WebSocket) ->
                 question_id = call.args.get("question_id", f"q_{ctx.session_id}_{len(ctx.history)}") # Generate a more unique ID
 
                 if options is None:
-                   response_for_fe["content_type"] = "dialogue"
-                   response_for_fe["data"] = {"response_type": "dialogue", "dialogue_text": question_text + " (Please type your answer)"}
+                   # Free-response question (no options)
+                   quiz_q = QuizQuestion(
+                       question=question_text,
+                       options=[],
+                       correct_answer_index=-1,
+                       explanation="",
+                       difficulty="Medium",
+                       related_section=""
+                   )
+                   question_payload = QuestionResponse(
+                       question_type="free_response",
+                       question_data=quiz_q,
+                       context_summary=None,
+                   )
+                   interaction = InteractionResponseData(
+                       content_type="question",
+                       data=question_payload,
+                       user_model_state=ctx.user_model_state,
+                   )
+                   await websocket.send_json(interaction.model_dump(mode="json"))
+                   needs_reply = True
                 else:
-                   response_for_fe["content_type"] = "question"
-                   response_for_fe["data"] = {
-                       "response_type": "question",
-                       "question": {
-                           "question_id": question_id,
-                           "question": question_text,
-                           "options": options,
-                           "correct_answer_index": call.args.get("correct_answer_index", -1),
-                           "explanation": call.args.get("explanation", ""),
-                           "difficulty": call.args.get("difficulty", "Medium"),
-                           "related_section": call.args.get("related_section", "")
-                       },
-                       "topic": getattr(ctx.current_focus_objective, 'objective_topic', "General") if ctx.current_focus_objective else "General"
-                   }
-                await websocket.send_json(response_for_fe)
-                needs_reply = True
+                   # Build QuizQuestion object
+                   quiz_q = QuizQuestion(
+                       question=question_text,
+                       options=options,
+                       correct_answer_index=call.args.get("correct_answer_index", -1),
+                       explanation=call.args.get("explanation", ""),
+                       difficulty=call.args.get("difficulty", "Medium"),
+                       related_section=call.args.get("related_section", "")
+                   )
+                   question_payload = QuestionResponse(
+                       question_type="multiple_choice",
+                       question_data=quiz_q,
+                       context_summary=None,
+                   )
+                   interaction = InteractionResponseData(
+                       content_type="question",
+                       data=question_payload,
+                       user_model_state=ctx.user_model_state,
+                   )
+                   await websocket.send_json(interaction.model_dump(mode="json"))
+                   needs_reply = True
             case "draw":
                 svg_data = call.args.get("svg")
                 if svg_data:
-                     logger.warning("SVG draw dispatch needs proper frontend integration.")
-                     response_for_fe["content_type"] = "message"
-                     response_for_fe["data"] = {"response_type": "message", "text": f"[Assistant wants to draw: {svg_data[:100]}...]"}
-                     await websocket.send_json(response_for_fe)
+                     message_payload = MessageResponse(
+                         message_text=f"[Assistant wants to draw: {svg_data[:100]}...]",
+                         message_type="status_update",
+                     )
+                     interaction = InteractionResponseData(
+                         content_type="message",
+                         data=message_payload,
+                         user_model_state=ctx.user_model_state,
+                     )
+                     await websocket.send_json(interaction.model_dump(mode="json"))
                 needs_reply = False
             case "reflect":
                 reflection_content = call.args.get("thought", "No thought provided.")
@@ -181,9 +223,16 @@ async def dispatch(call: ToolCall, ctx: SessionContext, websocket: WebSocket) ->
                 # TODO: Trigger background analysis task
                 # from src.services.session_tasks import queue_session_analysis
                 # asyncio.create_task(queue_session_analysis(ctx.session_id, ctx.user_id, ctx.folder_id))
-                response_for_fe["content_type"] = "message"
-                response_for_fe["data"] = {"response_type": "message", "text": f"Session ended: {reason}. Thank you!"}
-                await websocket.send_json(response_for_fe)
+                message_payload = MessageResponse(
+                    message_text=f"Session ended: {reason}. Thank you!",
+                    message_type="summary",
+                )
+                interaction = InteractionResponseData(
+                    content_type="message",
+                    data=message_payload,
+                    user_model_state=ctx.user_model_state,
+                )
+                await websocket.send_json(interaction.model_dump(mode="json"))
                 # Consider closing websocket AFTER sending the message
                 # await websocket.close(code=1000, reason=f"Session ended: {reason}")
                 needs_reply = False # Session ends, no further reply expected

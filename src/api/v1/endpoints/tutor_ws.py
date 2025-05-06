@@ -1,14 +1,18 @@
+# NOTE: This legacy endpoint kept compiling; we align imports with canonical modules.
 import logging
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 from os import getenv
 
-from src.context import SessionContext, session_manager
-from src.agents.planner_agent import run_planner_agent # Assuming planner agent exists
-from src.agents.executor_agent import run_executor # We just created this
-from src.models.interaction_models import InteractionRequest, InteractionResponseData
-# Need authentication mechanism
-# from src.api.v1.auth import get_current_user # Replace with your actual auth
+from ai_tutor.context import TutorContext as SessionContext
+from ai_tutor.session_manager import SessionManager
+from ai_tutor.agents.planner_agent import run_planner_agent
+from ai_tutor.agents.executor_agent import run_executor
+from src.agents.executor_loop import run_executor_loop  # Until we migrate executor_loop into ai_tutor
+from ai_tutor.api_models import InteractionResponseData
+
+# Initialize shared session manager
+session_manager = SessionManager()
 
 logger = logging.getLogger(__name__)
 

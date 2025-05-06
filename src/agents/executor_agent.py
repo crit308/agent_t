@@ -3,19 +3,24 @@ from loguru import logger # Use loguru
 import json
 from pydantic import ValidationError
 
-from src.context import SessionContext
-from src.llm_client import LLMClient # Import LLMClient
-from src.models.interaction_models import (InteractionResponseData, 
-                                             ExplanationResponse, 
-                                             QuestionResponse, # Add QuestionResponse
-                                             FeedbackResponse, # Add FeedbackResponse
-                                             DialogueResponse, 
-                                             UserModelState,
-                                             ResponseType, # Keep if still used, might be superseded by content_type
-                                             QuizQuestion) # Add QuizQuestion
+from ai_tutor.context import TutorContext as SessionContext
+from ai_tutor.core.llm import LLMClient
+# Switch to canonical models in ai_tutor.api_models
+from ai_tutor.api_models import (
+    InteractionResponseData,
+    ExplanationResponse,
+    QuestionResponse,
+    FeedbackResponse,
+    MessageResponse as DialogueResponse,  # Map Dialogue to MessageResponse
+    UserModelState,
+)
+# Pull QuizQuestion from ai_tutor.agents.models
+from ai_tutor.agents.models import QuizQuestion
+# ResponseType isn't explicitly needed; if used later we can compute union
+ResponseType = InteractionResponseData
 # Import skills - Assume they exist or will be created
-from src.skills.explain_concept import explain_concept
-from src.skills.create_quiz import create_quiz # Assume exists
+from ai_tutor.skills.explain_concept import explain_concept
+from ai_tutor.skills.create_quiz import create_quiz # Assume exists
 # from src.skills.evaluate_quiz import evaluate_quiz # Assume exists
 # from src.skills.remediate_concept import remediate_concept # Assume exists
 # from src.skills.update_user_model import update_user_model # Assume exists
@@ -141,7 +146,7 @@ class ExecutorAgent:
             logger.error(f"Executor called without a focus objective. Session: {context.session_id}")
             # Return a default error response AND a default status
             error_data = DialogueResponse(response_type="dialogue", dialogue_text="I seem to have lost my train of thought. Could we try planning the lesson again?")
-            user_model_state_dict = context.user_model.model_dump() if context.user_model else UserModelState().model_dump()
+            user_model_state_dict = context.user_model_state.model_dump() if context.user_model_state else UserModelState().model_dump()
             response = InteractionResponseData(
                 content_type="error", 
                 data=error_data,
