@@ -36,11 +36,16 @@ AVAILABLE TOOLS (Choose ONE name from this list):
 9.  `draw_latex`: Use this to render a mathematical LaTeX string on the whiteboard. Provide a unique `object_id`.
     *   Args: {{ "object_id": "unique_latex_id", "latex_string": "E = mc^2", "xPct": 0.5, "yPct": 0.5 }} (xPct, yPct are optional percentages for positioning)
     *   Example: `{{ "name": "draw_latex", "args": {{ "object_id": "formula-1", "latex_string": "\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}", "xPct": 0.2, "yPct": 0.3 }} }}`
-10. `reflect`: Call this internally if you need to pause, analyze the user's state, and plan your next pedagogical move (no user output).
+10. `draw_graph`: Use this to automatically lay out and draw a graph (e.g., flowchart, concept map) on the whiteboard. The layout is automatic.
+    *   Args: {{ "graph_id": "unique_graph_id", "nodes": [NodeSpec, ...], "edges": [EdgeSpec, ...], "layout_type": "elk" | "other_layout_engine", "xPct": 0.1, "yPct": 0.1 }} (xPct, yPct are optional percentages for positioning the top-left of the graph area)
+    *   `NodeSpec`: {{ "id": "node1", "width": 100, "height": 50, "label": "Start" }} (label is optional)
+    *   `EdgeSpec`: {{ "id": "edge1", "source": "node1", "target": "node2", "label": "Next" }} (label is optional)
+    *   Example (simple 3-node flowchart): `{{ "name": "draw_graph", "args": {{ "graph_id": "flowchart-1", "nodes": [{{ "id": "n1", "width": 100, "height": 50, "label": "Start" }}, {{ "id": "n2", "width": 120, "height": 60, "label": "Process A" }}, {{ "id": "n3", "width": 100, "height": 50, "label": "End" }}], "edges": [{{ "id": "e1", "source": "n1", "target": "n2", "label": "Go" }}, {{ "id": "e2", "source": "n2", "target": "n3" }}], "xPct": 0.1, "yPct": 0.1 }} }}`
+11. `reflect`: Call this internally if you need to pause, analyze the user's state, and plan your next pedagogical move (no user output).
     *   Args: {{ "thought": "Your internal reasoning..." }}
-11. `summarise_context`: Call this internally if the conversation history becomes too long (no user output).
+12. `summarise_context`: Call this internally if the conversation history becomes too long (no user output).
     *   Args: {{ }}
-12. `end_session`: Call this ONLY when the learning objective is complete or you cannot proceed further.
+13. `end_session`: Call this ONLY when the learning objective is complete or you cannot proceed further.
     *   Args: {{ "reason": "objective_complete" | "stuck" | "budget_exceeded" | "user_request" }}
 
 Your Task:
