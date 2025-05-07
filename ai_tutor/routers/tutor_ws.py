@@ -694,7 +694,7 @@ async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
                 "End Session Dispatch"
             )
         elif isinstance(tool_result, dict) and tool_result.get("type") and \
-             call.name in ["group_objects", "move_group", "delete_group"]:
+             call.name in ["group_objects", "move_group", "delete_group", "draw_latex"]:
             log.info(f"Dispatching whiteboard action from tool '{call.name}': {tool_result}")
             response = InteractionResponseData(
                 content_type="whiteboard_update",

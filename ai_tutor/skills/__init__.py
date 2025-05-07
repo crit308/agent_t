@@ -104,4 +104,7 @@ from .explain_diagram_part import explain_diagram_part
 from .drawing_tools import draw_text, draw_shape, style_token, clear_board
 
 # --- Grouping Skills ---
-from .whiteboard_grouping import group_objects, move_group, delete_group 
+from .whiteboard_grouping import group_objects, move_group, delete_group
+
+# --- LaTeX Drawing Skill ---
+from .draw_latex import draw_latex 
