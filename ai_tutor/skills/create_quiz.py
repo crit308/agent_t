@@ -8,104 +8,125 @@ from ai_tutor.api_models import QuestionResponse
 from ai_tutor.core.llm import LLMClient
 import json
 import logging
-from pydantic import ValidationError
-from ai_tutor.exceptions import ExecutorError # Correct import
+from typing import Optional, Dict, Any, List # Added List, Dict, Any
+from pydantic import BaseModel, Field, ValidationError, validator # Added BaseModel, Field, validator
+from ai_tutor.exceptions import ExecutorError, ToolInputError # Added ToolInputError
 
 logger = logging.getLogger(__name__)
 
 # Get the schema once
 QUIZ_QUESTION_SCHEMA_JSON = json.dumps(QuizQuestion.model_json_schema(), indent=2)
 
-QUIZ_QUESTION_SYSTEM_PROMPT = '''
-You are an AI assistant specialized in creating educational quiz questions.
-Your task is to generate a single multiple-choice question based on the provided topic and instructions.
+# System prompt for the LLM that generates the quiz question content
+# (This is distinct from the skill's own arguments)
+QUIZ_GENERATION_SYSTEM_PROMPT = f"""You are an AI assistant specialized in creating educational quiz questions.
+Your task is to generate a single quiz question based on the provided topic and instructions.
 
-The output MUST be a single, valid JSON object conforming exactly to the following Pydantic model schema:
+The output MUST be a single, valid JSON object with two keys:
+1.  'quiz_question': A JSON object conforming exactly to the QuizQuestion schema detailed below.
+2.  'whiteboard_actions': An OPTIONAL list of CanvasObjectSpec objects to visually present the MCQ. If no drawing is needed, omit this key or provide an empty list.
 
+QuizQuestion Schema (for the 'quiz_question' key):
 ```json
-{
-  "question": "string (The question text)",
-  "options": [
-    "string (Option 1)",
-    "string (Option 2)",
-    "string (Option 3)",
-    "string (Option 4)"
-  ],
-  "correct_answer_index": "integer (0-based index of the correct option)",
-  "explanation": "string (Brief explanation why the answer is correct)",
-  "difficulty": "string (Enum: 'Easy', 'Medium', 'Hard')",
-  "related_section": "string (The topic name provided)"
-}
+{QUIZ_QUESTION_SCHEMA_JSON}
 ```
 
-Guidelines:
-- Ensure there are exactly 4 options unless specified otherwise.
-- The `correct_answer_index` must correspond to the correct option in the `options` list.
-- The `related_section` field should contain the topic name you were given.
-- Do NOT include any text before or after the JSON object.
-- Ensure the JSON is well-formed and all values are of the correct type.
-'''
+Guidelines for 'quiz_question':
+- Ensure 'question' is a non-empty string.
+- Ensure 'options' is a list of at least 2 strings (typically 4 for multiple choice).
+- Ensure 'correct_answer_index' is a 0-based integer corresponding to an option in the 'options' list.
+- Ensure 'explanation' is a non-empty string.
+- 'difficulty' should typically be 'Easy', 'Medium', or 'Hard'.
+- 'related_section' should be the topic name you were given.
+
+Respond ONLY with the single JSON object containing 'quiz_question' and optionally 'whiteboard_actions'.
+"""
+
+class CreateQuizArgs(BaseModel):
+    topic: str = Field(..., min_length=1, description="The topic for the quiz question.")
+    instructions: Optional[str] = Field(default=None, description="Specific instructions for generating the quiz question.")
+    # num_questions: int = Field(default=1, gt=0, description="Number of questions to generate.") # Future: for generating multiple questions
+    # question_type: Literal["multiple_choice", "free_response"] = Field(default="multiple_choice") # Future: to specify question type
+
+    @validator('topic', 'instructions')
+    def check_not_just_whitespace(cls, v):
+        if v is not None and not v.strip():
+            raise ValueError("Field cannot be only whitespace if provided.")
+        return v
 
 @skill
-async def create_quiz(ctx: RunContextWrapper[TutorContext], topic: str, instructions: str) -> QuestionResponse:
+async def create_quiz(ctx: RunContextWrapper[TutorContext], **kwargs) -> QuestionResponse:
     """Skill that uses LLMClient to generate a single QuizQuestion and optionally whiteboard actions for the given topic."""
+    try:
+        args = CreateQuizArgs(**kwargs)
+    except ValidationError as e:
+        raise ToolInputError(f"Invalid arguments for create_quiz: {e}")
+
+    topic = args.topic
+    instructions = args.instructions if args.instructions else "Ensure the question is clear and relevant to the topic."
+
     logger.info(f"[Skill create_quiz] Generating question for topic='{topic}', instructions='{instructions}'")
     llm = LLMClient()
 
-    system_msg = {
-        "role": "system",
-        "content": (
-            "You are an AI assistant specialized in creating educational quiz questions. "
-            "Your task is to generate a single multiple-choice question based on the provided topic and instructions. "
-            "The output MUST be a single, valid JSON object with two keys: "
-            "'quiz_question': (a QuizQuestion object as described below), and, optionally, 'whiteboard_actions': (a list of CanvasObjectSpec objects to visually present the MCQ using draw_text, draw_shape, etc). "
-            "If no drawing is needed, omit the 'whiteboard_actions' key. "
-            "QuizQuestion schema: {"
-            "  'question': str, 'options': List[str], 'correct_answer_index': int, 'explanation': str, 'difficulty': str, 'related_section': str "
-            "} "
-            "Respond ONLY with the JSON object."
-        )
-    }
-    user_msg = {"role": "user", "content": f"Generate a multiple-choice question about the topic '{topic}'. Specific instructions: {instructions}"}
+    system_msg = {"role": "system", "content": QUIZ_GENERATION_SYSTEM_PROMPT}
+    user_msg = {"role": "user", "content": f"Generate a quiz question about the topic '{topic}'. Specific instructions: {instructions}"}
 
     try:
-        logger.info("create_quiz: Calling LLM...")
-        llm_response = await llm.chat([system_msg, user_msg])
-        logger.info(f"create_quiz: LLM raw response: {llm_response}")
-        # Parse the LLM response as JSON
-        if isinstance(llm_response, str):
-            # Try to extract JSON
-            start = llm_response.find('{')
-            end = llm_response.rfind('}')
-            if start != -1 and end != -1:
-                llm_response = llm_response[start:end+1]
-            parsed = json.loads(llm_response)
-        elif isinstance(llm_response, dict):
-            parsed = llm_response
+        logger.info("create_quiz: Calling LLM to generate quiz content...")
+        messages_for_llm: List[Dict[str, str]] = [system_msg, user_msg] # type: ignore
+        llm_response_content = await llm.chat(messages_for_llm)
+        logger.info(f"create_quiz: LLM raw response for quiz content: {llm_response_content}")
+        
+        parsed_llm_output: Dict[str, Any]
+        if isinstance(llm_response_content, str):
+            try:
+                parsed_llm_output = json.loads(llm_response_content)
+            except json.JSONDecodeError:
+                start_idx = llm_response_content.find('{')
+                end_idx = llm_response_content.rfind('}')
+                if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
+                    json_candidate = llm_response_content[start_idx : end_idx + 1]
+                    try:
+                        parsed_llm_output = json.loads(json_candidate)
+                    except json.JSONDecodeError as e_inner:
+                        logger.error(f"Failed to parse extracted JSON from LLM response: {json_candidate}. Error: {e_inner}")
+                        raise ExecutorError("LLM response for quiz creation was not valid JSON after extraction.") from e_inner
+                else:
+                    logger.error(f"Could not find JSON delimiters in LLM response for quiz: {llm_response_content}")
+                    raise ExecutorError("LLM response for quiz creation was not valid JSON and delimiters not found.")
+        elif isinstance(llm_response_content, dict):
+            parsed_llm_output = llm_response_content
         else:
-            raise ValueError("LLM did not return a valid JSON object.")
-        quiz_data = parsed.get("quiz_question")
-        whiteboard_actions = parsed.get("whiteboard_actions")
-        if not quiz_data:
-            raise ExecutorError("LLM did not return a 'quiz_question' key in the response.")
-        # Validate against the Pydantic model
+            logger.error(f"Unexpected LLM response type for quiz creation: {type(llm_response_content)}")
+            raise ExecutorError("LLM response for quiz creation was not a string or dictionary.")
+
+        quiz_data = parsed_llm_output.get("quiz_question")
+        whiteboard_actions = parsed_llm_output.get("whiteboard_actions")
+
+        if not quiz_data or not isinstance(quiz_data, dict):
+            logger.error(f"LLM response missing 'quiz_question' key or it's not a dict: {parsed_llm_output}")
+            raise ExecutorError("LLM did not return a valid 'quiz_question' object in the response.")
+        
         try:
             quiz_question = QuizQuestion.model_validate(quiz_data)
-        except ValidationError as e:
-            logger.error(f"[Skill create_quiz] Failed to validate JSON against QuizQuestion model: {e}. Data: {quiz_data}")
-            raise ExecutorError(f"LLM response did not match QuizQuestion schema: {e}") from e
-        # Build QuestionResponse payload
+        except ValidationError as e_val:
+            logger.error(f"[Skill create_quiz] Failed to validate quiz_data against QuizQuestion model: {e_val}. Data: {quiz_data}")
+            raise ExecutorError(f"LLM-generated quiz_question did not match schema: {e_val}") from e_val
+        
         payload = QuestionResponse(
-            question_type="multiple_choice",
+            question_type="multiple_choice", # Assuming multiple_choice for now as per prompt
             question_data=quiz_question,
             context_summary=None
         )
-        # Attach whiteboard_actions as a non-model attribute for the executor to pick up
         setattr(payload, 'whiteboard_actions', whiteboard_actions)
         return payload
+        
+    except ExecutorError: # Re-raise ExecutorErrors to be caught by dispatch if needed
+        raise
     except Exception as e:
-        logger.error(f"[Skill create_quiz] Error during LLM call or processing: {e}", exc_info=True)
-        raise ExecutorError(f"Failed to create quiz question during LLM call or processing: {e}") from e
+        logger.error(f"[Skill create_quiz] Unexpected error during LLM call or processing for topic '{topic}': {e}", exc_info=True)
+        # Wrap unexpected errors in ExecutorError for consistent handling by dispatcher
+        raise ExecutorError(f"Unexpected failure in create_quiz skill: {e}") from e
 
     # This block might be unreachable if all paths raise, but included for completeness
     # except Exception as e:

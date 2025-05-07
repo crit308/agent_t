@@ -17,9 +17,11 @@ All functions are registered as ADK FunctionTools via the ``@skill`` decorator
 from :pymod:`ai_tutor.skills`.
 """
 
-from typing import List, Dict, Any, Optional, Tuple, Literal
+from typing import List, Dict, Any, Optional, Tuple, Literal as TypingLiteral
 
 from ai_tutor.skills import skill  # Re-exported decorator
+from ai_tutor.exceptions import ToolInputError
+from pydantic import BaseModel, Field, ValidationError
 
 # --------------------------------------------------------------------------- #
 # Internal helpers
@@ -35,6 +37,8 @@ _PALETTE: dict[str, str] = {
     "error": "#E74C3C",    # Red-400
 }
 
+# Define a Literal type for Pydantic validation based on _PALETTE keys
+PaletteColor = TypingLiteral["default", "primary", "accent", "muted", "success", "error"]
 
 def _get_layout_position(w: int | None, h: int | None) -> Tuple[int, int]:
     """Very naïve placeholder until a real layout engine exists.
@@ -46,142 +50,164 @@ def _get_layout_position(w: int | None, h: int | None) -> Tuple[int, int]:
 
 
 # --------------------------------------------------------------------------- #
+# Pydantic Models for Skill Arguments
+# --------------------------------------------------------------------------- #
+
+class StyleTokenArgs(BaseModel):
+    token: PaletteColor
+
+class DrawTextArgs(BaseModel):
+    id: str = Field(..., min_length=1)
+    text: str = Field(..., min_length=1)
+    x: Optional[int] = None
+    y: Optional[int] = None
+    fontSize: Optional[int] = Field(default=None, gt=0)
+    width: Optional[int] = Field(default=None, gt=0)
+    color_token: PaletteColor = "default"
+
+class PointSpec(BaseModel):
+    x: int
+    y: int
+
+class DrawShapeArgs(BaseModel):
+    id: str = Field(..., min_length=1)
+    kind: TypingLiteral["rect", "circle", "arrow"]
+    x: Optional[int] = None
+    y: Optional[int] = None
+    w: Optional[int] = Field(default=None, gt=0)
+    h: Optional[int] = Field(default=None, gt=0)
+    radius: Optional[int] = Field(default=None, gt=0)
+    points: Optional[List[PointSpec]] = None # List of Pydantic PointSpec models
+    label: Optional[str] = None
+    color_token: PaletteColor = "default"
+
+# --------------------------------------------------------------------------- #
 # Public skills
 # --------------------------------------------------------------------------- #
 
 @skill
-async def style_token(token: Literal[
-    "default", "primary", "accent", "muted", "success", "error"
-]) -> str:
+async def style_token(**kwargs) -> str:
     """Resolve a semantic *token* (e.g. ``"primary"``) to a hex colour string.
 
     This utility is intentionally synchronous-like but kept ``async`` for a
     consistent skill interface.
     """
-    return _PALETTE.get(token, _PALETTE["default"])
+    try:
+        validated_args = StyleTokenArgs(**kwargs)
+    except ValidationError as e:
+        raise ToolInputError(f"Invalid arguments for style_token: {e}")
+    return _PALETTE.get(validated_args.token, _PALETTE["default"])
 
 
 @skill
-async def draw_text(
-    ctx,  # type: ignore[arg-type] – accepts TutorContext or RunContextWrapper via invoke()
-    *,
-    id: str,
-    text: str,
-    x: Optional[int] = None,
-    y: Optional[int] = None,
-    fontSize: Optional[int] = None,
-    width: Optional[int] = None,
-    color_token: Optional[str] = "default",
-) -> Dict[str, Any]:
+async def draw_text(ctx: Any, **kwargs) -> Dict[str, Any]:
     """Return a *single* CanvasObjectSpec describing a text label."""
+    try:
+        args = DrawTextArgs(**kwargs)
+    except ValidationError as e:
+        raise ToolInputError(f"Invalid arguments for draw_text: {e}")
 
-    if x is None or y is None:
-        x, y = _get_layout_position(width, fontSize)
+    x_coord, y_coord = args.x, args.y
+    if x_coord is None or y_coord is None:
+        x_coord, y_coord = _get_layout_position(args.width, args.fontSize)
 
     # Use semantic colour token utility so FE palette remains in-sync.
-    fill_colour = await style_token(token=color_token or "default")
+    fill_colour = await style_token(token=args.color_token)
 
     return {
-        "id": id,
+        "id": args.id,
         "kind": "text",
-        "x": x,
-        "y": y,
-        "text": text,
-        **({"fontSize": fontSize} if fontSize else {}),
-        **({"width": width} if width else {}),
+        "x": x_coord,
+        "y": y_coord,
+        "text": args.text,
+        **({"fontSize": args.fontSize} if args.fontSize else {}),
+        **({"width": args.width} if args.width else {}),
         "fill": fill_colour,
-        "metadata": {"source": "assistant", "id": id},
+        "metadata": {"source": "assistant", "id": args.id},
     }
 
 
 @skill
-async def draw_shape(
-    ctx,  # type: ignore[arg-type]
-    *,
-    id: str,
-    kind: Literal["rect", "circle", "arrow"],
-    x: Optional[int] = None,
-    y: Optional[int] = None,
-    w: Optional[int] = None,
-    h: Optional[int] = None,
-    radius: Optional[int] = None,
-    points: Optional[List[Dict[str, int]]] = None,
-    label: Optional[str] = None,
-    color_token: Optional[str] = "default",
-) -> List[Dict[str, Any]]:
-    """Draw a primitive shape (rect, circle, arrow).  May return multiple specs."""
+async def draw_shape(ctx: Any, **kwargs) -> List[Dict[str, Any]]:
+    """Draw a primitive shape (rect, circle, arrow). May return multiple specs."""
+    try:
+        args = DrawShapeArgs(**kwargs)
+    except ValidationError as e:
+        raise ToolInputError(f"Invalid arguments for draw_shape: {e}")
 
-    if x is None or y is None:
-        x, y = _get_layout_position(w, h or radius)
+    x_coord, y_coord = args.x, args.y
+    if x_coord is None or y_coord is None:
+        x_coord, y_coord = _get_layout_position(args.w, args.h or args.radius)
 
     # Use semantic colour token utility so FE palette remains in-sync.
-    stroke_colour = await style_token(token=color_token or "default")
+    stroke_colour = await style_token(token=args.color_token)
 
     actions: List[Dict[str, Any]] = []
 
-    if kind == "rect":
+    if args.kind == "rect":
         actions.append(
             {
-                "id": id,
+                "id": args.id,
                 "kind": "rect",
-                "x": x,
-                "y": y,
-                "width": w or 100,
-                "height": h or 60,
+                "x": x_coord,
+                "y": y_coord,
+                "width": args.w or 100,
+                "height": args.h or 60,
                 "stroke": stroke_colour,
                 "strokeWidth": 2,
                 "fill": "#FFFFFF",
-                "metadata": {"source": "assistant", "id": id},
+                "metadata": {"source": "assistant", "id": args.id},
             }
         )
-    elif kind == "circle":
+    elif args.kind == "circle":
         actions.append(
             {
-                "id": id,
+                "id": args.id,
                 "kind": "circle",
-                "x": x,
-                "y": y,
-                "radius": radius or 30,
+                "x": x_coord,
+                "y": y_coord,
+                "radius": args.radius or 30,
                 "stroke": stroke_colour,
                 "strokeWidth": 2,
                 "fill": "#FFFFFF",
-                "metadata": {"source": "assistant", "id": id},
+                "metadata": {"source": "assistant", "id": args.id},
             }
         )
-    elif kind == "arrow":
-        # Represent arrow as a simple line for now.  If explicit *points* are
-        # provided we flatten them; otherwise default to a horizontal arrow.
-        if points:
-            flat = [coord for pt in points for coord in (pt["x"], pt["y"])]
+    elif args.kind == "arrow":
+        flat_points: List[int] = []
+        if args.points:
+            for pt_spec in args.points: # pt_spec is a PointSpec model
+                flat_points.extend([pt_spec.x, pt_spec.y])
         else:
-            flat = [x, y, x + (w or 60), y]
+            flat_points = [x_coord, y_coord, x_coord + (args.w or 60), y_coord] # Default arrow if no points
+        
         actions.append(
             {
-                "id": id,
-                "kind": "line",
-                "points": flat,
+                "id": args.id,
+                "kind": "line", # Arrows are represented as lines
+                "points": flat_points,
                 "stroke": stroke_colour,
                 "strokeWidth": 2,
-                "metadata": {"source": "assistant", "id": id, "role": "arrow"},
+                "metadata": {"source": "assistant", "id": args.id, "role": "arrow"},
             }
         )
     else:
-        raise ValueError(f"Unsupported shape kind: {kind}")
+        raise ValueError(f"Unsupported shape kind: {args.kind}")
 
     # Optional label just below the shape centre / rect top-left.
-    if label:
-        label_id = f"{id}-label"
-        label_x = x + (w or radius or 0) / 2
-        label_y = y + (h or radius or 0) + 20
+    if args.label:
+        label_id = f"{args.id}-label"
+        label_x_val = x_coord + (args.w or args.radius or 0) / 2
+        label_y_val = y_coord + (args.h or args.radius or 0) + 20
         label_spec = {
             "id": label_id,
             "kind": "text",
-            "x": label_x,
-            "y": label_y,
-            "text": label,
+            "x": label_x_val,
+            "y": label_y_val,
+            "text": args.label,
             "fontSize": 14,
             "fill": stroke_colour,
-            "metadata": {"source": "assistant", "linked_to": id, "role": "label"},
+            "metadata": {"source": "assistant", "linked_to": args.id, "role": "label"},
         }
         actions.append(label_spec)
 

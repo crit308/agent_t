@@ -1,20 +1,32 @@
 # ai_tutor/skills/update_user_model.py
 # from agents import function_tool # No longer used
 from ai_tutor.skills import skill # Import correct decorator
-from typing import Optional, Literal
+from typing import Optional, Literal, Any, Dict # Added Any, Dict
 from ai_tutor.context import TutorContext, UserConceptMastery, UserModelState
 from agents.run_context import RunContextWrapper
 from datetime import datetime, timezone
 import logging
+from pydantic import BaseModel, Field, ValidationError, validator # Added Pydantic imports
+from ai_tutor.exceptions import ToolInputError # Added ToolInputError
 
 logger = logging.getLogger(__name__)
+
+# Pydantic model for argument validation
+class UpdateUserModelArgs(BaseModel):
+    topic: str = Field(..., min_length=1, description="The topic being updated in the user model.")
+    outcome: Literal['correct', 'incorrect', 'unsure', 'clarification_needed', 'explained'] = Field(..., description="The outcome of the interaction regarding the topic.")
+    details: Optional[str] = Field(default=None, description="Optional details, e.g., specific confusion points for 'incorrect' outcomes.")
+
+    @validator('topic', 'details')
+    def check_not_just_whitespace(cls, v):
+        if v is not None and not v.strip():
+            raise ValueError("Field cannot be only whitespace if provided.")
+        return v
 
 @skill
 async def update_user_model(
     ctx: RunContextWrapper[TutorContext],
-    topic: str,
-    outcome: Literal['correct', 'incorrect', 'unsure', 'clarification_needed', 'explained'],
-    details: Optional[str] = None
+    **kwargs # Changed signature to use kwargs
 ) -> UserModelState:
     """Updates the user's mastery model for a given topic based on the interaction outcome.
     
@@ -22,6 +34,15 @@ async def update_user_model(
     based on 'correct'/'incorrect' outcomes, increments attempts, and updates timestamps.
     Returns the modified UserModelState object.
     """
+    try:
+        args = UpdateUserModelArgs(**kwargs)
+    except ValidationError as e:
+        raise ToolInputError(f"Invalid arguments for update_user_model: {e}")
+
+    topic = args.topic
+    outcome = args.outcome
+    details = args.details
+
     logger.info(f"Updating user model for topic: '{topic}', outcome: '{outcome}'")
     
     # Ensure user model state and concepts dictionary exist
@@ -55,7 +76,7 @@ async def update_user_model(
             else:
                  logger.info(f"Confusion point '{details}' already recorded for '{topic}'.")
         logger.info(f"Incremented beta for '{topic}'. New beta={concept_state.beta}")
-    elif outcome == 'explained' or outcome == 'clarification_needed' or outcome == 'unsure':
+    elif outcome in ['explained', 'clarification_needed', 'unsure']:
         # These outcomes don't directly update alpha/beta but mark interaction
         concept_state.attempts += 1 # Still counts as an interaction attempt
         logger.info(f"Recorded interaction ('{outcome}') for topic '{topic}'. No alpha/beta change.")
