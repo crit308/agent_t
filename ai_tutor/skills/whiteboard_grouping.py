@@ -1,26 +1,47 @@
 """Skills for grouping objects on the whiteboard."""
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, Field, conlist, ValidationError
+from ai_tutor.skills import skill
+from ai_tutor.exceptions import ToolInputError
 
-from педагог.skill_library.skill import skill
+class GroupObjectsArgs(BaseModel):
+    group_id: str = Field(..., min_length=1)
+    object_ids: conlist(str, min_length=1)
 
+class MoveGroupArgs(BaseModel):
+    group_id: str = Field(..., min_length=1)
+    dx_pct: float
+    dy_pct: float
+
+class DeleteGroupArgs(BaseModel):
+    group_id: str = Field(..., min_length=1)
 
 @skill
-async def group_objects(ctx: Any, group_id: str, object_ids: List[str]) -> Dict[str, Any]:
+async def group_objects(ctx: Any, **kwargs) -> Dict[str, Any]:
     """Creates a group of specified objects on the whiteboard."""
-    return {"type": "GROUP_OBJECTS", "groupId": group_id, "objectIds": object_ids}
+    try:
+        validated_args = GroupObjectsArgs(**kwargs)
+    except ValidationError as e:
+        raise ToolInputError(f"Invalid arguments for group_objects: {e}")
+    return {"type": "GROUP_OBJECTS", "groupId": validated_args.group_id, "objectIds": validated_args.object_ids}
 
 
 @skill
-async def move_group(ctx: Any, group_id: str, dx_pct: float, dy_pct: float) -> Dict[str, Any]:
+async def move_group(ctx: Any, **kwargs) -> Dict[str, Any]:
     """Moves a group of objects on the whiteboard by a percentage of canvas dimensions."""
-    # Assuming dx, dy were meant to be percentages as per the new coord system.
-    # If they are absolute, the type hint and description might need adjustment.
-    # For now, let's assume they are percentages to be consistent.
-    return {"type": "MOVE_GROUP", "groupId": group_id, "dxPct": dx_pct, "dyPct": dy_pct}
+    try:
+        validated_args = MoveGroupArgs(**kwargs)
+    except ValidationError as e:
+        raise ToolInputError(f"Invalid arguments for move_group: {e}")
+    return {"type": "MOVE_GROUP", "groupId": validated_args.group_id, "dxPct": validated_args.dx_pct, "dyPct": validated_args.dy_pct}
 
 
 @skill
-async def delete_group(ctx: Any, group_id: str) -> Dict[str, Any]:
+async def delete_group(ctx: Any, **kwargs) -> Dict[str, Any]:
     """Deletes a group of objects (and its members) from the whiteboard."""
-    return {"type": "DELETE_GROUP", "groupId": group_id} 
+    try:
+        validated_args = DeleteGroupArgs(**kwargs)
+    except ValidationError as e:
+        raise ToolInputError(f"Invalid arguments for delete_group: {e}")
+    return {"type": "DELETE_GROUP", "groupId": validated_args.group_id} 

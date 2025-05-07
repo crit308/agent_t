@@ -27,6 +27,7 @@ from ai_tutor.utils.tool_helpers import invoke  # Import invoke globally to avoi
 import asyncio
 from ai_tutor.services.session_tasks import queue_session_analysis
 import typing
+from ai_tutor.exceptions import ToolInputError # Added import
 
 # Import prompt template (moved to ai_tutor.prompts)
 from ai_tutor.prompts import LEAN_EXECUTOR_PROMPT_TEMPLATE
@@ -574,23 +575,51 @@ async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
     """Executes a ToolCall produced by the lean executor and streams the response."""
     log.info(f"_dispatch_tool_call: Handling tool '{call.name}' for session {ctx.session_id}")
     supabase_client = await get_supabase_client() # Ensure supabase client is available if invoke needs it
+    tool_result = None # Initialize tool_result
 
     try:
         # Use the invoke helper for all skills to ensure consistent handling
-        # The invoke function is responsible for calling the skill and passing necessary args like ws, supabase_client
-        # For get_board_state, it will directly call the skill we defined, which handles ws comms.
         tool_result = await invoke(call.name, call.args, ctx, ws, supabase_client)
 
-        # After invoke, the get_board_state skill would have returned the board state or an error list.
-        # For other skills, tool_result might be different or None if they send data via ws directly.
+    except ToolInputError as e:
+        log.error(f"ToolInputError in skill '{call.name}' for session {ctx.session_id}: {e}. Args: {call.args}", exc_info=True)
+        await send_error_response(
+            ws,
+            message="The tutor encountered an issue with its tool arguments.",
+            error_code="TOOL_INPUT_VALIDATION_ERROR",
+            details=str(e),
+            state=ctx.user_model_state
+        )
+        # Add a system message to conversation history for LLM correction
+        if ctx.history is None: ctx.history = []
+        system_error_message = f"System: The previous tool call to '{call.name}' failed due to invalid arguments: {e}. Args: {json.dumps(call.args)}. Please review the arguments and the tool's schema, then try the call again with corrected arguments."
+        ctx.history.append({"role": "system", "content": system_error_message})
+        # Skill execution failed validation, so no further dispatch of its result is needed.
+        return # Exit _dispatch_tool_call early
 
+    except WebSocketDisconnect:
+        log.warning(f"WebSocket disconnected during tool '{call.name}' for session {ctx.session_id}.")
+        raise # Re-raise to be handled by the main WebSocket handler
+    except Exception as e:
+        log.exception(f"_dispatch_tool_call: Error executing tool '{call.name}' for session {ctx.session_id}: {e}")
+        # Use the more specific send_error_response helper
+        await send_error_response(
+            ws,
+            message=f"An unexpected error occurred while trying to use the '{call.name}' tool.",
+            error_code="TOOL_EXECUTION_ERROR",
+            details=str(e),
+            state=ctx.user_model_state
+        )
+        # Also add a system message for LLM awareness of general tool errors
+        if ctx.history is None: ctx.history = []
+        system_error_message = f"System: The previous tool call to '{call.name}' encountered an unexpected error: {e}. Args: {json.dumps(call.args)}. You may need to try a different approach or tool."
+        ctx.history.append({"role": "system", "content": system_error_message})
+        return # Exit _dispatch_tool_call early after general error
+
+    # --- Post-invocation processing based on tool_result (if no exception occurred) ---
+    try:
         if call.name == "get_board_state":
-            # The skill returns the board state (List[Dict]) or an error list.
-            # We need to communicate this back to the LLM if it was a direct result, 
-            # or it might be used by a subsequent step in a more complex agent not yet implemented.
-            # For now, let's assume the LLM needs this data, so we add it to context or history.
-            log.info(f"Tool '{call.name}' returned: {tool_result}")
-            # One way to let the LLM know is to append a system message to history with the result.
+            log.info(f"Tool '{call.name}' returned: {tool_result} for session {ctx.session_id}")
             if ctx.history is None: ctx.history = []
             ctx.history.append({
                 "role": "system", 
