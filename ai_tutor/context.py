@@ -4,6 +4,7 @@ import json
 from uuid import UUID
 from typing import Optional, List, Any, Dict, Literal, TYPE_CHECKING, Union
 from dataclasses import is_dataclass, asdict
+import asyncio
 
 # Simplified JSONEncoder default: always return serializable types
 def _custom_json_encoder_default(self, obj):
@@ -79,6 +80,7 @@ class TutorContext(BaseModel):
     # Add for session resume:
     last_event: Optional[dict] = None # Store the last event for session resume
     pending_interaction_type: Optional[str] = None # Store pending interaction type for resume
+    pending_board_state_requests: Dict[str, asyncio.Future] = Field(default_factory=dict, description="Stores asyncio Future objects for pending board state requests from the FE.")
     # Track resource-intensive skill usage budget
     high_cost_calls: int = Field(0, description="Number of high-cost (e.g. GPT-4) skill calls in this session")
     max_high_cost_calls: int = Field(3, description="Max allowed high-cost skill calls per session")

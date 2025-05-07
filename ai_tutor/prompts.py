@@ -21,11 +21,13 @@ AVAILABLE TOOLS (Choose ONE name from this list):
     *   Args: {{ "question_id": "unique_id", "question": "..." }}
 4.  `draw`: Use this ONLY if a visual diagram/shape/text is essential AND `Current Mode` is 'chat_and_whiteboard'. Generate the SVG string.
     *   Args: {{ "svg": "<svg>...</svg>" }}
-5.  `reflect`: Call this internally if you need to pause, analyze the user's state, and plan your next pedagogical move (no user output).
+5.  `get_board_state`: Call this to get a list of all objects currently drawn on the whiteboard, including their IDs and properties. Useful before trying to modify or refer to existing drawings.
+    *   Args: {{}} # No arguments needed from the LLM
+6.  `reflect`: Call this internally if you need to pause, analyze the user's state, and plan your next pedagogical move (no user output).
     *   Args: {{ "thought": "Your internal reasoning..." }}
-6.  `summarise_context`: Call this internally if the conversation history becomes too long (no user output).
+7.  `summarise_context`: Call this internally if the conversation history becomes too long (no user output).
     *   Args: {{ }}
-7.  `end_session`: Call this ONLY when the learning objective is complete or you cannot proceed further.
+8.  `end_session`: Call this ONLY when the learning objective is complete or you cannot proceed further.
     *   Args: {{ "reason": "objective_complete" | "stuck" | "budget_exceeded" | "user_request" }}
 
 Your Task:

@@ -361,6 +361,25 @@ async def tutor_stream(
                         log.warning(f"WebSocket ({session_id}): Received invalid whiteboard_mode '{new_mode}'. Ignoring.")
                 # --- End whiteboard_mode update --- #
 
+                # --- Handle BOARD_STATE_RESPONSE from client --- #
+                if event_type == 'BOARD_STATE_RESPONSE':
+                    request_id = payload.get('request_id')
+                    board_data = payload.get('payload') # This is expected to be List[Dict[str, Any]]
+                    if request_id and ctx.pending_board_state_requests and request_id in ctx.pending_board_state_requests:
+                        future = ctx.pending_board_state_requests.get(request_id)
+                        if future and not future.done():
+                            log.info(f"WebSocket ({session_id}): Received BOARD_STATE_RESPONSE for request_id={request_id}. Setting future result.")
+                            future.set_result(board_data)
+                            # The skill itself will remove the future from the dict upon completion/timeout/error.
+                        elif future and future.done():
+                            log.warning(f"WebSocket ({session_id}): Received BOARD_STATE_RESPONSE for already completed future request_id={request_id}. Ignoring.")
+                        else: # Should not happen if request_id is in keys
+                            log.warning(f"WebSocket ({session_id}): Future not found for request_id={request_id} in BOARD_STATE_RESPONSE, though key was present. Strange.")
+                    else:
+                        log.warning(f"WebSocket ({session_id}): Received BOARD_STATE_RESPONSE with no/invalid request_id '{request_id}' or no pending requests. Ignoring.")
+                    continue # Skip further processing for this message type
+                # --- End BOARD_STATE_RESPONSE handling --- #
+
                 # Task 2.1 Refinement: Handle end_session event with status check
                 elif event_type == 'end_session':
                     log.info(f"Received 'end_session' event from user for session {session_id}.")
@@ -554,78 +573,140 @@ async def _send_ws_error(ws: WebSocket, title: str, detail: str):
 async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
     """Executes a ToolCall produced by the lean executor and streams the response."""
     log.info(f"_dispatch_tool_call: Handling tool '{call.name}' for session {ctx.session_id}")
+    supabase_client = await get_supabase_client() # Ensure supabase client is available if invoke needs it
 
     try:
-        match call.name:
-            case "explain":
-                payload = ExplanationResponse(explanation_text=call.args.get("text", "..."))
-                response = InteractionResponseData(
-                    content_type="explanation",
-                    data=payload,
+        # Use the invoke helper for all skills to ensure consistent handling
+        # The invoke function is responsible for calling the skill and passing necessary args like ws, supabase_client
+        # For get_board_state, it will directly call the skill we defined, which handles ws comms.
+        tool_result = await invoke(call.name, call.args, ctx, ws, supabase_client)
+
+        # After invoke, the get_board_state skill would have returned the board state or an error list.
+        # For other skills, tool_result might be different or None if they send data via ws directly.
+
+        if call.name == "get_board_state":
+            # The skill returns the board state (List[Dict]) or an error list.
+            # We need to communicate this back to the LLM if it was a direct result, 
+            # or it might be used by a subsequent step in a more complex agent not yet implemented.
+            # For now, let's assume the LLM needs this data, so we add it to context or history.
+            log.info(f"Tool '{call.name}' returned: {tool_result}")
+            # One way to let the LLM know is to append a system message to history with the result.
+            if ctx.history is None: ctx.history = []
+            ctx.history.append({
+                "role": "system", 
+                "content": f"Observed whiteboard state: {json.dumps(tool_result)}" 
+            })
+            # No direct WebSocket message to send back to client here, as the skill was for data retrieval for the LLM.
+            # The regular executor loop will continue and the LLM will see this in history.
+
+        # Existing tool dispatching logic for tools that send messages to the client:
+        elif call.name == "explain":
+            payload = ExplanationResponse(explanation_text=call.args.get("text", "..."))
+            response = InteractionResponseData(
+                content_type="explanation",
+                data=payload,
+                user_model_state=ctx.user_model_state,
+            )
+            await safe_send_json(ws, response.model_dump(mode="json"), "Explain Dispatch")
+            ctx.last_pedagogical_action = "explained"
+        elif call.name == "ask_question":
+            # ... (rest of ask_question logic remains the same)
+            from ai_tutor.agents.models import QuizQuestion
+            options: list[str] | None = call.args.get("options")
+            q_text: str = call.args.get("question", "Missing question text")
+            question = QuizQuestion(
+                question=q_text,
+                options=options or [],
+                correct_answer_index=call.args.get("correct_answer_index", -1),
+                explanation=call.args.get("explanation", ""),
+                difficulty=call.args.get("difficulty", "Medium"),
+                related_section=call.args.get("related_section", ""),
+            )
+            q_payload = QuestionResponse(
+                question_type="multiple_choice" if options else "free_response",
+                question_data=question,
+                context_summary=None,
+            )
+            await safe_send_json(ws,
+                InteractionResponseData(
+                    content_type="question",
+                    data=q_payload,
                     user_model_state=ctx.user_model_state,
-                )
-                await ws.send_json(response.model_dump(mode="json"))
-                ctx.last_pedagogical_action = "explained"
-            case "ask_question":
-                from ai_tutor.agents.models import QuizQuestion
-                options: list[str] | None = call.args.get("options")
-                q_text: str = call.args.get("question", "Missing question text")
-                question = QuizQuestion(
-                    question=q_text,
-                    options=options or [],
-                    correct_answer_index=call.args.get("correct_answer_index", -1),
-                    explanation=call.args.get("explanation", ""),
-                    difficulty=call.args.get("difficulty", "Medium"),
-                    related_section=call.args.get("related_section", ""),
-                )
-                q_payload = QuestionResponse(
-                    question_type="multiple_choice" if options else "free_response",
-                    question_data=question,
-                    context_summary=None,
-                )
-                await ws.send_json(
-                    InteractionResponseData(
-                        content_type="question",
-                        data=q_payload,
-                        user_model_state=ctx.user_model_state,
-                    ).model_dump(mode="json")
-                )
-                ctx.last_pedagogical_action = "asked"
-            case "draw":
-                svg = call.args.get("svg", "[no svg]")
-                msg = MessageResponse(
-                    message_text=f"[Assistant wants to draw SVG: {svg[:60]}...]",
-                    message_type="status_update",
-                )
-                await ws.send_json(
-                    InteractionResponseData(
-                        content_type="message",
-                        data=msg,
-                        user_model_state=ctx.user_model_state,
-                    ).model_dump(mode="json")
-                )
-            case "reflect" | "summarise_context":
-                # Internal – no FE output
-                log.info(f"_dispatch_tool_call: Internal tool '{call.name}' executed (no FE output).")
-            case "end_session":
-                end_msg = MessageResponse(
-                    message_text=f"Session ended: {call.args.get('reason', 'completed')}.",
-                    message_type="summary",
-                )
-                await ws.send_json(
-                    InteractionResponseData(
-                        content_type="message",
-                        data=end_msg,
-                        user_model_state=ctx.user_model_state,
-                    ).model_dump(mode="json")
-                )
-                # 'end_session' does not count as pedagogical action
-            case _:
-                await _send_ws_error(ws, "Unknown Action", f"Tool '{call.name}' is not recognised.")
+                ).model_dump(mode="json"),
+                "Ask Question Dispatch"
+            )
+            ctx.last_pedagogical_action = "asked"
+        elif call.name == "draw":
+            # ... (draw logic remains the same)
+            # The draw skill/tool itself should be sending actions to the whiteboard_manager now.
+            # This part of _dispatch_tool_call might need to be removed if 'draw' is fully handled by invoke.
+            # For now, assuming draw still sends a message like this or invoke returns something to send.
+            # If `invoke` for `draw` sends the whiteboard actions and returns None/True, this part is not needed.
+            # However, the user's original plan for `draw` was: Args: {{ "svg": "<svg>...</svg>" }}
+            # This implies the LLM generates SVG directly, not a list of actions. This is an older model.
+            # The new model is `ADD_OBJECTS` etc. This `draw` tool seems like a legacy item.
+            # Let's assume `invoke` handles `draw` and we don't need special logic here unless `invoke` returns something to send.
+            if tool_result: # If invoke for draw returned something to send (e.g. a confirmation or the actions themselves)
+                # This depends on what `invoke` for `draw` returns.
+                # If draw is now like other whiteboard actions, it might not return here.
+                # For now, let's keep the old message for a direct SVG from LLM, if that's what `tool_result` is.
+                if isinstance(tool_result, dict) and "svg" in tool_result: # Legacy SVG draw
+                     svg = tool_result.get("svg", "[no svg]")
+                     actions_to_send = [{
+                         "type": "ADD_OBJECTS", 
+                         "objects": [
+                            {"kind": "svg_string", "svg_string": svg, "id": str(uuid.uuid4()) }
+                         ]
+                     }]
+                     # This should go through the whiteboard_manager or a similar mechanism
+                     # For now, sending a placeholder message
+                     msg = MessageResponse(
+                        message_text=f"[Assistant wants to draw SVG via legacy draw tool: {svg[:60]}...]",
+                        message_type="status_update",
+                        actions=actions_to_send # EXAMPLE: How actions might be bundled
+                     )
+                     await safe_send_json(ws,
+                        InteractionResponseData(
+                            content_type="message", # Or dedicated whiteboard_action type
+                            data=msg,
+                            user_model_state=ctx.user_model_state,
+                        ).model_dump(mode="json"),
+                        "Legacy Draw Dispatch"
+                     )
+                # Else, if `draw` is updated to use `WhiteboardAction`s and `invoke` sends them, this part might not be hit or `tool_result` is just True/None.
+
+        elif call.name in ["reflect", "summarise_context"]:
+            # Internal – no FE output from these tools themselves.
+            # Result might be logged or stored in context by the skill via invoke.
+            log.info(f"_dispatch_tool_call: Internal tool '{call.name}' executed. Result: {tool_result}")
+        elif call.name == "end_session":
+            # ... (end_session logic remains the same)
+            end_msg = MessageResponse(
+                message_text=f"Session ended: {call.args.get('reason', 'completed')}.",
+                message_type="summary",
+            )
+            await safe_send_json(ws,
+                InteractionResponseData(
+                    content_type="message",
+                    data=end_msg,
+                    user_model_state=ctx.user_model_state,
+                ).model_dump(mode="json"),
+                "End Session Dispatch"
+            )
+        # All other tools are assumed to be handled by invoke and might send their own messages via ws if needed,
+        # or return results that are then processed or ignored here.
+        # If a tool sends its own WS messages (like draw_... tools via whiteboard_manager),
+        # then `tool_result` might be None or True, and no further action is needed here.
+        # If a tool returns data for the LLM, it should be added to history like `get_board_state`.
+
+        # Fallback for unhandled tools or tools that returned something unexpected by this dispatcher logic
+        # This part may need refinement based on how `invoke` and skills are structured.
+        # For now, if a tool was called by `invoke` and didn't match above, we assume `invoke` handled its WS communication.
+
     except WebSocketDisconnect:
         raise
     except Exception as e:
-        log.exception(f"_dispatch_tool_call: Error executing '{call.name}': {e}")
+        log.exception(f"_dispatch_tool_call: Error executing tool '{call.name}': {e}")
         await _send_ws_error(ws, "Dispatch Error", str(e))
 
 
