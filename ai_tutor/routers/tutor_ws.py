@@ -32,6 +32,7 @@ import typing
 from ai_tutor.prompts import LEAN_EXECUTOR_PROMPT_TEMPLATE
 from ai_tutor.models.tool_calls import ToolCall
 from ai_tutor.core.llm import LLMClient
+from ai_tutor.utils.llm_utils import retry_on_json_error # Import the wrapper
 
 router = APIRouter()
 
@@ -340,8 +341,25 @@ async def tutor_stream(
                     continue
 
                 if event_type == 'ping' or event_type == 'system_tick':
-                     log.debug(f"WebSocket: Received system message, ignoring for {session_id}.", message_type=event_type)
+                     log.debug(f"WebSocket: Received system message, ignoring for {session_id}.") # Removed , message_type=event_type
                      continue
+
+                # --- Handle whiteboard_mode update --- #
+                if 'whiteboard_mode' in payload:
+                    new_mode = payload.get('whiteboard_mode')
+                    if new_mode in ['chat_only', 'chat_and_whiteboard']:
+                        if ctx.interaction_mode != new_mode:
+                            log.info(f"WebSocket ({session_id}): Updating interaction_mode from '{ctx.interaction_mode}' to '{new_mode}'.")
+                            ctx.interaction_mode = new_mode
+                            # Persist this change immediately
+                            if user:
+                                await session_manager.update_session_context(supabase, session_id, user.id, ctx)
+                                log.info(f"WebSocket ({session_id}): Persisted interaction_mode='{new_mode}'.")
+                            else:
+                                log.warning(f"WebSocket ({session_id}): Cannot persist interaction_mode, user object is missing.")
+                    else:
+                        log.warning(f"WebSocket ({session_id}): Received invalid whiteboard_mode '{new_mode}'. Ignoring.")
+                # --- End whiteboard_mode update --- #
 
                 # Task 2.1 Refinement: Handle end_session event with status check
                 elif event_type == 'end_session':
@@ -495,32 +513,28 @@ async def tutor_stream(
 # ===============================
 
 def _build_lean_prompt(
+    ctx: TutorContext,
     objective: "FocusObjective",
     user_model_state: UserModelState | None,
     last_action: Optional[str] | None = None,
 ) -> str:
-    """Builds the system prompt for the lean executor turn.
+    """Builds the prompt for the lean executor LLM, incorporating context and tool list."""
+    # Initialize UserModelState if None
+    current_user_state = user_model_state if user_model_state is not None else UserModelState()
+    user_state_str = current_user_state.model_dump_json(indent=2) # Pretty print for LLM
 
-    Args:
-        objective: Current focus objective.
-        user_model_state: Snapshot of the user's model.
-        last_action: The last pedagogical action the tutor took (e.g. "explained", "asked").
-    """
-    user_state_json = "No user model available."
-    if user_model_state:
-        try:
-            user_state_json = user_model_state.model_dump_json(indent=2)
-        except Exception as e:
-            log.error(f"_build_lean_prompt: Failed to serialise user model: {e}")
-            user_state_json = str(user_model_state)
+    # Format last action
+    last_action_str = str(last_action) if last_action else "None"
 
-    return LEAN_EXECUTOR_PROMPT_TEMPLATE.format(
-        objective_topic=getattr(objective, "topic", "N/A"),
-        objective_goal=getattr(objective, "learning_goal", "N/A"),
-        objective_threshold=getattr(objective, "target_mastery", 0.8),
-        user_state_json=user_state_json,
-        last_action_str=last_action or "None (start of objective)",
+    prompt = LEAN_EXECUTOR_PROMPT_TEMPLATE.format(
+        objective_topic=objective.topic,
+        objective_goal=objective.goal,
+        objective_threshold=objective.target_mastery_threshold,
+        user_state_json=user_state_str,
+        last_action_str=last_action_str,
+        interaction_mode=ctx.interaction_mode # Added interaction_mode
     )
+    return prompt
 
 
 async def _send_ws_error(ws: WebSocket, title: str, detail: str):
@@ -620,14 +634,26 @@ async def _run_executor_turn(ctx: TutorContext, objective: "FocusObjective", ws:
     llm = LLMClient()
 
     # Build prompt
-    system_prompt = _build_lean_prompt(objective, ctx.user_model_state, ctx.last_pedagogical_action)
+    system_prompt = _build_lean_prompt(ctx, objective, ctx.user_model_state, ctx.last_pedagogical_action)
 
     # Prepare messages
     history = ctx.history or []
     messages = history + [{"role": "system", "content": system_prompt}]
+    
+    # Default LLM kwargs (can be overridden or extended)
+    llm_kwargs = {
+        "temperature": ctx.settings.executor_temperature, # Example: Use a setting from context
+        # Add other default LLM parameters if needed
+    }
 
     try:
-        resp = await llm.chat(messages=messages, response_format={"type": "json_object"})
+        # Wrap the llm.chat call with the retry wrapper
+        resp = await retry_on_json_error(
+            llm.chat, 
+            messages=messages, 
+            response_format={"type": "json_object"}, 
+            **llm_kwargs
+        )
 
         # The wrapper may return either a raw content string (preferred) or a dict if
         # OpenAI returned JSON mode with no `content` field.
@@ -640,30 +666,44 @@ async def _run_executor_turn(ctx: TutorContext, objective: "FocusObjective", ws:
             if raw_json_str is None and set(resp.keys()) >= {"name", "args"}:
                 tool_call_data = resp
             elif raw_json_str is None:
-                raise ValueError("LLM returned dict without 'content' or tool fields:")
+                # If no content and not a direct tool call, log and raise error
+                log.error(f"_run_executor_turn: LLM returned dict without 'content' or direct tool call structure. Response: {resp}")
+                raise ValueError("LLM returned dict without 'content' or tool fields.")
         else:
+            log.error(f"_run_executor_turn: Unexpected response type from LLMClient: {type(resp)}. Response: {resp}")
             raise ValueError(f"Unexpected response type from LLMClient: {type(resp)}")
 
         # If we haven't parsed tool_call_data yet, parse from raw_json_str
         if 'tool_call_data' not in locals():
             if not raw_json_str:
+                log.error("_run_executor_turn: LLM returned empty or null JSON string.")
                 raise ValueError("LLM returned empty content")
             tool_call_data = json.loads(raw_json_str)
 
         call = ToolCall(**tool_call_data)
 
         # Append assistant message JSON to history for traceability
-        history.append({"role": "assistant", "content": json.dumps(tool_call_data)})
-        ctx.history = history
+        # Ensure history is initialized if it's None
+        if ctx.history is None:
+            ctx.history = []
+        ctx.history.append({"role": "assistant", "content": json.dumps(tool_call_data)}) # Storing the raw JSON for the LLM call
 
         await _dispatch_tool_call(call, ctx, ws)
 
     except (json.JSONDecodeError, ValidationError) as e:
-        log.error(f"_run_executor_turn: LLM JSON parse/validation error: {e}")
-        await _send_ws_error(ws, "Processing Error", str(e))
+        log.error(f"_run_executor_turn: LLM JSON parse/validation error after retries: {e}. System Prompt: {system_prompt[:500]}...", exc_info=True)
+        await _send_ws_error(ws, "Processing Error", f"Failed to process the AI's response. Details: {type(e).__name__}")
     except WebSocketDisconnect:
-        raise
+        log.info("_run_executor_turn: WebSocket disconnected during executor turn.")
+        raise # Re-raise to be handled by the main WebSocket loop
     except Exception as e:
-        log.exception(f"_run_executor_turn: Unexpected error: {e}")
-        await _send_ws_error(ws, "Internal Error", str(e))
+        log.exception(f"_run_executor_turn: Unexpected error: {e}. System Prompt: {system_prompt[:500]}...", exc_info=True)
+        await _send_ws_error(ws, "Internal Error", "An unexpected error occurred while processing your request.")
 # ===== End Lean Executor Helpers =====
+
+# --- NEW: Global LLMClient Instance --- #
+# Consider initializing LLMClient once if it's stateless and thread-safe
+# global_llm_client = LLMClient()
+# Then use global_llm_client in _run_executor_turn if appropriate.
+# For now, keeping it instantiated per call for simplicity, assuming it's lightweight.
+# --- END NEW ---

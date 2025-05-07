@@ -58,6 +58,7 @@ class TutorContext(BaseModel):
     folder_id: Optional[UUID] = None # Link to the folder ID
     vector_store_id: Optional[str] = None
     session_goal: Optional[str] = None  # Add session_goal to store high-level session objective
+    interaction_mode: Literal['chat_only', 'chat_and_whiteboard'] = 'chat_and_whiteboard' # Added interaction_mode
     uploaded_file_paths: List[str] = Field(default_factory=list)
     analysis_result: Optional['AnalysisResult'] = None # Use forward reference
     knowledge_base_path: Optional[str] = None # Add path to KB file
