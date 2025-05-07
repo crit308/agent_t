@@ -25,9 +25,10 @@ from ai_tutor.agents.planner_agent import determine_session_focus
 from ai_tutor.interaction_logger import log_interaction
 from ai_tutor.utils.tool_helpers import invoke  # Import invoke globally to avoid local shadowing
 import asyncio
+import uuid # Added import
+from typing import Dict # Ensure Dict is imported, though it likely is already
+
 from ai_tutor.services.session_tasks import queue_session_analysis
-import typing
-from ai_tutor.exceptions import ToolInputError # Added import
 
 # Import prompt template (moved to ai_tutor.prompts)
 from ai_tutor.prompts import LEAN_EXECUTOR_PROMPT_TEMPLATE
@@ -44,6 +45,9 @@ session_manager = SessionManager()
 ALLOW_URL_TOKEN = os.getenv("ENV", "prod") != "prod"
 
 log = logging.getLogger(__name__)
+
+# Dictionary to hold pending futures for board state requests
+_pending_board_state_requests: Dict[str, asyncio.Future] = {}
 
 # --- Validation Helper --- #
 
@@ -366,13 +370,13 @@ async def tutor_stream(
                 if event_type == 'BOARD_STATE_RESPONSE':
                     request_id = payload.get('request_id')
                     board_data = payload.get('payload') # This is expected to be List[Dict[str, Any]]
-                    if request_id and ctx.pending_board_state_requests and request_id in ctx.pending_board_state_requests:
-                        future = ctx.pending_board_state_requests.get(request_id)
-                        if future and not future.done():
+                    if request_id and request_id in _pending_board_state_requests:
+                        future = _pending_board_state_requests[request_id]
+                        if not future.done():
                             log.info(f"WebSocket ({session_id}): Received BOARD_STATE_RESPONSE for request_id={request_id}. Setting future result.")
                             future.set_result(board_data)
                             # The skill itself will remove the future from the dict upon completion/timeout/error.
-                        elif future and future.done():
+                        elif future.done():
                             log.warning(f"WebSocket ({session_id}): Received BOARD_STATE_RESPONSE for already completed future request_id={request_id}. Ignoring.")
                         else: # Should not happen if request_id is in keys
                             log.warning(f"WebSocket ({session_id}): Future not found for request_id={request_id} in BOARD_STATE_RESPONSE, though key was present. Strange.")
@@ -574,14 +578,43 @@ async def _send_ws_error(ws: WebSocket, title: str, detail: str):
 async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
     """Executes a ToolCall produced by the lean executor and streams the response."""
     log.info(f"_dispatch_tool_call: Handling tool '{call.name}' for session {ctx.session_id}")
-    supabase_client = await get_supabase_client() # Ensure supabase client is available if invoke needs it
+    supabase_client = await get_supabase_client() # Ensure supabase client is available
     tool_result = None # Initialize tool_result
 
     try:
-        # Use the invoke helper for all skills to ensure consistent handling
-        tool_result = await invoke(call.name, call.args, ctx, ws, supabase_client)
+        if call.name == "get_board_state":
+            # --- Skill: Get Whiteboard State (Special Handling) ---
+            request_id = str(uuid.uuid4())
+            future = asyncio.Future()
+            _pending_board_state_requests[request_id] = future
+            log.debug(f"WS ({ctx.session_id if ctx else 'UnknownSession'}): Stored future for board state request {request_id}")
 
-    except ToolInputError as e:
+            try:
+                await safe_send_json(ws, {"type": "REQUEST_BOARD_STATE", "request_id": request_id}, f"RequestBoardStateSend_{request_id}")
+                log.debug(f"WS ({ctx.session_id if ctx else 'UnknownSession'}): Waiting for board state response for {request_id} (timeout 10s)")
+                tool_result = await asyncio.wait_for(future, timeout=10.0) # Assign to tool_result
+                log.debug(f"WS ({ctx.session_id if ctx else 'UnknownSession'}): Received board state response for {request_id}: {tool_result}")
+            except asyncio.TimeoutError:
+                log.error(f"WS ({ctx.session_id if ctx else 'UnknownSession'}): Timeout waiting for board state response for request {request_id}")
+                await send_error_response(ws, "Timeout getting whiteboard state.", "BOARD_STATE_TIMEOUT", state=ctx.user_model_state if ctx else None)
+                return # Exit _dispatch_tool_call early for this skill
+            except Exception as wait_err:
+                log.error(f"WS ({ctx.session_id if ctx else 'UnknownSession'}): Error waiting for board state future {request_id}: {wait_err}", exc_info=True)
+                await send_error_response(ws, "Error getting whiteboard state.", "BOARD_STATE_WAIT_ERROR", state=ctx.user_model_state if ctx else None)
+                return # Exit _dispatch_tool_call early for this skill
+            finally:
+                removed_future = _pending_board_state_requests.pop(request_id, None)
+                if removed_future:
+                    log.debug(f"WS ({ctx.session_id if ctx else 'UnknownSession'}): Removed future for board state request {request_id}")
+                else:
+                    log.warning(f"WS ({ctx.session_id if ctx else 'UnknownSession'}): Attempted to remove future for {request_id}, but it was not found (already removed or error before send).")
+            # tool_result now holds the specs or was handled if an error occurred.
+        
+        else:
+            # --- All Other Skills: Use invoke helper --- 
+            tool_result = await invoke(call.name, call.args, ctx, ws, supabase_client)
+
+    except ToolInputError as e: # This now covers errors from invoke() for other skills
         log.error(f"ToolInputError in skill '{call.name}' for session {ctx.session_id}: {e}. Args: {call.args}", exc_info=True)
         await send_error_response(
             ws,
@@ -590,19 +623,16 @@ async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
             details=str(e),
             state=ctx.user_model_state
         )
-        # Add a system message to conversation history for LLM correction
         if ctx.history is None: ctx.history = []
         system_error_message = f"System: The previous tool call to '{call.name}' failed due to invalid arguments: {e}. Args: {json.dumps(call.args)}. Please review the arguments and the tool's schema, then try the call again with corrected arguments."
         ctx.history.append({"role": "system", "content": system_error_message})
-        # Skill execution failed validation, so no further dispatch of its result is needed.
         return # Exit _dispatch_tool_call early
 
     except WebSocketDisconnect:
         log.warning(f"WebSocket disconnected during tool '{call.name}' for session {ctx.session_id}.")
         raise # Re-raise to be handled by the main WebSocket handler
-    except Exception as e:
+    except Exception as e: # General errors from invoke() or other parts of the dispatch before post-processing
         log.exception(f"_dispatch_tool_call: Error executing tool '{call.name}' for session {ctx.session_id}: {e}")
-        # Use the more specific send_error_response helper
         await send_error_response(
             ws,
             message=f"An unexpected error occurred while trying to use the '{call.name}' tool.",
@@ -610,23 +640,25 @@ async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
             details=str(e),
             state=ctx.user_model_state
         )
-        # Also add a system message for LLM awareness of general tool errors
         if ctx.history is None: ctx.history = []
         system_error_message = f"System: The previous tool call to '{call.name}' encountered an unexpected error: {e}. Args: {json.dumps(call.args)}. You may need to try a different approach or tool."
         ctx.history.append({"role": "system", "content": system_error_message})
-        return # Exit _dispatch_tool_call early after general error
+        return # Exit _dispatch_tool_call early
 
-    # --- Post-invocation processing based on tool_result (if no exception occurred) ---
+    # --- Post-invocation processing based on tool_result (if no exception occurred above) ---
+    # This section is reached if get_board_state succeeded, or if invoke() for other skills succeeded.
     try:
         if call.name == "get_board_state":
-            log.info(f"Tool '{call.name}' returned: {tool_result} for session {ctx.session_id}")
+            # tool_result already contains the board state from the special handling above
+            log.info(f"Tool '{call.name}' (handled specially) returned: {tool_result} for session {ctx.session_id}")
             if ctx.history is None: ctx.history = []
-            ctx.history.append({
-                "role": "system", 
-                "content": f"Observed whiteboard state: {json.dumps(tool_result)}" 
-            })
+            # Only append to history if tool_result is not None (i.e., no timeout/error occurred that was handled by returning early)
+            if tool_result is not None:
+                 ctx.history.append({
+                    "role": "system", 
+                    "content": f"Observed whiteboard state: {json.dumps(tool_result)}" 
+                })
             # No direct WebSocket message to send back to client here, as the skill was for data retrieval for the LLM.
-            # The regular executor loop will continue and the LLM will see this in history.
 
         # Existing tool dispatching logic for tools that send messages to the client:
         elif call.name == "explain":
