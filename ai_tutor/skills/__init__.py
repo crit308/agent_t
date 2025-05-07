@@ -101,4 +101,7 @@ from .draw_axis import draw_axis_actions
 from .explain_diagram_part import explain_diagram_part
 
 # --- NEW Primitive Drawing Tools ---
-from .drawing_tools import draw_text, draw_shape, style_token, clear_board 
+from .drawing_tools import draw_text, draw_shape, style_token, clear_board
+
+# --- Grouping Skills ---
+from .whiteboard_grouping import group_objects, move_group, delete_group 

@@ -19,15 +19,25 @@ AVAILABLE TOOLS (Choose ONE name from this list):
     *   Args: {{ "question_id": "unique_id", "question": "...", "options": ["opt1", "opt2", ...] }}
 3.  `ask_question`: Use this to ask an open-ended (free response) question.
     *   Args: {{ "question_id": "unique_id", "question": "..." }}
-4.  `draw`: Use this ONLY if a visual diagram/shape/text is essential AND `Current Mode` is 'chat_and_whiteboard'. Generate the SVG string.
-    *   Args: {{ "svg": "<svg>...</svg>" }}
+4.  `draw`: Use this ONLY if a visual diagram/shape/text is essential AND `Current Mode` is 'chat_and_whiteboard'. This tool creates or updates objects on the whiteboard.
+    *   Args: {{ "objects": [CanvasObjectSpec, ...] }} where CanvasObjectSpec defines an object (e.g., kind: "rect", "text", etc.) and its properties.
+    *   In CanvasObjectSpec, you can use optional coordinate fields: `xPct`, `yPct` (for position) and `widthPct`, `heightPct` (for size). These are percentages (0.0 to 1.0) of the total canvas dimensions (e.g., 0.5 means 50%). Using these percentage-based coordinates is recommended for creating responsive layouts that adapt to different canvas sizes. Example: `{{ "id": "obj1", "kind": "rect", "xPct": 0.1, "yPct": 0.1, "widthPct": 0.25, "heightPct": 0.5, "style": {{ "fill": "blue" }} }}`.
 5.  `get_board_state`: Call this to get a list of all objects currently drawn on the whiteboard, including their IDs and properties. Useful before trying to modify or refer to existing drawings.
     *   Args: {{}} # No arguments needed from the LLM
-6.  `reflect`: Call this internally if you need to pause, analyze the user's state, and plan your next pedagogical move (no user output).
+6.  `group_objects`: Use this to group existing whiteboard objects together. Once grouped, they can be moved or deleted as a single unit.
+    *   Args: {{ "group_id": "unique_group_id", "object_ids": ["id_obj1", "id_obj2", ...] }}
+    *   Example: `{{ "name": "group_objects", "args": {{ "group_id": "concept-cluster-1", "object_ids": ["text-definition", "rect-highlight"] }} }}`
+7.  `move_group`: Use this to move an entire group of objects on the whiteboard.
+    *   Args: {{ "group_id": "existing_group_id", "dx_pct": 0.1, "dy_pct": -0.05 }} (dx_pct and dy_pct are percentage changes of canvas width/height)
+    *   Example: `{{ "name": "move_group", "args": {{ "group_id": "concept-cluster-1", "dx_pct": 0.05, "dy_pct": 0.1 }} }}` (moves group right by 5% of canvas width and down by 10% of canvas height)
+8.  `delete_group`: Use this to delete a group and all its member objects from the whiteboard.
+    *   Args: {{ "group_id": "existing_group_id" }}
+    *   Example: `{{ "name": "delete_group", "args": {{ "group_id": "concept-cluster-1" }} }}`
+9.  `reflect`: Call this internally if you need to pause, analyze the user's state, and plan your next pedagogical move (no user output).
     *   Args: {{ "thought": "Your internal reasoning..." }}
-7.  `summarise_context`: Call this internally if the conversation history becomes too long (no user output).
+10. `summarise_context`: Call this internally if the conversation history becomes too long (no user output).
     *   Args: {{ }}
-8.  `end_session`: Call this ONLY when the learning objective is complete or you cannot proceed further.
+11. `end_session`: Call this ONLY when the learning objective is complete or you cannot proceed further.
     *   Args: {{ "reason": "objective_complete" | "stuck" | "budget_exceeded" | "user_request" }}
 
 Your Task:

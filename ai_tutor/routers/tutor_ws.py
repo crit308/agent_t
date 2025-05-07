@@ -693,6 +693,15 @@ async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
                 ).model_dump(mode="json"),
                 "End Session Dispatch"
             )
+        elif isinstance(tool_result, dict) and tool_result.get("type") and \
+             call.name in ["group_objects", "move_group", "delete_group"]:
+            log.info(f"Dispatching whiteboard action from tool '{call.name}': {tool_result}")
+            response = InteractionResponseData(
+                content_type="whiteboard_update",
+                whiteboard_actions=[tool_result],
+                user_model_state=ctx.user_model_state,
+            )
+            await safe_send_json(ws, response.model_dump(mode="json"), f"{call.name} Whiteboard Action Dispatch")
         # All other tools are assumed to be handled by invoke and might send their own messages via ws if needed,
         # or return results that are then processed or ignored here.
         # If a tool sends its own WS messages (like draw_... tools via whiteboard_manager),
