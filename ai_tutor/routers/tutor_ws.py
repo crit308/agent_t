@@ -844,13 +844,34 @@ async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
             )
         elif isinstance(tool_result, dict) and tool_result.get("type") and \
              call.name in ["group_objects", "move_group", "delete_group", "draw_latex"]:
+            # Specific whitelist for tools that we know produce a single action dict
             log.info(f"Dispatching whiteboard action from tool '{call.name}': {tool_result}")
             response = InteractionResponseData(
-                content_type="whiteboard_update",
+                content_type="message",  # Use existing allowed type
+                data=MessageResponse(
+                    response_type="status_update",
+                    message_text=f"Tutor performed whiteboard action: {tool_result.get('type')}"
+                ),
                 whiteboard_actions=[tool_result],
                 user_model_state=ctx.user_model_state,
             )
             await safe_send_json(ws, response.model_dump(mode="json"), f"{call.name} Whiteboard Action Dispatch")
+        elif isinstance(tool_result, dict) and tool_result.get("type") in [
+            "ADD_OBJECTS", "DELETE_OBJECTS", "UPDATE_OBJECTS", "SET_BACKGROUND"
+        ]:
+            log.info(
+                f"Generic whiteboard dispatch for tool '{call.name}' action type '{tool_result.get('type')}'."
+            )
+            response = InteractionResponseData(
+                content_type="message",
+                data=MessageResponse(
+                    response_type="status_update",
+                    message_text=f"Tutor performed whiteboard action: {tool_result.get('type')}"
+                ),
+                whiteboard_actions=[tool_result],
+                user_model_state=ctx.user_model_state,
+            )
+            await safe_send_json(ws, response.model_dump(mode="json"), f"Whiteboard Action Dispatch ({call.name})")
         # All other tools are assumed to be handled by invoke and might send their own messages via ws if needed,
         # or return results that are then processed or ignored here.
         # If a tool sends its own WS messages (like draw_... tools via whiteboard_manager),
@@ -890,6 +911,15 @@ async def _run_executor_turn(ctx: TutorContext, objective: "FocusObjective", ws:
     # Add other default LLM parameters here if needed
 
     try:
+        # ------------------------------------------------------------ #
+        #  Diagnostic logging before making the LLM call
+        # ------------------------------------------------------------ #
+        log.info("_run_executor_turn: Calling Executor LLM (messages=%d, temp=%s)", len(messages), llm_kwargs.get("temperature"))
+        log.debug("_run_executor_turn: First 2 messages preview: %s", [
+            {"role": m.get("role"), "content": str(m.get("content"))[:120] + ("..." if len(str(m.get("content"))) > 120 else "")}
+            for m in messages[:2]
+        ])
+
         # Wrap the llm.chat call with the retry wrapper
         resp = await retry_on_json_error(
             llm.chat, 
@@ -897,6 +927,8 @@ async def _run_executor_turn(ctx: TutorContext, objective: "FocusObjective", ws:
             response_format={"type": "json_object"}, 
             **llm_kwargs
         )
+
+        log.info("_run_executor_turn: LLM call completed successfully.")
 
         # The wrapper may return either a raw content string (preferred) or a dict if
         # OpenAI returned JSON mode with no `content` field.

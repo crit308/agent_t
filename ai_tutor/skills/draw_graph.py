@@ -2,6 +2,11 @@ from ai_tutor.skills import skill
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field, ValidationError
 from ai_tutor.exceptions import ToolInputError
+import logging  # Add logging
+from ai_tutor.context import TutorContext  # For type hint
+from agents.run_context import RunContextWrapper  # For type hint
+
+logger = logging.getLogger(__name__)  # Add logger
 
 class NodeSpec(BaseModel):
     id: str = Field(..., min_length=1)
@@ -26,12 +31,18 @@ class DrawGraphArgs(BaseModel):
     yPct: Optional[float] = None
 
 @skill
-async def draw_graph(ctx: Any, **kwargs) -> Dict[str, Any]:
+async def draw_graph(
+    ctx: Optional[Any] = None,  # Context is useful but optional to prevent invocation errors
+    **kwargs: Any,
+) -> Dict[str, Any]:
     """Generates the spec to automatically lay out and draw a graph."""
     try:
+        # Validate using kwargs directly
         validated_args = DrawGraphArgs(**kwargs)
+        logger.info(f"Validated args for draw_graph: {validated_args.model_dump()}")
     except ValidationError as e:
-        raise ToolInputError(f"Invalid arguments for draw_graph: {e}")
+        logger.error(f"Input validation failed for draw_graph: {e}")
+        raise ToolInputError(f"Invalid arguments for draw_graph: {e}") from e
 
     spec = {
         "id": validated_args.graph_id,
