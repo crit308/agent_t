@@ -35,6 +35,7 @@ from ai_tutor.prompts import LEAN_EXECUTOR_PROMPT_TEMPLATE
 from ai_tutor.models.tool_calls import ToolCall
 from ai_tutor.core.llm import LLMClient
 from ai_tutor.utils.llm_utils import retry_on_json_error # Import the wrapper
+from ai_tutor.exceptions import ToolInputError  # Import custom tool input error
 
 router = APIRouter()
 
@@ -550,13 +551,32 @@ def _build_lean_prompt(
     # Format last action
     last_action_str = str(last_action) if last_action else "None"
 
+    # --- Define session_summary ---
+    session_summary_text = "No session summary notes available."
+    if user_model_state and user_model_state.session_summary_notes:
+        # Join the list of notes into a single string
+        session_summary_text = "\n".join(f"- {note}" for note in user_model_state.session_summary_notes)
+        if not session_summary_text.strip(): # Handle empty notes case
+             session_summary_text = "Session summary notes are empty."
+    # --- End Define session_summary ---
+
+    # --- Define user_model_summary (using user_state_str for now as a placeholder) ---
+    # This is the full JSON dump of the user model state.
+    # Consider creating a more concise summary if LEAN_EXECUTOR_PROMPT_TEMPLATE requires it.
+    user_model_summary_text = user_state_str
+    # --- End Define user_model_summary ---
+
     prompt = LEAN_EXECUTOR_PROMPT_TEMPLATE.format(
+        session_summary=session_summary_text, 
+        user_model_summary=user_model_summary_text, 
         objective_topic=objective.topic,
-        objective_goal=objective.goal,
-        objective_threshold=objective.target_mastery_threshold,
-        user_state_json=user_state_str,
+        objective_goal=objective.learning_goal,
+        objective_threshold=getattr(objective, "target_mastery", 0.8), 
+        objective_priority=objective.priority,
+        objective_relevant_concepts=", ".join(objective.relevant_concepts) if objective.relevant_concepts else "None",
+        objective_suggested_approach=objective.suggested_approach or "None",
         last_action_str=last_action_str,
-        interaction_mode=ctx.interaction_mode # Added interaction_mode
+        interaction_mode=ctx.interaction_mode 
     )
     return prompt
 
@@ -580,6 +600,66 @@ async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
     log.info(f"_dispatch_tool_call: Handling tool '{call.name}' for session {ctx.session_id}")
     supabase_client = await get_supabase_client() # Ensure supabase client is available
     tool_result = None # Initialize tool_result
+
+    # --- Direct front-end tools that don't require backend skill invocation ---
+    if call.name in ["explain", "ask_question", "feedback", "message", "error", "end_session"]:
+        # Handle these tool calls immediately and return
+        try:
+            if call.name == "explain":
+                payload = ExplanationResponse(explanation_text=call.args.get("text", "..."))
+                content_type = "explanation"
+            elif call.name == "ask_question":
+                from ai_tutor.agents.models import QuizQuestion
+                options: list[str] | None = call.args.get("options")
+                q_text: str = call.args.get("question", "Missing question text")
+                question = QuizQuestion(
+                    question=q_text,
+                    options=options or [],
+                    correct_answer_index=call.args.get("correct_answer_index", -1),
+                    explanation=call.args.get("explanation", ""),
+                    difficulty=call.args.get("difficulty", "Medium"),
+                    related_section=call.args.get("related_section", ""),
+                )
+                payload = QuestionResponse(
+                    question_type="multiple_choice" if options else "free_response",
+                    question_data=question,
+                    context_summary=None,
+                )
+                content_type = "question"
+            elif call.name == "feedback":
+                from ai_tutor.agents.models import QuizFeedbackItem
+                feedback_item = QuizFeedbackItem(**call.args)
+                payload = FeedbackResponse(feedback=feedback_item)
+                content_type = "feedback"
+            elif call.name == "message":
+                payload = MessageResponse(**call.args)
+                content_type = "message"
+            elif call.name == "error":
+                payload = ErrorResponse(**call.args)
+                content_type = "error"
+            elif call.name == "end_session":
+                payload = MessageResponse(message_text=f"Session ended: {call.args.get('reason', 'completed')}.", message_type="summary")
+                content_type = "message"
+                # Optionally trigger session analysis etc.
+
+            response = InteractionResponseData(
+                content_type=content_type,
+                data=payload,
+                user_model_state=ctx.user_model_state,
+            )
+            await safe_send_json(ws, response.model_dump(mode="json"), f"Direct Dispatch {call.name}")
+
+            # Update last pedagogical action quickly
+            if call.name == "explain":
+                ctx.last_pedagogical_action = "explained"
+            elif call.name == "ask_question":
+                ctx.last_pedagogical_action = "asked"
+
+            return  # Important: skip further processing for these calls
+        except Exception as direct_err:
+            log.error(f"_dispatch_tool_call: Error handling direct tool '{call.name}': {direct_err}", exc_info=True)
+            await send_error_response(ws, "Error preparing response.", "DIRECT_TOOL_ERROR", details=str(direct_err), state=ctx.user_model_state)
+            return
 
     try:
         if call.name == "get_board_state":
@@ -611,8 +691,16 @@ async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
             # tool_result now holds the specs or was handled if an error occurred.
         
         else:
-            # --- All Other Skills: Use invoke helper --- 
-            tool_result = await invoke(call.name, call.args, ctx, ws, supabase_client)
+            # --- All Other Skills: Use invoke helper with correct signature ---
+            from ai_tutor.skills import SKILL_REGISTRY  # Local import to avoid circular deps
+            skill_obj = SKILL_REGISTRY.get(call.name)
+            if skill_obj is None:
+                log.error(f"_dispatch_tool_call: Skill '{call.name}' not found in registry.")
+                await send_error_response(ws, f"Unknown tool '{call.name}'.", "UNKNOWN_TOOL", state=ctx.user_model_state if ctx else None)
+                return
+
+            # Call invoke properly: pass the skill object, context, and unpacked args
+            tool_result = await invoke(skill_obj, ctx=ctx, **call.args)
 
     except ToolInputError as e: # This now covers errors from invoke() for other skills
         log.error(f"ToolInputError in skill '{call.name}' for session {ctx.session_id}: {e}. Args: {call.args}", exc_info=True)
@@ -792,10 +880,14 @@ async def _run_executor_turn(ctx: TutorContext, objective: "FocusObjective", ws:
     messages = history + [{"role": "system", "content": system_prompt}]
     
     # Default LLM kwargs (can be overridden or extended)
-    llm_kwargs = {
-        "temperature": ctx.settings.executor_temperature, # Example: Use a setting from context
-        # Add other default LLM parameters if needed
-    }
+    llm_kwargs: dict[str, Any] = {}
+    # Safely pull temperature from context settings if available
+    settings_obj = getattr(ctx, "settings", None)
+    if settings_obj is not None and getattr(settings_obj, "executor_temperature", None) is not None:
+        llm_kwargs["temperature"] = settings_obj.executor_temperature
+    else:
+        llm_kwargs["temperature"] = 0.7  # sensible default
+    # Add other default LLM parameters here if needed
 
     try:
         # Wrap the llm.chat call with the retry wrapper
@@ -830,6 +922,19 @@ async def _run_executor_turn(ctx: TutorContext, objective: "FocusObjective", ws:
                 log.error("_run_executor_turn: LLM returned empty or null JSON string.")
                 raise ValueError("LLM returned empty content")
             tool_call_data = json.loads(raw_json_str)
+
+        # --- Pre-validation: ensure required keys exist ---
+        if not isinstance(tool_call_data, dict) or "name" not in tool_call_data or "args" not in tool_call_data:
+            log.error(f"_run_executor_turn: LLM output missing 'name' or 'args'. Response: {tool_call_data}")
+            await _send_ws_error(ws, "LLM Format Error", "AI response missing required 'name' or 'args' keys. Prompt reminded the format; please try again.")
+            # Give feedback to the LLM in the next turn via system message
+            if ctx.history is None:
+                ctx.history = []
+            ctx.history.append({
+                "role": "system",
+                "content": "System: Your previous response was not formatted correctly. Please return exactly one JSON object with top-level keys 'name' and 'args'."
+            })
+            return  # Skip further processing for this turn
 
         call = ToolCall(**tool_call_data)
 
