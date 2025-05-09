@@ -609,23 +609,97 @@ async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
                 payload = ExplanationResponse(explanation_text=call.args.get("text", "..."))
                 content_type = "explanation"
             elif call.name == "ask_question":
+                """Handle an ask_question tool call.
+
+                New behaviour:
+                1.  Expect args to contain a `question_data` dict that matches QuizQuestion.
+                2.  Optionally receive `whiteboard_actions` (list[CanvasObjectSpec] or WhiteboardAction).
+                    If the list is missing or empty we deterministically generate
+                    MCQ drawing actions via the backend utility `draw_mcq_actions`.
+                3.  Send the question to the *whiteboard* via the `whiteboard_actions` field
+                    on the InteractionResponseData wrapper.
+                4.  Send a simple status_update chat message so the user knows to look
+                    at the whiteboard.
+                5.  Persist the pending QuizQuestion on the TutorContext so that later
+                    user answers can be evaluated.
+                """
+
                 from ai_tutor.agents.models import QuizQuestion
-                options: list[str] | None = call.args.get("options")
-                q_text: str = call.args.get("question", "Missing question text")
-                question = QuizQuestion(
-                    question=q_text,
-                    options=options or [],
-                    correct_answer_index=call.args.get("correct_answer_index", -1),
-                    explanation=call.args.get("explanation", ""),
-                    difficulty=call.args.get("difficulty", "Medium"),
-                    related_section=call.args.get("related_section", ""),
+                from ai_tutor.skills.draw_mcq import draw_mcq_actions
+
+                # --- 1) Parse and validate question_data --- #
+                question_data_dict = call.args.get("question_data")
+                if not question_data_dict:
+                    raise ValueError("'question_data' missing in ask_question args")
+
+                question_obj = QuizQuestion(**question_data_dict)
+
+                # --- 2) Resolve whiteboard actions --- #
+                whiteboard_actions_to_send = call.args.get("whiteboard_actions")
+
+                # If LLM did not supply drawing instructions, fall back to deterministic generator
+                if not whiteboard_actions_to_send or not isinstance(whiteboard_actions_to_send, list):
+                    try:
+                        # draw_mcq_actions is registered as a skill (FunctionTool). Use the generic
+                        # invoke helper so the decorator wrapper is handled correctly.
+                        generated_objects = await invoke(
+                            draw_mcq_actions,
+                            ctx=ctx,
+                            question=question_obj,
+                            question_id=str(uuid.uuid4())[:8]
+                        )
+                        # Wrap generated CanvasObjectSpecs into a single ADD_OBJECTS action that FE understands
+                        whiteboard_actions_to_send = [{
+                            "type": "ADD_OBJECTS",
+                            "objects": generated_objects
+                        }]
+                    except Exception as gen_err:
+                        log.warning(f"Failed to auto-generate MCQ drawing specs: {gen_err}")
+                        whiteboard_actions_to_send = None
+                else:
+                    # LLM provided a list. If they are raw CanvasObjectSpec dictionaries (have 'kind' but no 'type'),
+                    # wrap them so the frontend receives a proper WhiteboardAction.
+                    try:
+                        if all(isinstance(obj, dict) and obj.get("kind") and not obj.get("type") for obj in whiteboard_actions_to_send):
+                            whiteboard_actions_to_send = [{
+                                "type": "ADD_OBJECTS",
+                                "objects": whiteboard_actions_to_send
+                            }]
+                    except Exception as wrap_err:
+                        log.warning(f"Error while wrapping LLM-supplied whiteboard_actions: {wrap_err}")
+
+                # --- 3) Compose chat message --- #
+                topic_for_message = call.args.get("topic") or question_obj.related_section or "the current topic"
+                chat_message = f"I have a question for you on the whiteboard about {topic_for_message}."
+
+                payload = MessageResponse(
+                    message_text=chat_message,
+                    message_type="status_update"
                 )
-                payload = QuestionResponse(
-                    question_type="multiple_choice" if options else "free_response",
-                    question_data=question,
-                    context_summary=None,
+                content_type = "message"
+
+                # --- 4) Build and send response --- #
+                response = InteractionResponseData(
+                    content_type=content_type,
+                    data=payload,
+                    user_model_state=ctx.user_model_state,
+                    whiteboard_actions=whiteboard_actions_to_send
                 )
-                content_type = "question"
+
+                await safe_send_json(ws, response.model_dump(mode="json"), "AskQuestion (whiteboard) Dispatch")
+
+                # --- 5) Update context --- #
+                ctx.last_pedagogical_action = "asked"
+                ctx.current_quiz_question = question_obj
+
+                # Persist context (best-effort)
+                try:
+                    supabase = await get_supabase_client()
+                    await session_manager.update_session_context(supabase, ctx.session_id, ctx.user_id, ctx)
+                except Exception as persist_err:
+                    log.warning(f"Failed to persist context after ask_question: {persist_err}")
+
+                return  # ensure no further processing for this call
             elif call.name == "feedback":
                 from ai_tutor.agents.models import QuizFeedbackItem
                 feedback_item = QuizFeedbackItem(**call.args)
