@@ -24,7 +24,7 @@ Your task is to generate a single quiz question based on the provided topic and 
 
 The output MUST be a single, valid JSON object with two keys:
 1.  'quiz_question': A JSON object conforming exactly to the QuizQuestion schema detailed below.
-2.  'whiteboard_actions': An OPTIONAL list of CanvasObjectSpec objects to visually present the MCQ. If no drawing is needed, omit this key or provide an empty list.
+2.  'whiteboard_actions': An OPTIONAL list of CanvasObjectSpec objects to visually present the Multiple Choice Question (MCQ).
 
 QuizQuestion Schema (for the 'quiz_question' key):
 ```json
@@ -38,6 +38,32 @@ Guidelines for 'quiz_question':
 - Ensure 'explanation' is a non-empty string.
 - 'difficulty' should typically be 'Easy', 'Medium', or 'Hard'.
 - 'related_section' should be the topic name you were given.
+
+Guidelines for 'whiteboard_actions' when generating an MCQ:
+- If you provide 'whiteboard_actions' for an MCQ, it MUST be a list of individual canvas object specifications.
+- **DO NOT** use a single object with `"kind":"radio"` and an "options" array (e.g., `{{"kind":"radio", "id": "any_id", "options": ["A", "B"]}}`). This format is deprecated.
+- The list of objects MUST represent the MCQ as follows:
+    1.  **Question Text Object**:
+        *   A single object with `"kind": "text"`.
+        *   It must have a unique `"id"` string (e.g., "mcq-[question_id]-text").
+        *   It must contain the question string in a `"text"` field.
+        *   Include `"metadata": {{"role": "question", "question_id": "[question_id]"}}`, where `[question_id]` is a unique identifier for this entire question (e.g., a short UUID).
+    2.  **Option Objects (for each option in 'quiz_question.options')**:
+        *   For each option, provide two objects: a selectable circle and a text label.
+        *   Let `[question_id]` be the same unique identifier used for the question text object, and `[option_idx]` be the 0-based index of the option.
+        *   **Option Selector Object (Circle)**:
+            *   `"kind": "circle"`
+            *   `"id": f"mcq-[question_id]-opt-[option_idx]-radio"`
+            *   `"metadata": {{"role": "option_selector", "question_id": "[question_id]", "option_id": [option_idx]}}`
+            *   Include properties for position (e.g., x, y) and appearance (e.g., radius, fill, stroke).
+        *   **Option Label Object (Text)**:
+            *   `"kind": "text"`
+            *   `"id": f"mcq-[question_id]-opt-[option_idx]-text"`
+            *   `"text": "[Option text, e.g., 'A. Evaporation']"`
+            *   `"metadata": {{"role": "option_label", "question_id": "[question_id]", "option_id": [option_idx]}}`
+            *   Include properties for position (e.g., x, y) and appearance (e.g., fontSize, fill).
+- Ensure all `[question_id]` parts within the IDs and metadata for a single MCQ are identical and unique for that MCQ.
+- If no drawing is needed, omit the 'whiteboard_actions' key or provide an empty list.
 
 Respond ONLY with the single JSON object containing 'quiz_question' and optionally 'whiteboard_actions'.
 """

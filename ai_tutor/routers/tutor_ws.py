@@ -1,6 +1,6 @@
 from __future__ import annotations
 from uuid import UUID
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 import os
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
@@ -595,6 +595,120 @@ async def _send_ws_error(ws: WebSocket, title: str, detail: str):
         log.error(f"_send_ws_error: Failed to send error: {e}. Original: {title} - {detail}")
 
 
+# Define the new normalization function
+async def _normalize_whiteboard_actions_for_mcq(
+    actions: List[Dict[str, Any]],
+    question_obj: "QuizQuestion", # Forward reference if QuizQuestion is defined later or imported
+    # If draw_mcq_actions cannot be easily called, its logic for object creation will be partially replicated here.
+    # We'll need to define constants for layout or make them parameters if they need to be dynamic.
+    # For simplicity, we might use fixed offsets/sizes here or assume they are part of the broader context.
+) -> List[Dict[str, Any]]:
+    """
+    Normalizes whiteboard actions for an MCQ.
+    If a legacy MCQ object ({\"kind\": \"radio\", \"options\": [...]}) is found,
+    it's replaced with a list of individual CanvasObjectSpec objects.
+    Other objects are passed through.
+    """
+    from ai_tutor.skills.draw_mcq import draw_mcq_actions # Try to use the existing skill
+    from ai_tutor.agents.models import QuizQuestion # Ensure QuizQuestion is available
+
+    processed_actions: List[Dict[str, Any]] = []
+    found_legacy_mcq = False
+
+    for spec in actions:
+        if isinstance(spec, dict) and spec.get("kind") == "radio" and "options" in spec and isinstance(spec["options"], list):
+            log.info(f"Normalizing legacy MCQ whiteboard object: {spec.get('id', 'N/A')}")
+            found_legacy_mcq = True
+            # If a legacy MCQ is found, we discard WHATEVER the LLM sent for whiteboard_actions
+            # and regenerate them using draw_mcq_actions to ensure consistency.
+            # We use the question_obj as the source of truth for question details.
+            # A unique ID is generated here for this question's drawing objects.
+            try:
+                # Use a generic context or pass one if available and needed by draw_mcq_actions
+                # For now, assuming draw_mcq_actions can be called with question and question_id primarily.
+                # If invoke is strictly needed, this becomes more complex.
+                # Let's assume direct call is okay for utility.
+                # Note: draw_mcq_actions is async.
+                # The 'invoke' wrapper might not be suitable here if we are not in a skill context.
+                # Simplification: directly call the async function if possible.
+                # This might mean draw_mcq_actions needs to be importable and callable.
+                # If draw_mcq_actions is a registered "skill" and *must* go through 'invoke',
+                # then this normalization logic might need 'ctx' and to call 'await invoke(...)'.
+
+                # For now, let's assume we can call it directly, or simulate its output:
+                # This simulates calling draw_mcq_actions if direct call/invoke is an issue
+                # This is a simplified replication of draw_mcq_actions logic for demonstration
+                
+                q_id = str(uuid.uuid4())[:8]
+                
+                # Replicating draw_mcq_actions structure:
+                # Constants from draw_mcq.py (ideally these should be shared or passed)
+                QUESTION_X = 50
+                QUESTION_Y = 50
+                QUESTION_WIDTH = 700
+                OPTION_START_Y = 100
+                OPTION_SPACING = 40
+                OPTION_X_OFFSET = 20
+                OPTION_RADIO_RADIUS = 8
+                OPTION_TEXT_X_OFFSET = 25
+
+                # 1. Question Text
+                processed_actions.append({
+                    "id": f"mcq-{q_id}-text",
+                    "kind": "text",
+                    "x": QUESTION_X, "y": QUESTION_Y, "text": question_obj.question,
+                    "fontSize": 18, "fill": "#000000", "width": QUESTION_WIDTH,
+                    "metadata": {"source": "assistant", "role": "question", "question_id": q_id}
+                })
+
+                current_y = OPTION_START_Y
+                for i, option_text in enumerate(question_obj.options):
+                    option_id_val = i # Use index as option_id, as in draw_mcq_actions
+                    # Radio button (circle)
+                    processed_actions.append({
+                        "id": f"mcq-{q_id}-opt-{option_id_val}-radio",
+                        "kind": "circle",
+                        "x": QUESTION_X + OPTION_X_OFFSET,
+                        "y": current_y + OPTION_RADIO_RADIUS,
+                        "radius": OPTION_RADIO_RADIUS,
+                        "stroke": "#555555", "strokeWidth": 1, "fill": "#FFFFFF",
+                        "metadata": {"source": "assistant", "role": "option_selector", "question_id": q_id, "option_id": option_id_val}
+                    })
+                    # Option Text Label
+                    processed_actions.append({
+                        "id": f"mcq-{q_id}-opt-{option_id_val}-text",
+                        "kind": "text",
+                        "x": QUESTION_X + OPTION_X_OFFSET + OPTION_TEXT_X_OFFSET,
+                        "y": current_y + OPTION_RADIO_RADIUS, # Align with circle center
+                        "text": f"{chr(65+i)}. {option_text}",
+                        "fontSize": 16, "fill": "#333333",
+                        "metadata": {"source": "assistant", "role": "option_label", "question_id": q_id, "option_id": option_id_val}
+                    })
+                    current_y += OPTION_SPACING
+                # Since we found a legacy MCQ and replaced it, we typically stop processing further specs
+                # from the original 'actions' list if the assumption is that one legacy obj = one MCQ.
+                # For safety, we'll process all of them, but the legacy one is now expanded.
+                # The current logic in _dispatch_tool_call expects whiteboard_actions to be a list of objects
+                # for ONE question. So if LLM sends a legacy radio object, it implies that's the ONLY
+                # thing for that question's whiteboard representation.
+                # So, if found_legacy_mcq, we should return ONLY the newly generated actions.
+                return processed_actions # Return the newly generated full list for the MCQ
+            except Exception as e:
+                log.error(f"Error during legacy MCQ normalization by replicating draw_mcq_actions: {e}", exc_info=True)
+                # Fallback: return original spec or empty if error
+                processed_actions.append(spec) # Add original spec back if normalization failed
+        else:
+            processed_actions.append(spec)
+
+    if found_legacy_mcq:
+        # This path should ideally not be hit if the return inside the loop works for the first legacy obj.
+        # But as a safeguard, if it implies multiple MCQs or mixed content not intended.
+        # For now, the logic above returns immediately when a legacy MCQ is processed and replaced.
+        pass
+
+    return processed_actions
+
+
 async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
     """Executes a ToolCall produced by the lean executor and streams the response."""
     log.info(f"_dispatch_tool_call: Handling tool '{call.name}' for session {ctx.session_id}")
@@ -632,43 +746,80 @@ async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
                 if not question_data_dict:
                     raise ValueError("'question_data' missing in ask_question args")
 
-                question_obj = QuizQuestion(**question_data_dict)
+                try:
+                    question_obj = QuizQuestion(**question_data_dict)
+                except Exception as e_val:
+                    log.error(f"ask_question: Failed to validate question_data: {e_val}. Data: {question_data_dict}", exc_info=True)
+                    await send_error_response(ws, "Invalid question data provided by LLM.", "INVALID_QUESTION_DATA", details=str(e_val), state=ctx.user_model_state)
+                    return
 
                 # --- 2) Resolve whiteboard actions --- #
-                whiteboard_actions_to_send = call.args.get("whiteboard_actions")
+                llm_provided_action_specs = call.args.get("whiteboard_actions")
+                # Ensure it's a list of dicts, even if it's empty
+                if not isinstance(llm_provided_action_specs, list) or \
+                   not all(isinstance(item, dict) for item in llm_provided_action_specs):
+                    if llm_provided_action_specs is not None: # Log if it was provided but not a list of dicts
+                        log.warning(f"LLM provided whiteboard_actions but it was not a list of dicts: {llm_provided_action_specs}. Will attempt fallback generation.")
+                    llm_provided_action_specs = [] # Default to empty list for normalization/fallback
 
-                # If LLM did not supply drawing instructions, fall back to deterministic generator
-                if not whiteboard_actions_to_send or not isinstance(whiteboard_actions_to_send, list):
+                final_object_specs: List[Dict[str, Any]] = []
+
+                if llm_provided_action_specs:
+                    log.info(f"Normalizing LLM provided whiteboard actions for ask_question: {llm_provided_action_specs}")
                     try:
-                        # draw_mcq_actions is registered as a skill (FunctionTool). Use the generic
-                        # invoke helper so the decorator wrapper is handled correctly.
-                        generated_objects = await invoke(
-                            draw_mcq_actions,
+                        normalized_specs = await _normalize_whiteboard_actions_for_mcq(
+                            actions=llm_provided_action_specs,
+                            question_obj=question_obj
+                        )
+                        final_object_specs.extend(normalized_specs)
+                        if not final_object_specs and llm_provided_action_specs:
+                            log.warning("Normalization resulted in empty specs from non-empty LLM actions. Check normalization logic if this is unintended.")
+                    except Exception as norm_err:
+                        log.error(f"Error during LLM whiteboard_actions normalization: {norm_err}", exc_info=True)
+                        # final_object_specs remains empty, fallback will be attempted
+                
+                # If, after attempting to use/normalize LLM actions, we have no specs, then fallback.
+                if not final_object_specs:
+                    log.info("No usable whiteboard_actions from LLM path. Falling back to draw_mcq_actions.")
+                    try:
+                        from ai_tutor.skills.draw_mcq import draw_mcq_actions # Ensure skill is imported for invoke
+                        
+                        log.debug(f"Attempting to invoke draw_mcq_actions with question_obj: {question_obj.model_dump_json(indent=2)}")
+                        generated_objects_list = await invoke(
+                            draw_mcq_actions, 
                             ctx=ctx,
                             question=question_obj,
                             question_id=str(uuid.uuid4())[:8]
                         )
-                        # Wrap generated CanvasObjectSpecs into a single ADD_OBJECTS action that FE understands
-                        whiteboard_actions_to_send = [{
-                            "type": "ADD_OBJECTS",
-                            "objects": generated_objects
-                        }]
-                    except Exception as gen_err:
-                        log.warning(f"Failed to auto-generate MCQ drawing specs: {gen_err}")
-                        whiteboard_actions_to_send = None
-                else:
-                    # LLM provided a list. If they are raw CanvasObjectSpec dictionaries (have 'kind' but no 'type'),
-                    # wrap them so the frontend receives a proper WhiteboardAction.
-                    try:
-                        if all(isinstance(obj, dict) and obj.get("kind") and not obj.get("type") for obj in whiteboard_actions_to_send):
-                            whiteboard_actions_to_send = [{
-                                "type": "ADD_OBJECTS",
-                                "objects": whiteboard_actions_to_send
-                            }]
-                    except Exception as wrap_err:
-                        log.warning(f"Error while wrapping LLM-supplied whiteboard_actions: {wrap_err}")
+                        
+                        log.info(f"Fallback draw_mcq_actions invoke returned: {generated_objects_list}")
 
-                # --- 3) Compose chat message --- #
+                        if generated_objects_list and isinstance(generated_objects_list, list) and all(isinstance(item, dict) for item in generated_objects_list):
+                            log.debug(f"Fallback successfully generated {len(generated_objects_list)} specs.")
+                            final_object_specs.extend(generated_objects_list)
+                        elif generated_objects_list:
+                            log.warning(f"Fallback draw_mcq_actions returned a non-list or list with non-dict items: {type(generated_objects_list)} Content: {str(generated_objects_list)[:200]}...")
+                        else:
+                            log.warning("Fallback draw_mcq_actions returned None or an empty list.")
+
+                    except Exception as gen_err:
+                        log.error(f"Fallback draw_mcq_actions invocation FAILED: {gen_err}", exc_info=True)
+                
+                # --- Prepare whiteboard_actions payload for frontend ---
+                whiteboard_actions_payload_for_fe = None
+                if final_object_specs: 
+                    if all(isinstance(spec, dict) for spec in final_object_specs):
+                        whiteboard_actions_payload_for_fe = [{
+                            "type": "ADD_OBJECTS",
+                            "objects": final_object_specs
+                        }]
+                        log.info(f"Successfully prepared whiteboard_actions_payload_for_fe with {len(final_object_specs)} objects.")
+                    else:
+                        log.error(f"final_object_specs contained non-dict items after all processing: {final_object_specs}. Cannot send to FE.")
+                else: # final_object_specs is empty
+                    log.warning("final_object_specs is EMPTY after LLM path and fallback. whiteboard_actions will be null.")
+                
+                # --- Compose chat message --- #
                 topic_for_message = call.args.get("topic") or question_obj.related_section or "the current topic"
                 chat_message = f"I have a question for you on the whiteboard about {topic_for_message}."
 
@@ -683,7 +834,7 @@ async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
                     content_type=content_type,
                     data=payload,
                     user_model_state=ctx.user_model_state,
-                    whiteboard_actions=whiteboard_actions_to_send
+                    whiteboard_actions=whiteboard_actions_payload_for_fe
                 )
 
                 await safe_send_json(ws, response.model_dump(mode="json"), "AskQuestion (whiteboard) Dispatch")
@@ -795,171 +946,6 @@ async def _dispatch_tool_call(call: ToolCall, ctx: TutorContext, ws: WebSocket):
         raise # Re-raise to be handled by the main WebSocket handler
     except Exception as e: # General errors from invoke() or other parts of the dispatch before post-processing
         log.exception(f"_dispatch_tool_call: Error executing tool '{call.name}' for session {ctx.session_id}: {e}")
-        await send_error_response(
-            ws,
-            message=f"An unexpected error occurred while trying to use the '{call.name}' tool.",
-            error_code="TOOL_EXECUTION_ERROR",
-            details=str(e),
-            state=ctx.user_model_state
-        )
-        if ctx.history is None: ctx.history = []
-        system_error_message = f"System: The previous tool call to '{call.name}' encountered an unexpected error: {e}. Args: {json.dumps(call.args)}. You may need to try a different approach or tool."
-        ctx.history.append({"role": "system", "content": system_error_message})
-        return # Exit _dispatch_tool_call early
-
-    # --- Post-invocation processing based on tool_result (if no exception occurred above) ---
-    # This section is reached if get_board_state succeeded, or if invoke() for other skills succeeded.
-    try:
-        if call.name == "get_board_state":
-            # tool_result already contains the board state from the special handling above
-            log.info(f"Tool '{call.name}' (handled specially) returned: {tool_result} for session {ctx.session_id}")
-            if ctx.history is None: ctx.history = []
-            # Only append to history if tool_result is not None (i.e., no timeout/error occurred that was handled by returning early)
-            if tool_result is not None:
-                 ctx.history.append({
-                    "role": "system", 
-                    "content": f"Observed whiteboard state: {json.dumps(tool_result)}" 
-                })
-            # No direct WebSocket message to send back to client here, as the skill was for data retrieval for the LLM.
-
-        # Existing tool dispatching logic for tools that send messages to the client:
-        elif call.name == "explain":
-            payload = ExplanationResponse(explanation_text=call.args.get("text", "..."))
-            response = InteractionResponseData(
-                content_type="explanation",
-                data=payload,
-                user_model_state=ctx.user_model_state,
-            )
-            await safe_send_json(ws, response.model_dump(mode="json"), "Explain Dispatch")
-            ctx.last_pedagogical_action = "explained"
-        elif call.name == "ask_question":
-            # ... (rest of ask_question logic remains the same)
-            from ai_tutor.agents.models import QuizQuestion
-            options: list[str] | None = call.args.get("options")
-            q_text: str = call.args.get("question", "Missing question text")
-            question = QuizQuestion(
-                question=q_text,
-                options=options or [],
-                correct_answer_index=call.args.get("correct_answer_index", -1),
-                explanation=call.args.get("explanation", ""),
-                difficulty=call.args.get("difficulty", "Medium"),
-                related_section=call.args.get("related_section", ""),
-            )
-            q_payload = QuestionResponse(
-                question_type="multiple_choice" if options else "free_response",
-                question_data=question,
-                context_summary=None,
-            )
-            await safe_send_json(ws,
-                InteractionResponseData(
-                    content_type="question",
-                    data=q_payload,
-                    user_model_state=ctx.user_model_state,
-                ).model_dump(mode="json"),
-                "Ask Question Dispatch"
-            )
-            ctx.last_pedagogical_action = "asked"
-        elif call.name == "draw":
-            # ... (draw logic remains the same)
-            # The draw skill/tool itself should be sending actions to the whiteboard_manager now.
-            # This part of _dispatch_tool_call might need to be removed if 'draw' is fully handled by invoke.
-            # For now, assuming draw still sends a message like this or invoke returns something to send.
-            # If `invoke` for `draw` sends the whiteboard actions and returns None/True, this part is not needed.
-            # However, the user's original plan for `draw` was: Args: {{ "svg": "<svg>...</svg>" }}
-            # This implies the LLM generates SVG directly, not a list of actions. This is an older model.
-            # The new model is `ADD_OBJECTS` etc. This `draw` tool seems like a legacy item.
-            # Let's assume `invoke` handles `draw` and we don't need special logic here unless `invoke` returns something to send.
-            if tool_result: # If invoke for draw returned something to send (e.g. a confirmation or the actions themselves)
-                # This depends on what `invoke` for `draw` returns.
-                # If draw is now like other whiteboard actions, it might not return here.
-                # For now, let's keep the old message for a direct SVG from LLM, if that's what `tool_result` is.
-                if isinstance(tool_result, dict) and "svg" in tool_result: # Legacy SVG draw
-                     svg = tool_result.get("svg", "[no svg]")
-                     actions_to_send = [{
-                         "type": "ADD_OBJECTS", 
-                         "objects": [
-                            {"kind": "svg_string", "svg_string": svg, "id": str(uuid.uuid4()) }
-                         ]
-                     }]
-                     # This should go through the whiteboard_manager or a similar mechanism
-                     # For now, sending a placeholder message
-                     msg = MessageResponse(
-                        message_text=f"[Assistant wants to draw SVG via legacy draw tool: {svg[:60]}...]",
-                        message_type="status_update",
-                        actions=actions_to_send # EXAMPLE: How actions might be bundled
-                     )
-                     await safe_send_json(ws,
-                        InteractionResponseData(
-                            content_type="message", # Or dedicated whiteboard_action type
-                            data=msg,
-                            user_model_state=ctx.user_model_state,
-                        ).model_dump(mode="json"),
-                        "Legacy Draw Dispatch"
-                     )
-                # Else, if `draw` is updated to use `WhiteboardAction`s and `invoke` sends them, this part might not be hit or `tool_result` is just True/None.
-
-        elif call.name in ["reflect", "summarise_context"]:
-            # Internal – no FE output from these tools themselves.
-            # Result might be logged or stored in context by the skill via invoke.
-            log.info(f"_dispatch_tool_call: Internal tool '{call.name}' executed. Result: {tool_result}")
-        elif call.name == "end_session":
-            # ... (end_session logic remains the same)
-            end_msg = MessageResponse(
-                message_text=f"Session ended: {call.args.get('reason', 'completed')}.",
-                message_type="summary",
-            )
-            await safe_send_json(ws,
-                InteractionResponseData(
-                    content_type="message",
-                    data=end_msg,
-                    user_model_state=ctx.user_model_state,
-                ).model_dump(mode="json"),
-                "End Session Dispatch"
-            )
-        elif isinstance(tool_result, dict) and tool_result.get("type") and \
-             call.name in ["group_objects", "move_group", "delete_group", "draw_latex"]:
-            # Specific whitelist for tools that we know produce a single action dict
-            log.info(f"Dispatching whiteboard action from tool '{call.name}': {tool_result}")
-            response = InteractionResponseData(
-                content_type="message",  # Use existing allowed type
-                data=MessageResponse(
-                    response_type="status_update",
-                    message_text=f"Tutor performed whiteboard action: {tool_result.get('type')}"
-                ),
-                whiteboard_actions=[tool_result],
-                user_model_state=ctx.user_model_state,
-            )
-            await safe_send_json(ws, response.model_dump(mode="json"), f"{call.name} Whiteboard Action Dispatch")
-        elif isinstance(tool_result, dict) and tool_result.get("type") in [
-            "ADD_OBJECTS", "DELETE_OBJECTS", "UPDATE_OBJECTS", "SET_BACKGROUND"
-        ]:
-            log.info(
-                f"Generic whiteboard dispatch for tool '{call.name}' action type '{tool_result.get('type')}'."
-            )
-            response = InteractionResponseData(
-                content_type="message",
-                data=MessageResponse(
-                    response_type="status_update",
-                    message_text=f"Tutor performed whiteboard action: {tool_result.get('type')}"
-                ),
-                whiteboard_actions=[tool_result],
-                user_model_state=ctx.user_model_state,
-            )
-            await safe_send_json(ws, response.model_dump(mode="json"), f"Whiteboard Action Dispatch ({call.name})")
-        # All other tools are assumed to be handled by invoke and might send their own messages via ws if needed,
-        # or return results that are then processed or ignored here.
-        # If a tool sends its own WS messages (like draw_... tools via whiteboard_manager),
-        # then `tool_result` might be None or True, and no further action is needed here.
-        # If a tool returns data for the LLM, it should be added to history like `get_board_state`.
-
-        # Fallback for unhandled tools or tools that returned something unexpected by this dispatcher logic
-        # This part may need refinement based on how `invoke` and skills are structured.
-        # For now, if a tool was called by `invoke` and didn't match above, we assume `invoke` handled its WS communication.
-
-    except WebSocketDisconnect:
-        raise
-    except Exception as e:
-        log.exception(f"_dispatch_tool_call: Error executing tool '{call.name}': {e}")
         await _send_ws_error(ws, "Dispatch Error", str(e))
 
 
